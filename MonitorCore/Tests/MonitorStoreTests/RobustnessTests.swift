@@ -196,11 +196,13 @@ import Testing
         let open = HistoryEvent(kind: .thermalPressure, start: T.t0, level: .elevated, label: "Thermal")
         await store.append(RecordBatch(record: fullRecord(T.t0), events: [open]))
         let locked = OSAllocatedUnfairLock(initialState: false)
-        let holder = Task { try await other.holdWriteLock(seconds: 1.8) { locked.withLock { $0 = true } } }
+        let release = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await other.holdWriteLockUntilReleased(locked: { locked.withLock { $0 = true } }, release: release) }
         while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
 
         await #expect(throws: (any Error).self) { try await store.flush() }
         #expect(await store.carriedRecordCount == 1)
+        release.withLock { $0 = true }
         try await holder.value
         var ended = open
         ended.end = T.t0 + 5
@@ -227,12 +229,14 @@ import Testing
         for i in 0..<4 { await store.append(RecordBatch(record: fullRecord(T.t0 + Double(i) * 5))) }  // 0…15 s
         await store.append(RecordBatch(events: [open, ended]))
         let locked = OSAllocatedUnfairLock(initialState: false)
-        let holder = Task { try await other.holdWriteLock(seconds: 1.8) { locked.withLock { $0 = true } } }
+        let release = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await other.holdWriteLockUntilReleased(locked: { locked.withLock { $0 = true } }, release: release) }
         while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
 
         await #expect(throws: (any Error).self) { try await store.flush() }
         #expect(await store.carriedRecordCount == 3)                       // 5…15 s kept, 0 s dropped
         #expect(await store.droppedCarriedRecords == 1)
+        release.withLock { $0 = true }
         try await holder.value
         try await store.flush()
         #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 3)
