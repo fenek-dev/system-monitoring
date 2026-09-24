@@ -2,13 +2,16 @@ import Foundation
 
 public enum SamplingMode: String, Sendable, Codable {
     case background, interactive, paused
+    /// Only the on-screen overlay is visible: totals every tick, everything else at the background cadence.
+    case overlay
 
-    /// 5 s, 1 s, nil (no sampling while paused).
+    /// 5 s, 1 s, nil (no sampling while paused), 1 s.
     public var interval: Duration? {
         switch self {
         case .background: .seconds(5)
         case .interactive: .seconds(1)
         case .paused: nil
+        case .overlay: .seconds(1)
         }
     }
 }

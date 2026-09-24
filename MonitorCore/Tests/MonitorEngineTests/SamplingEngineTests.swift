@@ -60,10 +60,11 @@ private func factory(_ log: SpyLog, memoryPressure: MemoryPressureLevel = .norma
 }
 
 private func engine(_ log: SpyLog, memoryPressure: MemoryPressureLevel = .normal, tickDelay: useconds_t = 0,
-                    interactive: Duration = .milliseconds(20), background: Duration = .milliseconds(60)) -> SamplingEngine {
+                    interactive: Duration = .milliseconds(20), background: Duration = .milliseconds(60),
+                    overlay: Duration = .milliseconds(20)) -> SamplingEngine {
     SamplingEngine(factory: factory(log, memoryPressure: memoryPressure, tickDelay: tickDelay),
                    resolver: { FixtureAppResolver([10: appID("a")]) },
-                   interactiveInterval: interactive, backgroundInterval: background)
+                   interactiveInterval: interactive, backgroundInterval: background, overlayInterval: overlay)
 }
 
 /// One long-lived consumer per stream (cancelling an `AsyncStream` iteration would finish the stream).
@@ -163,6 +164,21 @@ final class Collector<T: Sendable>: Sendable {
         #expect(log.count(.processes) > before)
         #expect(latency < .milliseconds(50))                          // the 30 s background sleep was cut short
         print("PERF wake-up latency \(latency)")
+        await e.stop()
+    }
+
+    @Test func becomingOverlayWakesTheSleeper() async {
+        let log = SpyLog()
+        let e = engine(log, background: .seconds(30))
+        let frames = Collector(e.liveFrames)
+        await e.start()
+        _ = await frames.wait(count: 1)                              // immediate first background sample
+        let start = ContinuousClock.now
+        await e.setVisibility(UIVisibility(overlayVisible: true))
+        let got = await frames.wait(count: 2, timeout: .seconds(2))
+        let latency = ContinuousClock.now - start
+        #expect(got.last?.mode == .overlay)
+        #expect(latency < .milliseconds(50))                          // the 30 s background sleep was cut short
         await e.stop()
     }
 

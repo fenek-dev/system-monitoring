@@ -40,7 +40,8 @@ struct ProbeSensor {
     /// Would the engine sample this sensor in `mode` with `demand`? (cadence + `requires`, as `SensorSlot` does.)
     func wanted(mode: SamplingMode, demand: SamplingDemand) -> Bool {
         if !cadence.requires.isEmpty, cadence.requires.isDisjoint(with: demand) { return false }
-        return mode != .background || cadence.background != nil
+        // Overlay falls back to the background cadence: a sensor that never runs in background never runs there.
+        return (mode != .background && mode != .overlay) || cadence.background != nil
     }
 
     static func all(_ s: SensorSuite) -> [ProbeSensor] {

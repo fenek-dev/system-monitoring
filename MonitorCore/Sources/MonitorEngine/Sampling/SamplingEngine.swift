@@ -27,6 +27,7 @@ public actor SamplingEngine {
     private let makeResolver: @Sendable () -> any AppResolving
     private let interactiveInterval: Duration
     private let backgroundInterval: Duration
+    private let overlayInterval: Duration
     private let recordBuilder: RecordBuilder
 
     private var slots: Slots?
@@ -49,19 +50,22 @@ public actor SamplingEngine {
                 recordConfig: RecordConfig = .init(), canary: CrashCanary = .standard) {
         self.init(factory: factory, disabled: disabled, alertConfig: alertConfig, recordConfig: recordConfig,
                   canary: canary, resolver: { BundleAppResolver() },
-                  interactiveInterval: SamplingMode.interactive.interval!, backgroundInterval: SamplingMode.background.interval!)
+                  interactiveInterval: SamplingMode.interactive.interval!, backgroundInterval: SamplingMode.background.interval!,
+                  overlayInterval: SamplingMode.overlay.interval!)
     }
 
     /// Test/probe seam: resolver and loop intervals.
     init(factory: SensorFactory, disabled: Set<SensorID> = [], alertConfig: AlertConfig = .init(),
          recordConfig: RecordConfig = .init(), canary: CrashCanary = .none,
-         resolver: @escaping @Sendable () -> any AppResolving, interactiveInterval: Duration, backgroundInterval: Duration) {
+         resolver: @escaping @Sendable () -> any AppResolving, interactiveInterval: Duration, backgroundInterval: Duration,
+         overlayInterval: Duration = .seconds(1)) {
         self.factory = factory
         self.disabled = disabled
         self.canary = canary
         self.makeResolver = resolver
         self.interactiveInterval = interactiveInterval
         self.backgroundInterval = backgroundInterval
+        self.overlayInterval = overlayInterval
         self.recordBuilder = RecordBuilder(config: recordConfig)
         self.alerts = AlertEngine(config: alertConfig)
         self.episodes = EventDetector()
@@ -107,7 +111,8 @@ public actor SamplingEngine {
     public func setVisibility(_ v: UIVisibility) {
         let old = visibility
         visibility = v
-        if (v.mode == .interactive && old.mode != .interactive) || !v.demand.isSubset(of: old.demand) {
+        // Any move to a faster mode (interactive, or overlay from background) samples at once.
+        if (v.mode != old.mode && v.mode != .background) || !v.demand.isSubset(of: old.demand) {
             forceSample = true
         }
         if v != old { sleeper?.cancel() }
@@ -192,6 +197,7 @@ public actor SamplingEngine {
         case .interactive: interactiveInterval
         case .background: backgroundInterval
         case .paused: nil
+        case .overlay: overlayInterval
         }
     }
 

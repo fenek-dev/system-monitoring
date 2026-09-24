@@ -38,7 +38,7 @@ struct ProbeOptions: Sendable {
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
 
     options:
-      --ticks N (5)  --interval S (1)  --mode background|interactive
+      --ticks N (5)  --interval S (1)  --mode background|interactive|overlay
       --demand a,b   (perCore,connections,rawTemperatures,wifi,smart,volumes,sleepAssertions,processTable,memoryAlert,all)
       --page <page>  engine visibility: dashboard page (implies interactive)
       --dump <file>  --sensor: write every reading as JSON
@@ -85,6 +85,7 @@ struct ProbeOptions: Sendable {
                 switch try value(a) {
                 case "background": o.mode = .background
                 case "interactive": o.mode = .interactive
+                case "overlay": o.mode = .overlay
                 case let m: throw ParseError(description: "unknown mode \(m)")
                 }
                 o.modeGiven = true
@@ -177,6 +178,10 @@ struct ProbeOptions: Sendable {
             return UIVisibility(dashboardVisible: true, page: best, inspectedApp: inspected)
         }
         if inspected != nil { return UIVisibility(dashboardVisible: true, page: .processes, inspectedApp: inspected) }
-        return mode == .interactive ? UIVisibility(popoverOpen: true) : UIVisibility()
+        switch mode {
+        case .interactive: return UIVisibility(popoverOpen: true)
+        case .overlay: return UIVisibility(overlayVisible: true)
+        case .background, .paused: return UIVisibility()
+        }
     }
 }

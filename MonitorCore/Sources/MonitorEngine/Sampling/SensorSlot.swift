@@ -162,6 +162,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         case .interactive: c.interactive
         case .background: c.background
         case .paused: nil
+        case .overlay: c.background                      // Task 2 replaces this with SensorCadence.interval(in:)
         }
         return Self.ns(d)
     }
