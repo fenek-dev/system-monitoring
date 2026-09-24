@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("Overview snapshots")
+@Suite("Overview snapshots", .serialized)
 @MainActor
 struct OverviewSnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted, .paused])
@@ -24,9 +24,41 @@ struct OverviewSnapshotTests {
     }
 
     @Test func diskUsedPhraseSharesUnit() {
+        // CP2 ruling: free = available capacity, not "important usage" (which includes purgeable).
         let v = VolumeInfo(id: "/", name: "Macintosh HD", totalBytes: 994_000_000_000,
-                           availableBytes: 300_000_000_000, availableImportantBytes: 382_000_000_000)
+                           availableBytes: 382_000_000_000, availableImportantBytes: 450_000_000_000)
         #expect(OverviewDiskCard.usedPhrase(v) == "612 of 994 GB used")
+        #expect(OverviewDiskCard.free(v) == 382_000_000_000)
+    }
+
+    /// Regression (review T2): rows are sorted by CPU *before* the "as many as fit" prefix, whatever order
+    /// `LiveModel.apps` arrives in.
+    @Test func topProcessesSortedBeforePrefix() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        var f = provider.frame(at: 60)
+        f.apps.reverse()                                  // worst case: ascending CPU order
+        live.apply(f)
+        live.isPresenting = true
+        let rows = OverviewTopProcessesCard.rows(live)
+        let best = f.apps.filter { $0.identity.key != .other }.max { ($0.cpuPercent ?? -1) < ($1.cpuPercent ?? -1) }
+        #expect(rows.first?.identity.key == best?.identity.key)
+        #expect(Array(rows.prefix(4)).map(\.identity.key) == Array(rows.sorted {
+            ($0.cpuPercent ?? -1) > ($1.cpuPercent ?? -1)
+        }.prefix(4)).map(\.identity.key))
+    }
+
+    /// CP2: package watts fall back to the component sum; the popover Power row falls back to SMC system power.
+    @Test func powerFallbacks() {
+        var p = PowerSnapshot()
+        p.cpuWatts = 3
+        p.gpuWatts = 2
+        #expect(W5a.packageWatts(p) == 5)
+        p.cpuWatts = nil
+        p.gpuWatts = nil
+        #expect(W5a.packageWatts(p) == nil)
+        #expect(W5a.loadAverage([27.5, 26.84, 25.1]) == "27.5 · 26.8 · 25.1")
+        #expect(W5a.loadAverage([3.21, 2.88, 2.54]) == "3.21 · 2.88 · 2.54")
     }
 
     @Test func tileSubtitles() {

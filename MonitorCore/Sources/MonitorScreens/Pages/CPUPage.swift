@@ -49,7 +49,7 @@ struct CPUStatStrip: View {
             .init(id: "user", label: "User", value: TTFormat.percent(c.user, digits: 1), unavailableReason: reason),
             .init(id: "system", label: "System", value: TTFormat.percent(c.system, digits: 1), unavailableReason: reason),
             .init(id: "idle", label: "Idle", value: TTFormat.percent(c.idle, digits: 1), unavailableReason: reason),
-            .init(id: "load", label: "Load average", value: TTFormat.loadAverage(c.loadAverage), detail: "1 · 5 · 15 min",
+            .init(id: "load", label: "Load average", value: W5a.loadAverage(c.loadAverage), detail: "1 · 5 · 15 min",
                   unavailableReason: loadReason ?? "Not reported"),
             .init(id: "threads", label: "Threads", value: TTFormat.count(c.threadCount),
                   detail: c.processCount.map { "in \(TTFormat.count($0)) processes" },

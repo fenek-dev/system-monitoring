@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("Memory snapshots")
+@Suite("Memory snapshots", .serialized)
 @MainActor
 struct MemorySnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted, .memoryWarning])

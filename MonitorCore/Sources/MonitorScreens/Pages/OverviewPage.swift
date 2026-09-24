@@ -183,7 +183,7 @@ struct OverviewPowerCard: View {
     var body: some View {
         let p = live.power
         let reason = unavailableReason(.packageWatts, health: live.sensorHealth)
-        let package = splitUnit(TTFormat.watts(p.packageWatts))
+        let package = splitUnit(TTFormat.watts(W5a.packageWatts(p)))
         TTCard(spacing: TTSpace.x10) {
             TTCardHeader("Power", icon: "power") { PageLink("Details", to: .power) }
             HStack(alignment: .lastTextBaseline) {
@@ -215,7 +215,7 @@ struct OverviewPowerCard: View {
     }
 
     private func segments(_ p: PowerSnapshot) -> [TTSegmentBar.Segment] {
-        guard let total = p.packageWatts, total > 0 else { return [] }
+        guard let total = W5a.packageWatts(p), total > 0 else { return [] }
         return [(p.cpuWatts, TTColor.cpu), (p.gpuWatts, TTColor.gpu), (p.aneWatts, TTColor.power),
                 (p.dramWatts, TTColor.dram)]
             .map { TTSegmentBar.Segment(($0.0 ?? 0) / total, $0.1) }
@@ -253,7 +253,7 @@ struct OverviewDiskCard: View {
         .frame(minHeight: 120, maxHeight: .infinity, alignment: .top)
     }
 
-    static func free(_ v: VolumeInfo) -> UInt64 { v.availableImportantBytes ?? v.availableBytes }
+    static func free(_ v: VolumeInfo) -> UInt64 { W5a.freeBytes(v) }
     static func usedFraction(_ v: VolumeInfo) -> Double {
         v.totalBytes > 0 ? Double(v.totalBytes - min(free(v), v.totalBytes)) / Double(v.totalBytes) : 0
     }

@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("GPU snapshots")
+@Suite("GPU snapshots", .serialized)
 @MainActor
 struct GPUSnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted])

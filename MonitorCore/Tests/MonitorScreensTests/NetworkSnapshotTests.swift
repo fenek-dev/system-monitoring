@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("Network snapshots")
+@Suite("Network snapshots", .serialized)
 @MainActor
 struct NetworkSnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted])

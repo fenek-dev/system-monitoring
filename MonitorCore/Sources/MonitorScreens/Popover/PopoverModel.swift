@@ -71,11 +71,15 @@ enum PopoverModel {
             r.domain = 0...100
         case .power:
             r.subtitle = live.power.battery == nil && live.device.hasBattery ? nil : W5a.batteryPhrase(live.power.battery)
-            r.value = TTFormat.watts(live.power.packageWatts)
+            // Package from IOReport; if the Energy Model is missing, the SMC system power so the row never
+            // shows "—" while the Mac reports its draw (CP2).
+            let w = W5a.packageWatts(live.power) ?? live.power.systemWatts
+            r.value = TTFormat.watts(w)
+            if w != nil { r.unavailableReason = nil }
         case .disk:
             r.subtitle = TTFormat.ratePair(read: live.disk.readBps, write: live.disk.writeBps)
             if let v = live.disk.bootVolume {
-                r.value = TTFormat.storage(v.availableImportantBytes ?? v.availableBytes, style: .capacity)
+                r.value = TTFormat.storage(W5a.freeBytes(v), style: .capacity)
                 r.unavailableReason = nil
             } else {
                 r.unavailableReason = reason ?? "Boot volume not reported"

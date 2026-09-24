@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("CPU snapshots")
+@Suite("CPU snapshots", .serialized)
 @MainActor
 struct CPUSnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted])

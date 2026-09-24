@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("Popover")
+@Suite("Popover", .serialized)
 @MainActor
 struct PopoverTests {
     @Test func sectionsFollowLayoutOrderAndHidden() {
@@ -55,6 +55,30 @@ struct PopoverTests {
         #expect(PopoverModel.banners(live: live, units: units, canControl: { _ in false })
             .first?.buttons.count == 1)
         #expect(PopoverModel.consumer(live: live)?.detail.contains("GPU") == true)
+    }
+
+    /// CP2: the Power row shows watts whenever the Mac reports any (component sum, else SMC system power), and Disk
+    /// shows available capacity (not purgeable-inclusive "important usage").
+    @Test func powerAndDiskRowsCP2() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        var f = provider.frame(at: 60)
+        f.power.packageWatts = nil
+        f.power.cpuWatts = nil
+        f.power.gpuWatts = nil
+        f.power.aneWatts = nil
+        f.power.dramWatts = nil
+        f.power.systemWatts = 5.8
+        f.disk.volumes = f.disk.volumes.map { v in
+            var v = v
+            v.availableBytes = 1_090_000_000_000
+            v.availableImportantBytes = 1_180_000_000_000
+            return v
+        }
+        live.apply(f)
+        live.isPresenting = true
+        #expect(PopoverModel.row(.power, live: live, units: UnitPreferences()).value == "5.8 W")
+        #expect(PopoverModel.row(.disk, live: live, units: UnitPreferences()).value == "1.09 TB")
     }
 
     @Test func thermalSubtitleWithoutFans() {
