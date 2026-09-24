@@ -39,11 +39,43 @@ import MonitorModel
         #expect((4.0...80.0).contains(f.power.packageWatts ?? -1))
     }
 
+    /// Golden values for `.calm` tick 0, precomputed by replaying the artboards' own LCG (seed 11/23/37/
+    /// 41/43/53/59, `DemoSpec.calm`) — pins the exact numbers, not just their range, so a change to the
+    /// generator, its parameters, or the demo app roster shows up here instead of only in a snapshot diff.
+    /// GPU/SoC-temp/package-watts read the raw generator output; CPU/memory are additionally grown to
+    /// cover the named apps' own totals (`MockDataProvider.NamedTotals`), so their goldens reflect that.
+    @Test func calmGoldenValuesAtTickZero() {
+        let f = MockDataProvider(scenario: .calm).frame(at: 0)
+        let tolerancePercent = 0.05
+
+        #expect(abs((f.cpu.usage ?? -1) * 100 - 30.1993308) < tolerancePercent)
+        #expect(abs((f.gpu.usage ?? -1) * 100 - 23.0369629) < tolerancePercent)
+        #expect(abs(Double(f.memory.used ?? 0) - 16_392_742_391) < 1_000)
+        #expect(abs((f.network.rxBps ?? -1) - 10_974_977.15) < 100)
+        #expect(abs((f.network.txBps ?? -1) - 1_214_806.58) < 100)
+        #expect(abs((f.thermals.socAverage ?? -1) - 63.3904389) < tolerancePercent)
+        #expect(abs((f.power.packageWatts ?? -1) - 18.1363193) < tolerancePercent)
+    }
+
+    /// Regression: `memory.used.map(Double.init)`-style optional-map on a `UInt64?` can silently resolve
+    /// to `Double(bitPattern:)` (bit-reinterpretation) instead of the numeric conversion, producing a
+    /// denormal ~8e-314 instead of a byte count in the billions. `makeMetrics` must use `.map { Double($0) }`.
+    @Test func calmMemoryMetricsAreInByteRangeNotDenormal() {
+        let f = MockDataProvider(scenario: .calm).frame(at: 0)
+        let byteScale = 1.0e8...3.0e10   // ~0.1 GB … ~28 GB, comfortably inside the 24 GB device's range
+        #expect(byteScale.contains(f.metrics[.memUsed] ?? -1))
+        #expect(byteScale.contains(f.metrics[.memApp] ?? -1))
+        #expect(byteScale.contains(f.metrics[.memWired] ?? -1))
+        #expect(byteScale.contains(f.metrics[.memCompressed] ?? -1))
+        #expect((1.0e7...5.0e9).contains(f.metrics[.swapUsed] ?? -1))   // ~10 MB … ~5 GB swap
+    }
+
     @Test func calmTopConsumerIsXcode() {
         let f = MockDataProvider(scenario: .calm).frame(at: 0)
         let top = f.apps.first
         #expect(top?.identity.displayName == "Xcode")
-        #expect((150...280).contains(top?.cpuPercent ?? -1))
+        // Xcode's own per-app jitter series (seed 1101, base 212.4 — DESIGN §3.1/§3.4/§3.5) at tick 0.
+        #expect(abs((top?.cpuPercent ?? -1) - 214.8058021) < 0.05)
         #expect(top?.memory == UInt64(3.82 * 1_073_741_824))
     }
 
