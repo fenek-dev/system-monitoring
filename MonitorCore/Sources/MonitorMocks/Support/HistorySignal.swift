@@ -80,6 +80,9 @@ struct HistorySignal {
         case .memWired: return demo(.mem, metricSeed: 4) * 0.15 * 1_073_741_824
         case .memCompressed: return demo(.mem, metricSeed: 4) * 0.10 * 1_073_741_824
         case .memPressure: return demo(.press, metricSeed: 5) / 100
+        case .memPressureLevel:                                   // ICR-12: MemoryPressureLevel.rawValue
+            let p = demo(.press, metricSeed: 5) / 100
+            return p >= 0.9 ? 4 : (p >= 0.7 ? 2 : 1)
         case .swapUsed: return demo(.swap, metricSeed: 6) * 1_073_741_824
         case .netRx: return demo(.netd, metricSeed: 7) * 1_000_000
         case .netTx: return demo(.netu, metricSeed: 8) * 1_000_000

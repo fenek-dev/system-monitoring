@@ -160,6 +160,7 @@ struct SystemAssembler {
         s.metrics[.memWired] = snap.wired.map { Double($0) }
         s.metrics[.memCompressed] = snap.compressed.map { Double($0) }
         s.metrics[.memPressure] = snap.pressureFraction
+        s.metrics[.memPressureLevel] = snap.pressureLevel.map { Double($0.rawValue) }     // ICR-12
         s.metrics[.swapUsed] = snap.swapUsed.map { Double($0) }
     }
 
@@ -313,10 +314,10 @@ struct SystemAssembler {
     // MARK: - Helpers
 
     /// Disk-image (DMG) drivers are excluded: their I/O is also counted on the physical disk underneath.
-    /// TODO(W6d ICR): `return !driver.isDiskImage` once `BlockDriverCounter.isDiskImage` lands in MonitorModel;
-    /// until then no driver carries the flag (see the disabled test in SystemAssemblerTests).
+    /// ICR-11: a mounted disk image's driver reports the same I/O as the physical disk under it — count only the
+    /// physical one.
     static func countsTowardDiskTotals(_ driver: BlockDriverCounter) -> Bool {
-        true
+        !driver.isDiskImage
     }
 
     static func mean(_ v: [Double]) -> Double? { v.isEmpty ? nil : v.reduce(0, +) / Double(v.count) }

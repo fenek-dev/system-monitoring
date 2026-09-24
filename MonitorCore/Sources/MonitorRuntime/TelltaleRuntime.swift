@@ -17,6 +17,14 @@ public enum RuntimeMode: Sendable, Equatable { case live, mock(MockScenario) }
     func systemWillSleep()
     func systemDidWake()
     func shutdown() async
+    /// false when history could not be stored on disk this launch (in-memory fallback, or none): the History
+    /// page shows "History unavailable" (ARCHITECTURE §6).
+    var historyPersistent: Bool { get }
+}
+
+public extension RuntimePipeline {
+    /// Mocks and anything without a store fallback: history is available.
+    var historyPersistent: Bool { true }
 }
 
 /// Façade over one `RuntimePipeline` (`LivePipeline` or `MockPipeline`).
@@ -53,6 +61,8 @@ public enum RuntimeMode: Sendable, Equatable { case live, mock(MockScenario) }
 
     public var live: LiveModel { pipeline.live }
     public var history: any HistoryProvider { pipeline.history }
+    /// false → History page banner "History unavailable" (store fell back to memory, §6).
+    public var historyPersistent: Bool { pipeline.historyPersistent }
     public func start() { pipeline.start() }
     public func setVisibility(_ v: UIVisibility) { pipeline.setVisibility(v) }
     public func setPaused(_ p: Bool) { pipeline.setPaused(p) }
