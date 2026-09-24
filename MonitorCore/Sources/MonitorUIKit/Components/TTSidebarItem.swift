@@ -72,9 +72,11 @@ public struct TTSidebarSectionHeader: View {
         Text(title)
             .font(TTFont.captionStrong)
             .foregroundStyle(TTColor.textTertiary)
-            .padding(.top, TTSpace.x10)
+            // CSS 10/4 padding around a Chrome 11-pt line; SwiftUI's SF 11 semibold line is ~1 pt taller, so
+            // 9.5 / 3.5 reproduces Main@2x's header pitch.
+            .padding(.top, 9.5)
             .padding(.horizontal, TTSpace.x10)
-            .padding(.bottom, TTSpace.x4)
+            .padding(.bottom, 3.5)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityAddTraits(.isHeader)
     }

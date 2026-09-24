@@ -71,7 +71,7 @@ public struct TTPopoverRow: View {
         switch category {
         case .cpu: app.cpuPercent
         case .gpu: app.gpuPercent
-        case .memory: app.memory.map(Double.init)
+        case .memory: app.memory.map { Double($0) }
         case .network: sum(app.netRxBps, app.netTxBps)
         case .thermals, .power: app.energyWatts
         case .disk: sum(app.diskReadBps, app.diskWriteBps)
@@ -134,15 +134,22 @@ public struct TTPopoverRow: View {
         VStack(alignment: .leading, spacing: 0) {
             (compact ? AnyView(compactRow) : AnyView(fullRow))
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2) { commands.openDashboard(Self.page(category)) }
-                .simultaneousGesture(TapGesture().onEnded {
-                    withAnimation(isSnapshot ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
-                })
+                // Double-click wins exclusively (opens the page, no expansion toggle); a single click toggles.
+                .gesture(
+                    TapGesture(count: 2).onEnded { commands.openDashboard(Self.page(category)) }
+                        .exclusively(before: TapGesture(count: 1).onEnded { toggle() })
+                )
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(named: expanded ? "Collapse" : "Expand") { toggle() }
             if expanded { expansion }
         }
         .background(RoundedRectangle(cornerRadius: TTRadius.r7, style: .continuous).fill(background))
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
+    }
+
+    private func toggle() {
+        withAnimation(isSnapshot ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
     }
 
     private var valueColor: Color { stressed ? TTColor.level(level) : TTColor.textPrimary }

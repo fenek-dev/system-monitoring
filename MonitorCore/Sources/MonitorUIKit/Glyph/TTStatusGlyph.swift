@@ -18,6 +18,13 @@ public enum StatusGlyphGeometry {
         }
     }
 
+    /// Critical pulse at progress `p` 0…1 (§4.3): stressed-arc alpha 1 → 0.45 → 1, dot radius 2.1 → 2.9 → 2.1
+    /// (viewBox units), peak at p = 0.5.
+    public static func pulse(_ p: Double) -> (arcAlpha: Double, dotRadius: CGFloat) {
+        let wave = sin(min(max(p, 0), 1) * .pi)
+        return (1 - 0.55 * wave, dotRadius(.critical) + 0.8 * CGFloat(wave))
+    }
+
     /// Point on the circle at θ (degrees clockwise from 12 o'clock), viewBox units.
     public static func point(theta: Double, radius r: CGFloat = radius) -> CGPoint {
         let t = theta * .pi / 180
@@ -64,7 +71,7 @@ public enum StatusGlyphGeometry {
         let g = groups(state)
         let level = self.level(state)
         let style = StrokeStyle(lineWidth: stroke * scale, lineCap: .round)
-        let wave = sin(pulse * .pi) // 0 → 1 → 0
+        let pulsed = self.pulse(pulse)
         ctx.drawLayer { layer in
             if state.paused { layer.opacity = 0.5 }
             var calm = Path()
@@ -74,15 +81,14 @@ public enum StatusGlyphGeometry {
                 for (arcs, color) in [(g.elevated, TTColor.statusElevated), (g.critical, TTColor.statusCritical)] where !arcs.isEmpty {
                     var p = Path()
                     for i in arcs { addArc(i, to: &p, center: center, scale: scale) }
-                    let dim = color == TTColor.statusCritical ? 1 - 0.55 * wave : 1
+                    let dim = color == TTColor.statusCritical ? pulsed.arcAlpha : 1
                     layer.drawLayer { sub in
                         sub.opacity = dim
                         sub.stroke(p, with: .color(color), style: style)
                     }
                 }
             }
-            var r = dotRadius(template ? .calm : level)
-            if !template && level == .critical { r += 0.8 * CGFloat(wave) }
+            var r = !template && level == .critical ? pulsed.dotRadius : dotRadius(template ? .calm : level)
             r *= scale
             let dotColor = template || level == .calm ? calmColor : TTColor.level(level)
             layer.fill(Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r)), with: .color(dotColor))

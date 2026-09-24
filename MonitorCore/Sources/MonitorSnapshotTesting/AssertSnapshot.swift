@@ -6,26 +6,45 @@ import Testing
 /// Snapshot assertion (ARCHITECTURE §8). Test-only target: never linked by the app.
 ///
 /// - Golden: `<dir of the calling test file>/__Snapshots__/<named>.png`.
-/// - `TELLTALE_RECORD=1` rewrites goldens (the test passes). A missing golden is written and reported as an issue.
+/// - `TELLTALE_RECORD=1` rewrites goldens (the test passes). Locally a missing golden is written and reported once.
+/// - Strict mode (`CI` set or `TT_SNAPSHOT_STRICT=1`, exported by scripts/ci.sh): a missing golden fails without
+///   writing anything, and recording is refused.
+/// - A renderer failure always fails (never skipped).
 /// - Compare: fraction of pixels with any channel Δ > 8/255 must be ≤ `tolerance`.
 /// - Failures write `<package>/.build/snapshot-failures/<named>.{actual,golden,diff}.png`.
 @MainActor public func assertSnapshot<V: View>(_ view: V, size: CGSize, named: String, path: SnapshotRenderer.Path = .hosting,
                                                tolerance: Double = 0.005, sourceLocation: SourceLocation = #_sourceLocation) {
+    let env = ProcessInfo.processInfo.environment
     verifySnapshot(view, size: size, named: named, path: path, tolerance: tolerance,
-                   record: ProcessInfo.processInfo.environment["TELLTALE_RECORD"] == "1", sourceLocation: sourceLocation)
+                   record: env["TELLTALE_RECORD"] == "1", strict: SnapshotMode.isStrict(env), sourceLocation: sourceLocation)
 }
 
-/// `assertSnapshot` with an explicit record flag (tests of the harness itself).
+enum SnapshotMode {
+    static func isStrict(_ env: [String: String]) -> Bool {
+        env["CI"] != nil || env["TT_SNAPSHOT_STRICT"] == "1"
+    }
+}
+
+/// `assertSnapshot` with explicit record/strict flags (tests of the harness itself).
 @MainActor func verifySnapshot<V: View>(_ view: V, size: CGSize, named: String, path: SnapshotRenderer.Path,
-                                        tolerance: Double, record: Bool, sourceLocation: SourceLocation) {
+                                        tolerance: Double, record: Bool, strict: Bool = false,
+                                        sourceLocation: SourceLocation) {
     guard let actual = SnapshotRenderer.render(view, size: size, path: path) else {
-        Issue.record("snapshot \(named): render failed", sourceLocation: sourceLocation)
+        Issue.record("snapshot \(named): renderer unavailable / render failed", sourceLocation: sourceLocation)
         return
     }
     let testFile = URL(fileURLWithPath: sourceLocation.filePath)
     let golden = testFile.deletingLastPathComponent().appendingPathComponent("__Snapshots__/\(named).png")
+    let missing = !FileManager.default.fileExists(atPath: golden.path)
 
-    if record || !FileManager.default.fileExists(atPath: golden.path) {
+    if strict && (record || missing) {
+        Issue.record(record ? "snapshot \(named): TELLTALE_RECORD is not allowed in strict (CI) mode"
+                            : "snapshot \(named): no golden \(golden.lastPathComponent) (strict mode: not recorded)",
+                     sourceLocation: sourceLocation)
+        return
+    }
+
+    if record || missing {
         do {
             try SnapshotRenderer.writePNG(actual, to: golden)
         } catch {

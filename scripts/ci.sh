@@ -4,6 +4,7 @@
 # Usage: scripts/ci.sh <Suite> [<Suite>…]
 set -uo pipefail
 cd "$(dirname "$0")/.."
+export TT_SNAPSHOT_STRICT=1 # missing snapshot goldens fail instead of being recorded
 
 fail() { echo "ci.sh: FAILED — $1"; exit 1; }
 
