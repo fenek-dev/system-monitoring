@@ -76,7 +76,7 @@ public struct MockDataProvider: Sendable {
             energyWatts: nil,
             energyEstimated: false
         )
-        let apps = (namedApps + [other]).sorted { ($0.cpuPercent ?? -1) > ($1.cpuPercent ?? -1) }
+        let allApps = (namedApps + [other]).sorted { ($0.cpuPercent ?? -1) > ($1.cpuPercent ?? -1) }
 
         let gpu = makeGPU(tick: clampedTick)
         let thermals = makeThermals(tick: clampedTick)
@@ -98,7 +98,7 @@ public struct MockDataProvider: Sendable {
             power: power,
             disk: disk,
             processes: processes,
-            apps: apps,
+            apps: allApps,
             connections: [],
             alert: alert,
             events: [],
@@ -123,15 +123,52 @@ public struct MockDataProvider: Sendable {
         }
     }
 
-    // TODO(Wm T2): pass scenario/seed/end through once MockHistoryProvider grows real history.
     public func history() -> MockHistoryProvider {
-        MockHistoryProvider()
+        MockHistoryProvider(scenario: scenario, seed: seed, end: start)
     }
 
-    // TODO(Wm T3): wire real recording actions through `ActionLog`; `.noop` until then.
+    /// Records every call to `log` and mimics `canControl`'s real-world rule (false for root/other-user
+    /// processes and synthetic coalition rows): `.app` targets are controllable when they're a real
+    /// bundled app (our roster's daemons — WindowServer, mds_stores — use `AppKey.Kind.process`);
+    /// `.process` targets are controllable when they run as the mock's own user (uid 501, DemoApps'
+    /// `isCurrentUser` convention).
     public func processActions(log: ActionLog) -> ProcessActions {
-        _ = log
-        return .noop
+        func name(_ target: ProcessTarget) -> String {
+            switch target {
+            case .app(let identity, _): identity.displayName
+            case .process(_, let name, _, _): name
+            }
+        }
+        func controllable(_ target: ProcessTarget) -> Bool {
+            switch target {
+            case .app(let identity, _): identity.key.kind == .app
+            case .process(_, _, _, let uid): uid == 501
+            }
+        }
+        return ProcessActions(
+            canControl: { controllable($0) },
+            quit: { target in
+                let result: ActionResult = controllable(target) ? .done : .notPermitted
+                log.record(.quit, target: name(target), result: result)
+                return result
+            },
+            forceQuit: { target in
+                let result: ActionResult = controllable(target) ? .done : .notPermitted
+                log.record(.forceQuit, target: name(target), result: result)
+                return result
+            },
+            revealInFinder: { target in
+                log.record(.revealInFinder, target: name(target), result: .done)
+            },
+            openInActivityMonitor: { target in
+                log.record(.openInActivityMonitor, target: name(target), result: .done)
+            },
+            eject: { volume in
+                let result: ActionResult = volume.isEjectable ? .done : .notPermitted
+                log.record(.eject, target: volume.name, result: result)
+                return result
+            }
+        )
     }
 
     // MARK: - CPU
@@ -296,13 +333,12 @@ public struct MockDataProvider: Sendable {
             RawTemperature(name: "NAND", celsius: 41, group: .ssd, source: .smc),
             RawTemperature(name: "Battery cell avg", celsius: bTemp, group: .battery, source: .smc),
         ]
-        let fans: [FanSnapshot] =
-            device.fanCount == 0
-                ? []
-                : [
-                    FanSnapshot(id: 0, name: "Left fan", rpm: signals.value(.fan1, at: tick), minRPM: 1_200, maxRPM: 5_700),
-                    FanSnapshot(id: 1, name: "Right fan", rpm: signals.value(.fan2, at: tick), minRPM: 1_200, maxRPM: 5_700),
-                ]
+        // `DemoDevice` always models a two-fan MacBook Pro (no "no fans" scenario exists), so this is
+        // never conditional on `device.fanCount`.
+        let fans: [FanSnapshot] = [
+            FanSnapshot(id: 0, name: "Left fan", rpm: signals.value(.fan1, at: tick), minRPM: 1_200, maxRPM: 5_700),
+            FanSnapshot(id: 1, name: "Right fan", rpm: signals.value(.fan2, at: tick), minRPM: 1_200, maxRPM: 5_700),
+        ]
         return ThermalSnapshot(
             pressure: pressure,
             socAverage: scenario == .sensorsUnavailable ? nil : socTemp,
@@ -477,12 +513,15 @@ public struct MockDataProvider: Sendable {
         m[.loadAvg1] = cpu.loadAverage?.first
         m[.gpuUsage] = gpu.usage
         m[.gpuFrequency] = gpu.frequencyMHz
-        m[.memUsed] = memory.used.map(Double.init)
-        m[.memApp] = memory.appMemory.map(Double.init)
-        m[.memWired] = memory.wired.map(Double.init)
-        m[.memCompressed] = memory.compressed.map(Double.init)
+        // NOTE: mapping a `UInt64?` with Double's init (bare, unapplied) is a footgun — it can resolve to
+        // the bit-reinterpreting initializer instead of the numeric conversion, giving a denormal
+        // ~8e-314. Always use an explicit closure here (ci.sh greps Sources for the bare form).
+        m[.memUsed] = memory.used.map { Double($0) }
+        m[.memApp] = memory.appMemory.map { Double($0) }
+        m[.memWired] = memory.wired.map { Double($0) }
+        m[.memCompressed] = memory.compressed.map { Double($0) }
         m[.memPressure] = memory.pressureFraction
-        m[.swapUsed] = memory.swapUsed.map(Double.init)
+        m[.swapUsed] = memory.swapUsed.map { Double($0) }
         m[.netRx] = network.rxBps
         m[.netTx] = network.txBps
         m[.netLatency] = network.latency?.lastRTTms
@@ -491,6 +530,13 @@ public struct MockDataProvider: Sendable {
         m[.diskReadIOPS] = disk.readIOPS
         m[.diskWriteIOPS] = disk.writeIOPS
         m[.socTemp] = thermals.socAverage
+        m[.cpuPTemp] = thermals.groups.first { $0.group == .cpuPerformance }?.average
+        m[.cpuETemp] = thermals.groups.first { $0.group == .cpuEfficiency }?.average
+        m[.gpuTemp] = thermals.groups.first { $0.group == .gpu }?.average
+        m[.ssdTemp] = thermals.groups.first { $0.group == .ssd }?.average
+        m[.batteryTemp] = thermals.groups.first { $0.group == .battery }?.average
+        m[.fan1RPM] = thermals.fans.first { $0.id == 0 }?.rpm
+        m[.fan2RPM] = thermals.fans.first { $0.id == 1 }?.rpm
         m[.packageWatts] = power.packageWatts
         m[.cpuWatts] = power.cpuWatts
         m[.gpuWatts] = power.gpuWatts
