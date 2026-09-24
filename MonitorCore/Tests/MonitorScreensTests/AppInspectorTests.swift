@@ -53,8 +53,9 @@ final class StubSampler: ProcessSampling {
 struct AppInspectorActionTests {
     let log = ActionLog()
     var actions: ProcessActions { MockDataProvider(scenario: .calm).processActions(log: log) }
-    let xcode = ProcessTarget.app(AppIdentity(key: PT.xcode, displayName: "Xcode"), pids: [1842])
-    let rootProc = ProcessTarget.process(pid: 377, name: "mds_stores", path: nil, uid: 0)
+    let xcode = ProcessTarget.app(AppIdentity(key: PT.xcode, displayName: "Xcode"),
+                                  processes: [ProcessID(pid: 1842, startTimeUs: 1)])
+    let rootProc = ProcessTarget.process(ProcessID(pid: 377, startTimeUs: 1), name: "mds_stores", path: nil, uid: 0)
 
     @Test func quitGoesThroughServiceAndToasts() async {
         let c = ProcessActionCoordinator(actions: actions)
@@ -78,6 +79,18 @@ struct AppInspectorActionTests {
         await c.forceQuit(xcode)
         #expect(log.entries == ["forceQuit Xcode -> done"])
         #expect(c.toast?.text == "Xcode was force quit.")
+    }
+
+    /// Quit / Force Quit results from the service use the shared copy: an unconfirmed quit is only "asked", a
+    /// target whose pid was reused or exited says so, and failures name the force quit.
+    @Test func coordinatorToastCopy() {
+        let c = ProcessActionCoordinator()
+        c.report(xcode, .requested, force: false)
+        #expect(c.toast?.text == "Asked Xcode to quit.")
+        c.report(xcode, .exited, force: true)
+        #expect(c.toast?.text == "Process has exited")
+        c.report(xcode, .failed("EPERM"), force: true)
+        #expect(c.toast?.text == "Couldn't force quit Xcode: EPERM")
     }
 
     /// [Sample] goes through the injected sampler: success reveals the report, failure toasts; nothing is spawned.

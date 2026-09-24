@@ -161,6 +161,6 @@ struct DiskPageLogicTests {
         let rows = DiskRows.rows([a, b]) { _ in nil }
         #expect(rows.map(\.name) == ["mds_stores"])
         #expect(rows[0].rate == 97.2e6 && !rows[0].isExited)
-        #expect(rows[0].target == .process(pid: 10, name: "mds_stores", path: nil, uid: 0))
+        #expect(rows[0].target == .process(ProcessID(pid: 10, startTimeUs: 1), name: "mds_stores", path: nil, uid: 0))
     }
 }

@@ -286,14 +286,20 @@ extension ProcessTarget {
     }
 }
 
-/// DESIGN §3.12 toast copy for a finished Quit / Force Quit (failures surface as text, §6.7).
+/// DESIGN §3.12 toast copy for a finished Quit / Force Quit (failures surface as text, §6.7). The one copy source
+/// for every page, the Power/Disk tables and the Processes coordinator. A graceful quit that the app hasn't
+/// completed yet is only "asked" (it may prompt to save, or refuse).
 enum ActionFeedback {
     enum Kind: Sendable { case quit, forceQuit }
+
+    static let exited = "Process has exited"
 
     static func message(_ kind: Kind, _ result: ActionResult, name: String) -> String? {
         let verb = kind == .quit ? "quit" : "force quit"
         switch result {
         case .done: return kind == .quit ? "\(name) quit." : "\(name) was force quit."
+        case .requested: return "Asked \(name) to quit."
+        case .exited: return exited
         case .cancelled: return nil
         case .notPermitted: return "Not permitted to \(verb) \(name)."
         case .failed(let why): return "Couldn't \(verb) \(name): \(why)"

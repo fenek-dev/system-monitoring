@@ -275,7 +275,7 @@ struct ProcessTableExitedTests {
         #expect(docker.kindLabel == "App · 2 processes")
         let kids = apps.lines.filter { $0.depth == 1 && $0.appKey == PT.docker }
         #expect(kids.last?.isExitedResidual == true)
-        #expect(docker.target.map { if case .app(_, let pids) = $0 { !pids.contains(-2) } else { false } } == true)
+        #expect(docker.target.map { if case .app = $0 { !$0.pids.contains(-2) } else { false } } == true)
     }
 }
 
@@ -325,12 +325,13 @@ struct ProcessTableActionTests {
     @Test func targetsCarryRealPidsOnly() {
         let out = ProcessTableModel.build(PT.input())
         let docker = out.lines.first { $0.name == "Docker Desktop" }!
-        guard case .app(let identity, let pids)? = docker.target else { Issue.record("no app target"); return }
+        guard case .app(let identity, let ids)? = docker.target else { Issue.record("no app target"); return }
         #expect(identity.key == PT.docker)
-        #expect(Set(pids) == [2600, 2604])
+        #expect(Set(ids.map(\.pid)) == [2600, 2604])
+        #expect(ids.allSatisfy { $0.startTimeUs != 0 })                     // full ProcessIDs (start-time verified)
         let coalition = out.lines.first { $0.name == "suggestd" }!
-        guard case .app(_, let cpids)? = coalition.target else { Issue.record("no app target"); return }
-        #expect(Set(cpids) == [3001, 3002])                                 // synthetic pid −1 excluded
+        guard case .app(_, let cids)? = coalition.target else { Issue.record("no app target"); return }
+        #expect(Set(cids.map(\.pid)) == [3001, 3002])                       // synthetic pid −1 excluded
         let procs = ProcessTableModel.build(PT.input(mode: .processes))
         let synthetic = procs.lines.first { $0.id == .process(.coalitionResidual(9100)) }!
         #expect(synthetic.target == nil)

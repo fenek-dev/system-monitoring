@@ -316,8 +316,8 @@ public final class ProcessTableModel {
     /// into `processActions.canControl` so the row menu and the inspector agree.
     public func ownerAllows(_ target: ProcessTarget) -> Bool {
         switch target {
-        case .process(let pid, _, _, _):
-            guard let p = output.processByID.values.first(where: { $0.pid == pid }) else { return false }
+        case .process(let id, _, _, _):
+            guard let p = output.processByID[id] else { return false }
             return !p.id.isSynthetic && p.provenance == .measured && p.isCurrentUser
         case .app(let identity, _):
             return Self.ownedByCurrentUser(output.membersByApp[identity.key] ?? [])
@@ -636,7 +636,7 @@ public extension ProcessTableModel {
         let synthetic = p.id.isSynthetic
         let owned = !synthetic && p.provenance == .measured ? p.isCurrentUser : false
         let target: ProcessTarget? = synthetic ? nil
-            : .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid)
+            : .process(p.id, name: p.name, path: p.path, uid: p.uid)
         let exited = p.id.isExitedResidual                                   // ICR-13 (`ProcessID.exitedResidual`)
         let rawKind = exited ? (p.name.isEmpty ? nil : exitedName) : processKind(p, responsibleID: responsibleID)
         // Never "Exited processes · Exited processes": a kind equal to the name is dropped.
@@ -735,7 +735,7 @@ public extension ProcessTableModel {
             foreignOwner: owned ? nil : (foreign?.user ?? responsible?.user ?? "another user"),
             target: real.isEmpty ? nil
                 : .app(AppIdentity(key: key, displayName: app.identity.displayName, bundlePath: path),
-                       pids: real.map(\.pid).sorted()),
+                       processes: real.map(\.id).sorted { $0.pid < $1.pid }),
             sampleID: coalitionOnly || responsible?.id.isSynthetic != false ? nil : responsible?.id)
     }
 

@@ -190,7 +190,8 @@ enum PopoverModel {
     /// Feedback line for a failed Quit (ARCHITECTURE §6.7: failures → toast); nil on success/cancel.
     static func feedback(_ result: ActionResult, name: String) -> String? {
         switch result {
-        case .done, .cancelled: nil
+        case .done, .requested, .cancelled: nil
+        case .exited: ActionFeedback.exited
         case .notPermitted: "Not permitted to quit \(name)"
         case .failed(let why): "Couldn't quit \(name): \(why)"
         }

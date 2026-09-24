@@ -94,10 +94,10 @@ struct CPUSnapshotTests {
     // MARK: Inline actions (A2) and Force Quit (A9)
 
     @Test func inlineActionGating() {
-        let own = ProcessTarget.process(pid: 500, name: "Xcode", path: nil, uid: 501)
-        let root = ProcessTarget.process(pid: 1, name: "launchd", path: nil, uid: 0)
-        let other = ProcessTarget.process(pid: 700, name: "postgres", path: nil, uid: 502)
-        let me = ProcessTarget.process(pid: 42, name: "Telltale", path: nil, uid: 501)
+        let own = ProcessTarget.process(ProcessID(pid: 500), name: "Xcode", path: nil, uid: 501)
+        let root = ProcessTarget.process(ProcessID(pid: 1), name: "launchd", path: nil, uid: 0)
+        let other = ProcessTarget.process(ProcessID(pid: 700), name: "postgres", path: nil, uid: 502)
+        let me = ProcessTarget.process(ProcessID(pid: 42), name: "Telltale", path: nil, uid: 501)
         func state(_ t: ProcessTarget, selected: Bool = true, canControl: Bool, canConfirm: Bool = true)
             -> InlineActionsCell.Mode {
             InlineActionsCell.state(target: t, selected: selected, canControl: canControl, exited: false,
@@ -118,7 +118,7 @@ struct CPUSnapshotTests {
             calls.withLock { $0 += 1 }
             return .done
         })
-        let target = ProcessTarget.process(pid: 500, name: "Xcode", path: nil, uid: 501)
+        let target = ProcessTarget.process(ProcessID(pid: 500), name: "Xcode", path: nil, uid: 501)
         #expect(await ForceQuitFlow.run(target, confirm: { false }, actions: actions) == .cancelled)
         #expect(calls.withLock { $0 } == 0)
         #expect(await ForceQuitFlow.run(target, confirm: { true }, actions: actions) == .done)
@@ -127,6 +127,11 @@ struct CPUSnapshotTests {
         #expect(ActionFeedback.message(.forceQuit, .done, name: "Xcode") == "Xcode was force quit.")
         #expect(ActionFeedback.message(.quit, .notPermitted, name: "launchd") == "Not permitted to quit launchd.")
         #expect(ActionFeedback.message(.quit, .cancelled, name: "x") == nil)
+        #expect(ActionFeedback.message(.quit, .done, name: "Xcode") == "Xcode quit.")
+        #expect(ActionFeedback.message(.quit, .requested, name: "Xcode") == "Asked Xcode to quit.")
+        #expect(ActionFeedback.message(.forceQuit, .exited, name: "Xcode") == "Process has exited")
+        #expect(ActionFeedback.message(.forceQuit, .failed("EPERM"), name: "Xcode") == "Couldn't force quit Xcode: EPERM")
+        #expect(ActionFeedback.message(.forceQuit, .notPermitted, name: "Xcode") == "Not permitted to force quit Xcode.")
     }
 
     /// Fix4: an ordinary coalition residual row (pid −1, `.coalition`) is NOT an exited row — it keeps its PID cell,

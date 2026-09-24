@@ -60,21 +60,22 @@ import Testing
     }
 
     @Test func rowMenuModel() {
-        let mine = ProcessTarget.process(pid: 2210, name: "Final Cut Pro", path: "/Applications/Final Cut Pro.app", uid: 501)
+        let mine = ProcessTarget.process(ProcessID(pid: 2210), name: "Final Cut Pro", path: "/Applications/Final Cut Pro.app",
+                                         uid: 501)
         let m1 = TTRowActionsMenu.model(target: mine, canControl: true, hasForceQuitHandler: true, ownPID: 1, ownBundleID: nil)
         #expect(m1 == .init(ownerHeader: nil, quitEnabled: true, forceQuitVisible: true, forceQuitEnabled: true,
                             revealEnabled: true, quitsTelltale: false))
-        let root = ProcessTarget.process(pid: 412, name: "WindowServer", path: nil, uid: 88)
+        let root = ProcessTarget.process(ProcessID(pid: 412), name: "WindowServer", path: nil, uid: 88)
         let m2 = TTRowActionsMenu.model(target: root, canControl: false, hasForceQuitHandler: true, ownPID: 1, ownBundleID: nil,
                                         userName: { _ in "_windowserver" })
         #expect(m2.ownerHeader == "Owned by _windowserver")
         #expect(!m2.quitEnabled && !m2.forceQuitEnabled && m2.forceQuitVisible && !m2.revealEnabled)
         let me = ProcessTarget.app(AppIdentity(key: AppKey(kind: .app, id: "dev.telltale.Telltale"), displayName: "Telltale"),
-                                   pids: [77])
+                                   processes: [ProcessID(pid: 77)])
         let m3 = TTRowActionsMenu.model(target: me, canControl: true, hasForceQuitHandler: true, ownPID: 77, ownBundleID: nil)
         #expect(m3.quitsTelltale && m3.quitEnabled && !m3.forceQuitVisible)
         let rootApp = ProcessTarget.app(AppIdentity(key: AppKey(kind: .process, id: "/usr/sbin/mds"), displayName: "mds"),
-                                        pids: [300])
+                                        processes: [ProcessID(pid: 300)])
         let m4 = TTRowActionsMenu.model(target: rootApp, canControl: false, hasForceQuitHandler: true, ownPID: 1, ownBundleID: nil)
         #expect(m4.ownerHeader == "Owned by another user")
         #expect(!m4.quitEnabled && !m4.forceQuitEnabled && m4.forceQuitVisible && !m4.revealEnabled && !m4.quitsTelltale)
@@ -84,7 +85,7 @@ import Testing
     }
 
     @MainActor @Test func rowActionsButtonIsA24ptHitTargetWithTheNativeMenu() {
-        let target = ProcessTarget.process(pid: 412, name: "WindowServer", path: nil, uid: 88)
+        let target = ProcessTarget.process(ProcessID(pid: 412), name: "WindowServer", path: nil, uid: 88)
         let host = NSHostingView(rootView: TTRowActionsButton(target: target, name: "WindowServer"))
         #expect(host.fittingSize == CGSize(width: 24, height: 24))
         let menu = TTRowActionsMenu.nsMenu(target: target, actions: ProcessActions(canControl: { _ in false }),
@@ -93,7 +94,8 @@ import Testing
         let rest = Array(menu.items.dropFirst())
         #expect(rest.map(\.title) == ["Quit", "Force Quit…", "", "Reveal in Finder", "Open in Activity Monitor"])
         #expect(rest.map(\.isEnabled) == [false, false, false, false, true]) // separator reports disabled
-        let mine = TTRowActionsMenu.nsMenu(target: .process(pid: 2210, name: "FCP", path: "/Applications/FCP.app", uid: 501),
+        let mine = TTRowActionsMenu.nsMenu(target: .process(ProcessID(pid: 2210), name: "FCP", path: "/Applications/FCP.app",
+                                                            uid: 501),
                                            actions: ProcessActions(canControl: { _ in true }), commands: .noop,
                                            requestForceQuit: { _ in }, onResult: nil)
         #expect(mine.items.map(\.title) == ["Quit", "Force Quit…", "", "Reveal in Finder", "Open in Activity Monitor"])

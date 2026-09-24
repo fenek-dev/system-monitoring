@@ -31,16 +31,14 @@ public struct TTRowActionsMenu: View {
     public nonisolated static func model(target: ProcessTarget, canControl: Bool, hasForceQuitHandler: Bool,
                                          ownPID: Int32 = getpid(), ownBundleID: String? = Bundle.main.bundleIdentifier,
                                          userName: (UInt32) -> String = TTRowActionsMenu.userName) -> Model {
-        let isSelf: Bool
+        let isSelf = target.isSelf(ownPID: ownPID, ownBundleID: ownBundleID)
         let path: String?
         var owner: String?
         switch target {
-        case .app(let identity, let pids):
-            isSelf = pids.contains(ownPID) || (ownBundleID != nil && identity.key.kind == .app && identity.key.id == ownBundleID)
+        case .app(let identity, _):
             path = identity.bundlePath
             if !canControl { owner = "another user" }
-        case .process(let pid, _, let p, let uid):
-            isSelf = pid == ownPID
+        case .process(_, _, let p, let uid):
             path = p
             if !canControl { owner = userName(uid) }
         }
