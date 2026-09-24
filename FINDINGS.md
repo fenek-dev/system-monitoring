@@ -31,7 +31,7 @@ Status legend: done = works, recommended; partial = works with a scoped limitati
 Applying the brief's decision rules:
 
 1. **libsysmon rejected, EPERM covers notable root processes** (kernel_task, WindowServer, mds_stores) -> brief says stop and ask. **Already decided by the controller (recorded, not re-decided):** coalitions replace libsysmon for root/foreign CPU, energy, disk; root/foreign memory via `/bin/ps` RSS on demand; no privileged helper. Root-owned process *footprint* stays permanently unavailable (RSS is a proxy) - accepted gap, matches SPEC.md's current "-/estimated" treatment.
-2. **IOReport rejected -> GPU% falls back to AGX, ask about dropping Power card**: does not trigger. IOReport works. GPU% has two independent, cross-validated sources (IOReport residency + AGX `Device Utilization %`, agreeing within ~1-4 points, see gpu-apps.md). Power card stays, sourced from IOReport's Energy Model channels (idle 2.25 W -> load 8.05 W, plausibility-checked, no `sudo powermetrics` cross-check available in this environment).
+2. **IOReport rejected -> GPU% falls back to AGX, ask about dropping Power card**: does not trigger. IOReport works. GPU% has two independent sources — IOReport's `GPUPH` residency % and AGX's per-client `AppUsage` sum / `Device Utilization %` — but **they have not been cross-validated against each other**. The ~1-4 point agreement reported in gpu-apps.md is an AGX-internal check only (the per-client `AppUsage` sum vs. AGX's own `Device Utilization %` key, both read from the same `AGXAccelerator` service); ioreport.md never compares its GPU numbers against AGX. Power card stays, sourced from IOReport's Energy Model channels (idle 2.25 W -> load 8.05 W, plausibility-checked, no `sudo powermetrics` cross-check available in this environment).
 3. **HID rejected -> temps from SMC alone**: partially triggers - HID's curated P/E/GPU split failed, but raw enumeration/read succeeded. **Already decided by the controller (recorded):** HID temps = raw list only (Thermals detail page); curated CPU-P/CPU-E/GPU/SoC/SSD/battery/ambient groups come from SMC key families instead.
 4. **NStat rejected -> ask user, fallback to system totals only**: does not trigger. NStat works (after 2 review-round-1 fixes: removed-source accounting, thread-safety confirmation). Per-app network + connections proceed as planned. One pre-ship follow-up required (retired-bucket pruning, see Known gaps).
 5. **Everything else works -> proceed to M1** (and the later milestones per the roadmap: M2 coalitions/RSS/rusage-v6 energy, M3 IOReport/SMC/HID/battery, M4 NStat).
@@ -40,31 +40,46 @@ Applying the brief's decision rules:
 
 ## Per-sample cost budget (advisory)
 
-Steady-state per-tick sources (excludes on-demand/slow-cadence items - `ps` RSS, NVMe SMART, ping RTT check, HID raw list - noted separately below):
+Fix round 1: the first version of this section charged every source's full cost on every tick, which double-counts sources the sampler doesn't actually run that often. Recomputed using the real per-source cadences from `docs/ARCHITECTURE.md` §5.4/§7 — notably NStat runs every **10 s** in the background (not every tick) and SMC uses a cached hard-coded key list (`docs/ARCHITECTURE.md` §7: "< 1 ms, key list from cache"), which is far cheaper than the raw enumeration-free curated-read benchmark in temps.md (see the discrepancy note in Known gaps).
 
-| Source | ms |
-|---|---|
-| `proc_pid_rusage` sweep (+ v6 energy) | 2.12 |
-| Resource coalitions (list + membership + usage) | 2.19 |
-| IOReport | 1.85 |
-| AGX per-app GPU walk | 1.97 |
-| NStat query | 24.5 |
-| Disk IOPS | 0.40 |
-| SMC curated temps | 32.5 |
-| SMC fans | ~0.1 |
-| Battery (SMC + IOKit) | ~1.0 (estimate) |
-| Sleep assertions | 0.66 |
-| Wi-Fi (warm) | 3.0 |
-| **Total** | **approx. 70.3 ms** |
+### Background (5 s tick)
 
-Budget: <1% CPU means <50 ms/sample at 5 s cadence, <10 ms/sample at 1 s cadence.
+| Source | Cost (`docs/ARCHITECTURE.md` §7) | Background cadence | Amortized per 5 s tick | Amortized ms/s |
+|---|---|---|---|---|
+| sysctl `KERN_PROC_ALL` | < 1 ms | every tick (5 s) | < 1 ms | < 0.2 |
+| rusage v6 (~590 pids) | 3–6 ms | every tick | 3–6 ms | 0.6–1.2 |
+| coalitions | 1.3–2.1 ms | every tick | 1.3–2.1 ms | 0.26–0.42 |
+| IOReport | ~2 ms | every tick | ~2 ms | 0.4 |
+| AGX GPU walk | ~2 ms | every tick | ~2 ms | 0.4 |
+| SMC (fans + catalog keys + PSTR/PDTR) | < 1 ms | every tick (5 s cadence) | < 1 ms | < 0.2 |
+| host/vm/ifaddrs/disk stats | < 1 ms | every tick | < 1 ms | < 0.2 |
+| assemble + attribution + alerts + record | 1–3 ms | every tick | 1–3 ms | 0.2–0.6 |
+| NStat | 21–28 ms/query | **every 10 s** | (21–28 ms) × 5/10 ≈ 10.5–14 ms | 2.1–2.8 |
+| HID raw temps | 65–80 ms | never in background | 0 | 0 |
+| `ps` (rootMemory) | ~20 ms, off-queue | 30 s, only with `.processTable`/`.memoryAlert` | ~0 (conditional; excluded from steady baseline) | ~0 |
+| **Total per 5 s tick** | | | **≈ 25.6 ms (point est.); range ≈ 24–34 ms** | **≈ 0.51 %; range ≈ 0.48–0.68 %** |
 
-- **5 s background cadence:** 70.3 ms / 5000 ms = approx. **1.41% CPU** - ~20 ms over the advisory budget.
-- **1 s foreground cadence:** 70.3 ms / 1000 ms = approx. **7.03% CPU** - well over the advisory budget.
+Budget: <1% CPU ⇒ <50 ms/sample at 5 s cadence (hard ceiling per `docs/ARCHITECTURE.md` §7: 25 ms advisory, 50 ms hard). **≈25.6 ms/5 s ≈ 0.51% CPU — inside the advisory budget**, matching `docs/ARCHITECTURE.md` §7's own estimate ("≈ 25–32 ms ≈ 0.5–0.65 % of a core").
 
-Dominated by NStat (24.5 ms, 35%) and SMC curated temps (32.5 ms, 46%) - together 81% of the total. The core CPU/memory/GPU path (rusage + coalitions + IOReport + AGX) is only ~8.1 ms, comfortably inside even the 1 s budget on its own. This matches each spike's own cadence recommendation: temps.md recommends a 2 s cadence, nstat.md says 1-2 s is fine - neither was designed for a 1 s tick. **Recommendation (advisory, not a gate):** run CPU/memory/GPU/energy/disk at the foreground 1 s cadence; run temps and network on their own 2 s (or slower) cadence regardless of foreground/background state.
+### Foreground (1 s, UI open)
 
-If HID's raw full read (65-78 ms) is also polled every tick (e.g. Thermals page open), add ~70 ms giving a total of approx. 140.3 ms (2.81% at 5 s, 14.0% at 1 s) - another reason to keep it on-demand rather than in the default loop.
+Interactive cadences differ per source (`docs/ARCHITECTURE.md` §5.4): NStat runs every tick but off the sampler queue (its own "box queue"); SMC and Wi-Fi run every 2 s; HID raw temps run every 2 s only when the Thermals page requests `.rawTemperatures`.
+
+| Source | Interactive cadence | Amortized ms/s |
+|---|---|---|
+| sysctl + rusage v6 | every tick (1 s) | ~4.5 |
+| coalitions | every tick | ~1.7 |
+| IOReport | every tick | ~2 |
+| AGX GPU walk | every tick | ~2 |
+| host/vm/ifaddrs/disk stats | every tick | < 1 |
+| assemble | every tick | ~2 |
+| NStat | every tick, box queue | ~21–28 |
+| SMC | every 2 s | < 0.5 |
+| HID raw temps | every 2 s, Thermals page only | 0 (not in the default UI) |
+| Wi-Fi | every 2 s | < 2 |
+| **Total** | | **≈ 40–50 ms/s ≈ 4–5 % of a core** |
+
+Matches `docs/ARCHITECTURE.md` §7: "Interactive (1 s) ≈ 40–50 ms/s ≈ 4–5 % while UI is open (advisory)." Both figures are advisory, not gates.
 
 ## Known gaps / follow-ups
 
@@ -81,3 +96,4 @@ If HID's raw full read (65-78 ms) is also polled every tick (e.g. Thermals page 
 - **IOReport accuracy vs. `powermetrics`: not directly cross-checked.** No interactive `sudo` available in the spike environment; validated by plausibility (idle/load deltas, per-domain independence) only.
 - **Router default-gateway ambiguity under VPN.** A second `RTF_GATEWAY` default route (e.g. from a `utun` VPN) isn't disambiguated - the spike takes the first sysctl match with no metric/interface tie-breaking. Not hit on this machine (Docker's bridge route lacks `RTF_GATEWAY`), but flagged as untested for the VPN case.
 - **Temps delta test ran under concurrent load from other spikes**, which likely compressed the P/E/GPU split signal (elevated, smeared baseline). An isolated re-run is recommended before trusting the E-core split further.
+- **SMC cost estimate discrepancy.** `docs/ARCHITECTURE.md` §7 estimates the production SMC read (fans + catalog keys + PSTR/PDTR, cached key list) at < 1 ms, but temps.md's own measured curated read (exact `smc_read` calls by name, no enumeration) took 27–38 ms for 80 keys. Either the production curated set is much smaller than the 80 keys temps.md benchmarked, or the < 1 ms estimate needs re-measuring against a real cached-key-list implementation before M3.
