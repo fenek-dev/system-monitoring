@@ -1,0 +1,87 @@
+import Foundation
+import MonitorLive
+import MonitorMocks
+import MonitorModel
+@testable import MonitorScreens
+import MonitorSnapshotTesting
+import MonitorUIKit
+import SwiftUI
+import Testing
+
+@Suite("Processes snapshots")
+@MainActor
+struct ProcessesSnapshotTests {
+    @Test func calm() { assertScreen("processes", scenario: .calm) }
+    @Test func restricted() { assertScreen("processes", scenario: .restricted) }
+    @Test func sensorsUnavailable() { assertScreen("processes", scenario: .sensorsUnavailable) }
+    @Test func collecting() { assertScreen("processes", scenario: .collecting) }
+
+    /// The artboard's state: Processes mode, Final Cut Pro selected, inspector collapsed.
+    @Test func selectedLikeArtboard() {
+        assertSnapshot(Self.dashboard(.calm, mode: .processes, select: "Final Cut Pro", detail: false),
+                       size: ScreenSize.dashboard, named: "processes-selected-calm")
+    }
+
+    /// App detail expanded (Apps mode, Docker Desktop expanded + selected).
+    @Test func appDetail() {
+        assertSnapshot(Self.dashboard(.calm, mode: .apps, select: "Docker Desktop", detail: true, expand: true),
+                       size: ScreenSize.dashboard, named: "processes-detail-calm")
+    }
+
+    /// Coalition group expanded: synthetic row, "+N restricted", "—" memory with the root tooltip.
+    @Test func restrictedExpanded() {
+        let live = ScreenFixture.live(.restricted)
+        let coalition = live.apps.first { a in live.processes(of: a.identity.key).contains { $0.id.isSynthetic } }
+        assertSnapshot(Self.dashboard(.restricted, mode: .apps, select: coalition?.identity.displayName, detail: true,
+                                      expand: true),
+                       size: ScreenSize.dashboard, named: "processes-restricted-expanded")
+    }
+
+    /// App detail with a populated "Live connections" table (flows injected into the next frame).
+    @Test func appDetailWithConnections() {
+        let ctx = ScreenFixture.context(.calm, page: .processes)
+        let provider = MockDataProvider(scenario: .calm)
+        var frame = provider.frame(at: 61)
+        if let safari = frame.apps.first(where: { $0.identity.displayName == "Safari" }),
+           let pid = frame.processes.first(where: { $0.app == safari.identity.key })?.id {
+            let hosts: [(String?, String, UInt16, TransportProtocol, Double, Double)] = [
+                ("www.apple.com", "17.253.144.10", 443, .tcp, 1_840_000, 42_000),
+                ("i.ytimg.com", "142.250.180.22", 443, .quic, 612_000, 9_800),
+                (nil, "104.18.32.47", 443, .tcp, 96_000, 3_100),
+                ("ocsp2.apple.com", "17.253.53.207", 80, .tcp, 0, 0),
+                ("gateway.icloud.com", "17.248.176.12", 443, .tcp, 12_400, 18_600),
+                (nil, "192.168.1.1", 53, .udp, 800, 400),
+            ]
+            frame.connections = hosts.enumerated().map { i, h in
+                ConnectionSample(id: UInt64(i + 1), process: pid, app: safari.identity.key, proto: h.3,
+                                 localPort: UInt16(50_000 + i), remoteAddress: h.1, remotePort: h.2, remoteHost: h.0,
+                                 tcpState: "Established", rxBps: h.4, txBps: h.5)
+            }
+            ctx.live.apply(frame)
+            ctx.navigation.selection = .app(safari.identity.key)
+        }
+        let view = DashboardRoot()
+            .environment(\.processesDetailOnAppear, true)
+            .frame(width: ScreenSize.dashboard.width, height: ScreenSize.dashboard.height)
+            .telltaleEnvironment(ctx)
+        assertSnapshot(view, size: ScreenSize.dashboard, named: "processes-connections-calm")
+    }
+
+    static func dashboard(_ scenario: MockScenario, mode: NavigationModel.ProcessesMode, select name: String?,
+                          detail: Bool, expand: Bool = false) -> some View {
+        let ctx = ScreenFixture.context(scenario, page: .processes)
+        ctx.navigation.processesMode = mode
+        if let name, let app = ctx.live.apps.first(where: { $0.identity.displayName == name }) {
+            if mode == .apps {
+                ctx.navigation.selection = .app(app.identity.key)
+            } else if let p = ctx.live.processes(of: app.identity.key).first(where: { !$0.id.isSynthetic }) {
+                ctx.navigation.selection = .process(p.id)
+            }
+        }
+        return DashboardRoot()
+            .environment(\.processesDetailOnAppear, detail)
+            .environment(\.processesExpandSelectionOnAppear, expand)
+            .frame(width: ScreenSize.dashboard.width, height: ScreenSize.dashboard.height)
+            .telltaleEnvironment(ctx)
+    }
+}
