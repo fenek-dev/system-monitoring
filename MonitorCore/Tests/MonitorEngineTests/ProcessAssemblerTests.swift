@@ -45,6 +45,45 @@ import Testing
         #expect(a1.identityByPID[10]?.displayName == "a")
     }
 
+    @Test func processBornWithinTheIntervalContributes() throws {
+        // Spawn-heavy loads (builds): a process started after the previous capture accrued all its counters inside
+        // this interval → counter / interval. One seen for the first time but older than that stays nil.
+        var pa = ProcessAssembler(currentUID: testUID)
+        let w0 = Date(timeIntervalSince1970: 1_790_000_000)
+        func inputs(_ ps: [RawProcess], at t: UInt64, wall: Date) -> ProcessInputs {
+            ProcessInputs(processes: table(ps, at: t), uptimeNs: t, wallTime: wall)
+        }
+        let us: (Double) -> UInt64 = { UInt64((w0.timeIntervalSince1970 + $0) * 1e6) }
+        _ = pa.assemble(inputs([own(10, cpuNs: 0)], at: sec, wall: w0), resolver: resolver)
+        let a = pa.assemble(inputs([
+            own(10, cpuNs: sec),
+            own(20, start: us(1), cpuNs: sec / 2, energyNJ: sec, diskR: 0, diskW: 4_000),     // born mid-interval
+            own(30, start: us(-100), cpuNs: 7 * sec),                                          // old, first seen
+        ], at: 3 * sec, wall: w0.addingTimeInterval(2)), resolver: resolver)
+        let born = try #require(a.samples[pid: 20])
+        #expect(born.cpuPercent == 25)                       // 0.5 s over the 2 s interval
+        #expect(born.energyWatts == 0.5)
+        #expect(born.diskWriteBps == 2_000 && born.diskReadBps == 0)
+        #expect(a.deltas[born.id]?.cpuNs == sec / 2)         // session totals and coalition Δvisible see it
+        #expect(a.samples[pid: 30]?.cpuPercent == nil)
+        #expect(a.samples[pid: 10]?.cpuPercent == 50)
+
+        // Next tick it's an ordinary delta.
+        let b = pa.assemble(inputs([own(20, start: us(1), cpuNs: sec, energyNJ: sec, diskR: 0, diskW: 4_000)],
+                                   at: 4 * sec, wall: w0.addingTimeInterval(3)), resolver: resolver)
+        #expect(b.samples[pid: 20]?.cpuPercent == 50)
+
+        // After a reset (wake) the first frame has no rates, newborn or not.
+        pa.reset()
+        let c = pa.assemble(inputs([own(40, start: us(3.5), cpuNs: sec)], at: 5 * sec, wall: w0.addingTimeInterval(4)),
+                            resolver: resolver)
+        #expect(c.samples[pid: 40]?.cpuPercent == nil)
+        // No wall time → no fill-in (legacy inputs).
+        var legacy = ProcessAssembler(currentUID: testUID)
+        _ = run(&legacy, [own(10, cpuNs: 0)], at: sec)
+        #expect(run(&legacy, [own(20, start: us(1), cpuNs: sec)], at: 2 * sec).samples[pid: 20]?.cpuPercent == nil)
+    }
+
     @Test func cachedReadingKeepsPreviousRates() throws {
         var pa = ProcessAssembler(currentUID: testUID)
         _ = run(&pa, [own(10, cpuNs: 0)], at: sec)

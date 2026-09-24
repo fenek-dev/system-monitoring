@@ -53,7 +53,7 @@ public struct FrameAssembler {
         var pa = processes.assemble(ProcessInputs(
             processes: tick.processes, gpuClients: tick.gpuClients, flows: tick.networkFlows, rootMemory: tick.rootMemory,
             assertions: tick.sleepAssertions, coalitionOf: coalitionTracker.pidToCoalition(tick.coalitions),
-            uptimeNs: tick.uptimeNs), resolver: resolver)
+            uptimeNs: tick.uptimeNs, wallTime: tick.wallTime), resolver: resolver)
 
         // Coalition residual (restricted coalitions only). Rows are moved out of `pa` so mutations don't copy them.
         var rows = pa.samples

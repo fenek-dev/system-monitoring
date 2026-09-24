@@ -19,6 +19,9 @@ struct ProcessInputs {
     /// pid → resource coalition id (from the coalitions reading).
     var coalitionOf: [Int32: UInt64] = [:]
     var uptimeNs: UInt64
+    /// Tick wall time: dates the process table's capture against `ProcessID.startTimeUs` (processes born within
+    /// the interval). nil → no newborn fill-in.
+    var wallTime: Date? = nil
 }
 
 struct ProcessAssembly {
@@ -85,6 +88,9 @@ struct ProcessAssembler {
     private var netRx = RateCalculator<NetKey>()
     private var netTx = RateCalculator<NetKey>()
     private var processClock = CaptureClock()
+    /// Wall-clock µs (and uptime capturedNs) of the last process-table capture: a process whose start time is at or
+    /// after it was born inside the current interval.
+    private var lastCapture: (capturedNs: UInt64, wallUs: UInt64)?
     private var gpuClock = CaptureClock()
     private var netClock = CaptureClock()
     /// NStat `ProcessID(pid, 0)` → the live process it was first matched to. Pins the loose id to that process, so a
@@ -103,6 +109,7 @@ struct ProcessAssembler {
     mutating func reset() {
         cpu.reset(); energy.reset(); diskRead.reset(); diskWrite.reset(); gpu.reset(); netRx.reset(); netTx.reset()
         processClock.reset(); gpuClock.reset(); netClock.reset()
+        lastCapture = nil
         looseOwners.removeAll()
     }
 
@@ -114,6 +121,19 @@ struct ProcessAssembler {
         let clock = processClock.advance(to: capturedNs)
         out.interval = clock.seconds
         out.advanced = clock.advanced
+
+        // Born within this interval: every counter unit accrued since the previous capture, so a first-seen process
+        // contributes counter / interval (not nil) — spawn-heavy loads (builds) would otherwise vanish from Σ apps.
+        // The interval (not the process's lifetime) is the denominator: rows, Σ apps and records are interval averages.
+        var bornAfterUs: UInt64?
+        if let wall = input.wallTime {
+            let back = input.uptimeNs >= capturedNs ? (input.uptimeNs - capturedNs) / 1_000 : 0
+            let wallUs = UInt64(max(0, wall.timeIntervalSince1970 * 1e6))
+            let captureWallUs = wallUs >= back ? wallUs - back : 0
+            if clock.advanced, let last = lastCapture { bornAfterUs = last.wallUs }
+            if lastCapture?.capturedNs != capturedNs { lastCapture = (capturedNs, captureWallUs) }
+        }
+        let newbornSeconds = clock.advanced ? clock.seconds.flatMap { $0 > 0 ? $0 : nil } : nil
 
         let raws = table.processes
         var rawByPID: [Int32: RawProcess] = [:]
@@ -141,15 +161,32 @@ struct ProcessAssembler {
                 diskReadTotal: r.diskReadBytes, diskWriteTotal: r.diskWriteBytes,
                 preventsSleep: !(assertions?[r.id.pid]?.isEmpty ?? true))
 
-            if let ns = r.cpuTimeNs, let d = cpu.delta(for: r.id, counter: ns, capturedNs: capturedNs), d.seconds > 0 {
-                s.cpuPercent = Double(d.delta) / d.seconds / 1e7
-                if clock.advanced { out.deltas[r.id, default: ProcessDelta()].cpuNs = d.delta }
+            // Newborn: first sight, started at/after the previous capture (seconds = this interval).
+            let newborn: Double? = bornAfterUs.flatMap { r.id.startTimeUs >= $0 ? newbornSeconds : nil }
+            if let ns = r.cpuTimeNs {
+                if let d = cpu.delta(for: r.id, counter: ns, capturedNs: capturedNs) {
+                    if d.seconds > 0 {
+                        s.cpuPercent = Double(d.delta) / d.seconds / 1e7
+                        if clock.advanced { out.deltas[r.id, default: ProcessDelta()].cpuNs = d.delta }
+                    }
+                } else if let sec = newborn {
+                    s.cpuPercent = Double(ns) / sec / 1e7
+                    out.deltas[r.id, default: ProcessDelta()].cpuNs = ns
+                }
             }
-            if let nj = r.energyNJ, let w = energy.rate(for: r.id, counter: nj, capturedNs: capturedNs) {
-                s.energyWatts = w / 1e9
+            if let nj = r.energyNJ {
+                if let w = energy.rate(for: r.id, counter: nj, capturedNs: capturedNs) {
+                    s.energyWatts = w / 1e9
+                } else if let sec = newborn {
+                    s.energyWatts = Double(nj) / sec / 1e9
+                }
             }
-            if let b = r.diskReadBytes { s.diskReadBps = diskRead.rate(for: r.id, counter: b, capturedNs: capturedNs) }
-            if let b = r.diskWriteBytes { s.diskWriteBps = diskWrite.rate(for: r.id, counter: b, capturedNs: capturedNs) }
+            if let b = r.diskReadBytes {
+                s.diskReadBps = diskRead.rate(for: r.id, counter: b, capturedNs: capturedNs) ?? newborn.map { Double(b) / $0 }
+            }
+            if let b = r.diskWriteBytes {
+                s.diskWriteBps = diskWrite.rate(for: r.id, counter: b, capturedNs: capturedNs) ?? newborn.map { Double(b) / $0 }
+            }
 
             if let fp = r.footprint {
                 s.memory = fp
