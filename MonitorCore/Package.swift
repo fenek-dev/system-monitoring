@@ -82,7 +82,7 @@ let package = Package(
             dependencies: ["MonitorEngine", "MonitorModel"],
             resources: [.copy("Fixtures")]
         ),
-        .testTarget(name: "MonitorStoreTests", dependencies: ["MonitorStore", "MonitorModel"]),
+        .testTarget(name: "MonitorStoreTests", dependencies: ["MonitorStore", "MonitorModel"], exclude: ["Golden"]),
         .testTarget(
             name: "MonitorUIKitTests",
             dependencies: ["MonitorUIKit", "MonitorModel", "MonitorSnapshotTesting"],
