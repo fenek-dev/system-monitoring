@@ -131,35 +131,90 @@ public enum SnapshotImage {
         /// Fraction of pixels with any channel Δ > threshold.
         public var fraction: Double
         public var sizeMismatch: Bool
+        /// Differing pixels red over the golden dimmed to 1/4; nil when no pixel differs (or sizes mismatch).
         public var diffImage: CGImage?
     }
 
     /// ARCHITECTURE §8: fraction of pixels with any channel Δ > 8/255.
+    ///
+    /// Test binaries are built `-Onone`, where a per-byte Swift loop over a 1280×860 @2x artboard costs ~3 s on
+    /// the main actor. So identical rows and 16-pixel spans are skipped with `memcmp`, only differing spans are
+    /// scanned per pixel, and the diff image is composed with Core Graphics only when something differs.
     public static func compare(_ a: CGImage, _ b: CGImage, threshold: UInt8 = 8) -> Diff {
         guard a.width == b.width, a.height == b.height else {
             return Diff(fraction: 1, sizeMismatch: true, diffImage: nil)
         }
         guard let pa = pixels(a), let pb = pixels(b) else { return Diff(fraction: 1, sizeMismatch: false, diffImage: nil) }
-        var out = [UInt8](repeating: 0, count: pa.count)
+        let rowBytes = a.width * 4
+        var differingRows: [Int] = []
         var differing = 0
-        var i = 0
-        while i < pa.count {
-            var d: UInt8 = 0
-            for c in 0..<4 {
-                let x = pa[i + c], y = pb[i + c]
-                d = max(d, x > y ? x - y : y - x)
+        pa.withUnsafeBufferPointer { x in
+            pb.withUnsafeBufferPointer { y in
+                guard let xb = x.baseAddress, let yb = y.baseAddress else { return }
+                for row in 0..<a.height {
+                    let start = row * rowBytes
+                    guard memcmp(xb + start, yb + start, rowBytes) != 0 else { continue }
+                    let n = differingPixels(xb + start, yb + start, count: a.width, threshold: threshold) { _ in }
+                    if n > 0 {
+                        differing += n
+                        differingRows.append(row)
+                    }
+                }
             }
-            if d > threshold {
-                differing += 1
-                out[i] = 255; out[i + 1] = 0; out[i + 2] = 0; out[i + 3] = 255
-            } else {
-                // Dimmed golden for context.
-                out[i] = pa[i] / 4; out[i + 1] = pa[i + 1] / 4; out[i + 2] = pa[i + 2] / 4; out[i + 3] = 255
-            }
-            i += 4
         }
         let fraction = Double(differing) / Double(a.width * a.height)
-        return Diff(fraction: fraction, sizeMismatch: false, diffImage: image(from: out, width: a.width, height: a.height))
+        let overlay = differing == 0 ? nil : diffImage(golden: a, pa: pa, pb: pb, rows: differingRows,
+                                                       threshold: threshold)
+        return Diff(fraction: fraction, sizeMismatch: false, diffImage: overlay)
+    }
+
+    /// Counts pixels in one row whose max channel Δ exceeds `threshold`, reporting each one's index in the row.
+    private static func differingPixels(_ x: UnsafePointer<UInt8>, _ y: UnsafePointer<UInt8>, count: Int,
+                                        threshold: UInt8, _ mark: (Int) -> Void) -> Int {
+        let block = 16 // pixels per memcmp span: most of a differing row is still identical
+        var n = 0
+        for first in stride(from: 0, to: count, by: block) {
+            let end = min(first + block, count)
+            guard memcmp(x + first * 4, y + first * 4, (end - first) * 4) != 0 else { continue }
+            for p in first..<end {
+                var d: UInt8 = 0
+                for c in p * 4..<p * 4 + 4 {
+                    d = max(d, x[c] > y[c] ? x[c] - y[c] : y[c] - x[c])
+                }
+                if d > threshold {
+                    n += 1
+                    mark(p)
+                }
+            }
+        }
+        return n
+    }
+
+    /// The golden dimmed to 1/4 over opaque black, with the differing pixels of `rows` painted opaque red.
+    private static func diffImage(golden: CGImage, pa: [UInt8], pb: [UInt8], rows: [Int], threshold: UInt8) -> CGImage? {
+        let w = golden.width, h = golden.height, rowBytes = w * 4
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: rowBytes,
+                                  space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let data = ctx.data?.assumingMemoryBound(to: UInt8.self)
+        else { return nil }
+        let rect = CGRect(x: 0, y: 0, width: w, height: h)
+        ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+        ctx.fill(rect)
+        ctx.setAlpha(0.25)
+        ctx.draw(golden, in: rect)
+        pa.withUnsafeBufferPointer { x in
+            pb.withUnsafeBufferPointer { y in
+                guard let xb = x.baseAddress, let yb = y.baseAddress else { return }
+                for row in rows {
+                    let start = row * rowBytes
+                    _ = differingPixels(xb + start, yb + start, count: w, threshold: threshold) { p in
+                        let i = start + p * 4
+                        data[i] = 255; data[i + 1] = 0; data[i + 2] = 0; data[i + 3] = 255
+                    }
+                }
+            }
+        }
+        return ctx.makeImage()
     }
 
     /// Crop in pixel coordinates (top-left origin).
