@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// TEST-ONLY API: internal hooks for `@testable` tests (the test target does not import GRDB). Not for app code.
 extension HistoryStore {
@@ -36,6 +37,22 @@ extension HistoryStore {
             try db.execute(sql: "INSERT INTO app(key_kind, key_id, name) VALUES ('other', 'lock-holder', '')")
             locked()
             Thread.sleep(forTimeInterval: seconds)
+            try db.execute(sql: "DELETE FROM app WHERE key_id = 'lock-holder'")
+        }
+    }
+
+    /// Holds the write lock (a real write in an open transaction) until `release` is flipped to `true`; calls
+    /// `locked` once held. Unlike `holdWriteLock(seconds:)`, the hold isn't tied to wall-clock duration, so it can't
+    /// be released early (or late) relative to the caller's own busy-retry timing under system load — the caller
+    /// releases only once it has observed the busy behavior it's testing for.
+    func holdWriteLockUntilReleased(
+        locked: @escaping @Sendable () -> Void,
+        release: OSAllocatedUnfairLock<Bool>
+    ) async throws {
+        try await writer.write { db in
+            try db.execute(sql: "INSERT INTO app(key_kind, key_id, name) VALUES ('other', 'lock-holder', '')")
+            locked()
+            while !release.withLock({ $0 }) { Thread.sleep(forTimeInterval: 0.002) }
             try db.execute(sql: "DELETE FROM app WHERE key_id = 'lock-holder'")
         }
     }
