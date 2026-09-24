@@ -259,6 +259,34 @@ import Testing
         #expect(!f.processes.contains { $0.id.isSynthetic })
     }
 
+    /// E-I1: NStat hands back the last query completed *before* sleep/unpause. That stale reading must not become the
+    /// baseline: no rate spike on wake and no sleep-gap bytes in the session totals (ruling: sessions drop the gap).
+    @Test func staleNetworkReadingAfterResetIsNotABaseline() throws {
+        var fa = Self.assembler()
+        func session(_ f: SystemFrame) -> UInt64? { f.apps.first { $0.identity.key == Self.a.key }?.netRxSession }
+        _ = fa.assemble(Self.tick(1, flows: Self.flows(1)), inspectedApp: Self.a.key)
+        let before = fa.assemble(Self.tick(2, flows: Self.flows(2)), inspectedApp: Self.a.key)
+        #expect(before.processes[pid: 11]?.netRxBps == 1_000)
+        #expect(session(before) == 1_000)
+        fa.reset()                                             // wake
+        // First post-wake tick: NStat returns the pre-sleep query (captured at 2 s) and starts a new one.
+        var stale = Self.tick(3)
+        stale.networkFlows = .fresh(NetworkFlowsReading(flows: Self.flows(2)), capturedNs: 2 * sec + sec / 2)
+        let f3 = fa.assemble(stale, inspectedApp: Self.a.key)
+        #expect(f3.processes[pid: 11]?.netRxBps == nil)
+        #expect(f3.connections.isEmpty)
+        #expect(session(f3) == 1_000)
+        // Post-wake query: 98 KB moved while asleep (dark wake). Baseline only.
+        let f4 = fa.assemble(Self.tick(4, flows: Self.flows(100)), inspectedApp: Self.a.key)
+        #expect(f4.processes[pid: 11]?.netRxBps == nil)
+        #expect(f4.connections.first?.rxBps == nil)
+        #expect(session(f4) == 1_000)
+        let f5 = fa.assemble(Self.tick(5, flows: Self.flows(101)), inspectedApp: Self.a.key)
+        #expect(f5.processes[pid: 11]?.netRxBps == 1_000)     // no spike
+        #expect(f5.connections.first?.rxBps == 1_000)
+        #expect(session(f5) == 2_000)                          // the gap's 98 KB never counted
+    }
+
     @Test func missingProcessTableStillAssemblesSystem() {
         var fa = Self.assembler()
         let f = fa.assemble(RawTick(uptimeNs: sec, health: [.processes: .unavailable("x")]), inspectedApp: nil)

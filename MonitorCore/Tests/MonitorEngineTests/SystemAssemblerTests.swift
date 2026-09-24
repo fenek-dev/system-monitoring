@@ -240,6 +240,16 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         var sa = SystemAssembler()
         let t = assemble(&sa, RawTick()).thermals
         #expect(t.pressure == nil && t.groups.isEmpty && t.socAverage == nil)
+        #expect(!t.approximateMapping)                         // no SMC reading: nothing to caption
+    }
+
+    /// ICR-6: generic SMC families (model not in the catalog) → "Approximate mapping".
+    @Test func approximateMappingFollowsCatalogMatch() {
+        var sa = SystemAssembler()
+        let generic = assemble(&sa, RawTick(smc: fresh(SMCReading(catalogMatched: false), sec))).thermals
+        #expect(generic.approximateMapping)
+        let matched = assemble(&sa, RawTick(smc: fresh(SMCReading(catalogMatched: true), 2 * sec))).thermals
+        #expect(!matched.approximateMapping)
     }
 
     // MARK: Power
