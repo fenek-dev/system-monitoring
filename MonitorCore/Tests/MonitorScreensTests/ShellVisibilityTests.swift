@@ -1,5 +1,6 @@
 import CoreGraphics
 import Observation
+import MonitorLive
 import MonitorModel
 @testable import MonitorScreens
 import Testing
@@ -17,6 +18,27 @@ struct ShellVisibilityTests {
         i.popoverOpen = true
         #expect(i.visibility.mode == .interactive)
         #expect(i.visibility.demand == .none)
+    }
+
+    /// Overlay spec: the overlay alone → `.overlay` (no demand); the popover or a visible dashboard wins.
+    @Test func overlayInputsResolveToOverlayMode() {
+        var i = VisibilityInputs()
+        i.overlayVisible = true
+        #expect(i.visibility.overlayVisible)
+        #expect(i.visibility.mode == .overlay && i.visibility.demand == .none)
+        i.popoverOpen = true
+        #expect(i.visibility.mode == .interactive)
+        i.popoverOpen = false
+        i.dashboardOpen = true
+        i.dashboardOccluded = true
+        #expect(i.visibility.mode == .overlay)
+    }
+
+    @Test func presentationFollowsMode() {
+        #expect(UIVisibility().livePresentation == .none)
+        #expect(UIVisibility(overlayVisible: true).livePresentation == .overlay)
+        #expect(UIVisibility(popoverOpen: true, overlayVisible: true).livePresentation == .full)
+        #expect(UIVisibility(dashboardVisible: true, page: .cpu).livePresentation == .full)
     }
 
     @Test func visibleDashboardCarriesPageDemand() {

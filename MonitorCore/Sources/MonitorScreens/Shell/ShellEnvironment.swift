@@ -18,6 +18,8 @@ public struct ShellContext {
     public var now: Date?
     /// Observed by the environment: a window built before the store finished opening updates when it resolves.
     public var historyStatus: HistoryStatus
+    /// Observed by the environment (`\.overlayHotKeyStatus`): the App re-publishes it on each registration.
+    public var hotKeyState: HotKeyState
     /// False when the store fell back to memory (open failure) → History shows "History unavailable" (§6.6).
     /// Setting it gives this context its own status (copies of a context don't share the change).
     public var historyPersistent: Bool {
@@ -28,8 +30,9 @@ public struct ShellContext {
     public init(live: LiveModel, navigation: NavigationModel = NavigationModel(), settings: SettingsStore,
                 history: any HistoryProvider = EmptyHistoryProvider(), processActions: ProcessActions = .noop,
                 appCommands: AppCommands = .noop, isSnapshot: Bool = false, now: Date? = nil,
-                historyStatus: HistoryStatus = HistoryStatus()) {
+                historyStatus: HistoryStatus = HistoryStatus(), hotKeyState: HotKeyState = HotKeyState()) {
         self.historyStatus = historyStatus
+        self.hotKeyState = hotKeyState
         self.live = live
         self.navigation = navigation
         self.settings = settings
@@ -89,6 +92,7 @@ private struct ShellEnvironmentModifier: ViewModifier {
             .environment(\.isSnapshot, context.isSnapshot)
             .environment(\.now, context.now)
             .environment(\.historyPersistent, context.historyStatus.persistent)      // observed: follows resolve
+            .environment(\.overlayHotKeyStatus, context.hotKeyState.status)            // observed: follows the App
             .preferredColorScheme(.dark)
             .environment(\.colorScheme, .dark)
         if context.isSnapshot {

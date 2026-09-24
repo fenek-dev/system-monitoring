@@ -14,6 +14,12 @@ import os
     private var dashboard: DashboardWindowController!
     private var settingsWindow: SettingsWindowController!
     private var visibility: VisibilityWiring!
+    private var overlay: OverlayPanelController!
+    private var hotKey: GlobalHotKey?
+    /// Settings' recorder is capturing keys: the global hotkey stays unregistered until it stops.
+    private var hotKeyRecording = false
+    private var overlayLoop: ObservationLoop<Bool>?
+    private var hotKeyLoop: ObservationLoop<HotKeySpec>?
     private var power: PowerEvents?
     private var termination: TerminationController?
     /// Held for the process lifetime: one instance per data dir (A-M1 ruling).
@@ -91,6 +97,10 @@ import os
         statusItem.willShowMenu = { [weak self] in self?.popover.close() }
         dashboard = DashboardWindowController(env: env, visibility: visibility.tracker)
         settingsWindow = SettingsWindowController(env: env)
+        overlay = OverlayPanelController(env: env, onVisibilityChange: { [weak self] shown in
+            self?.visibility.tracker.update { $0.overlayVisible = shown }
+        })
+        installOverlayWiring()
         power = PowerEvents(willSleep: { env.runtime.systemWillSleep() }, didWake: { env.runtime.systemDidWake() })
         NSApp.mainMenu = mainMenu()
         installTerminationSignal()
@@ -136,6 +146,8 @@ import os
                     self?.popover.close()
                     self?.dashboard.close()
                     self?.settingsWindow.close()
+                    self?.overlayLoop?.cancel()
+                    self?.overlay.hide()
                     self?.power?.stop()
                 },
                 shutdown: { await env.runtime.shutdown() },
@@ -207,7 +219,43 @@ import os
             },
             setPaused: { [weak self] p in self?.setPaused(p) },
             closePopover: { [weak self] in self?.popover.close() },
-            quitTelltale: { AppDelegate.requestQuit() })
+            quitTelltale: { AppDelegate.requestQuit() },
+            toggleOverlay: { [weak self] in self?.toggleOverlay() },
+            setHotKeyRecording: { [weak self] recording in self?.setHotKeyRecording(recording) })
+    }
+
+    // MARK: Overlay (spec 2026-09-25 overlay)
+
+    /// Panel follows `settings.overlayEnabled` (opacity and corner are followed by the controller itself);
+    /// the global hotkey follows `settings.overlayHotKey` and publishes its status for Settings.
+    private func installOverlayWiring() {
+        let settings = env.settings
+        overlayLoop = ObservationLoop({ settings.overlayEnabled }) { [weak self] on in
+            guard let self else { return }
+            if on { overlay.show() } else { overlay.hide() }
+        }
+        hotKeyLoop = ObservationLoop({ settings.overlayHotKey }) { [weak self] _ in self?.registerHotKey() }
+    }
+
+    /// Hotkey, popover footer: flip and persist.
+    private func toggleOverlay() {
+        env.settings.overlayEnabled.toggle()
+        log.notice("overlay \(self.env.settings.overlayEnabled ? "on" : "off", privacy: .public)")
+    }
+
+    private func setHotKeyRecording(_ recording: Bool) {
+        guard recording != hotKeyRecording else { return }
+        hotKeyRecording = recording
+        registerHotKey()
+    }
+
+    /// Drops the current registration, then registers `settings.overlayHotKey` unless the recorder is capturing.
+    private func registerHotKey() {
+        hotKey?.invalidate()
+        hotKey = nil
+        guard !hotKeyRecording else { return }
+        hotKey = GlobalHotKey(spec: env.settings.overlayHotKey) { [weak self] in self?.toggleOverlay() }
+        env.hotKeyState.status = hotKey == nil ? .unavailable : .registered
     }
 
     private func setPaused(_ p: Bool) {

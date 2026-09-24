@@ -5,7 +5,7 @@ import MonitorScreens
 import os
 
 /// App glue for `MonitorScreens.VisibilityTracker` (the pure reducer lives in Shell): builds the tracker whose
-/// sink drives `runtime.setVisibility` + `live.isPresenting`, and follows the NavigationModel page/inspectedApp (ICR-10).
+/// sink drives `runtime.setVisibility` + `live.presentation`, and follows the NavigationModel page/inspectedApp (ICR-10).
 /// Window/panel facts are pushed by `DashboardWindowController` and `PopoverPanelController`.
 @MainActor
 final class VisibilityWiring {
@@ -21,11 +21,11 @@ final class VisibilityWiring {
     init(env: AppEnvironment) {
         let log = Self.log
         tracker = VisibilityTracker { [env] v in
-            env.live.isPresenting = v.mode == .interactive
+            env.live.presentation = v.livePresentation
             env.runtime.setVisibility(v)
             log.notice("""
-                mode=\(v.mode == .interactive ? "interactive" : "background", privacy: .public) \
-                popover=\(v.popoverOpen) dashboard=\(v.dashboardVisible) \
+                mode=\(v.mode.rawValue, privacy: .public) \
+                popover=\(v.popoverOpen) dashboard=\(v.dashboardVisible) overlay=\(v.overlayVisible) \
                 page=\(v.page?.rawValue ?? "-", privacy: .public) demand=0x\(String(v.demand.rawValue, radix: 16), privacy: .public) \
                 inspected=\(v.inspectedApp?.description ?? "-", privacy: .public)
                 """)

@@ -1,5 +1,18 @@
 import Foundation
+import MonitorLive
 import MonitorModel
+
+public extension UIVisibility {
+    /// What `LiveModel` publishes for this visibility: everything while the popover or dashboard is visible,
+    /// only the totals while just the overlay is, nothing otherwise.
+    var livePresentation: LivePresentation {
+        switch mode {
+        case .interactive: .full
+        case .overlay: .overlay
+        case .background, .paused: .none
+        }
+    }
+}
 
 /// Raw UI facts the app shell observes (panel open, window occlusion/miniaturize, page, inspected app).
 public struct VisibilityInputs: Equatable, Sendable {
@@ -12,6 +25,8 @@ public struct VisibilityInputs: Equatable, Sendable {
     public var page: DashboardPage = .overview
     /// `NavigationModel.inspectedApp` (ICR-10).
     public var inspectedApp: AppKey?
+    /// The overlay panel is shown (`OverlayPanelController`).
+    public var overlayVisible = false
 
     public init() {}
 
@@ -21,12 +36,12 @@ public struct VisibilityInputs: Equatable, Sendable {
         let visible = dashboardOpen && !dashboardOccluded && !dashboardMiniaturized
         let inspected = visible && page == .processes ? inspectedApp : nil
         return UIVisibility(popoverOpen: popoverOpen, dashboardVisible: visible, page: visible ? page : nil,
-                            inspectedApp: inspected)
+                            inspectedApp: inspected, overlayVisible: overlayVisible)
     }
 }
 
 /// Folds `VisibilityInputs` changes into `UIVisibility` and reports each distinct value once
-/// (→ `runtime.setVisibility`, `live.isPresenting`).
+/// (→ `runtime.setVisibility`, `live.presentation`).
 @MainActor
 public final class VisibilityTracker {
     public private(set) var inputs = VisibilityInputs()
