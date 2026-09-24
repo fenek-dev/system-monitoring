@@ -3,15 +3,16 @@ import Testing
 @testable import MonitorModel
 
 @Suite struct UIVisibilityTests {
+    /// ICR-7: `.processTable` only where a table shows a per-process memory column (overview, memory, processes).
     static let pageDemand: [(DashboardPage, SamplingDemand)] = [
         (.overview, [.processTable]),
-        (.cpu, [.perCore, .processTable]),
-        (.gpu, [.processTable]),
+        (.cpu, [.perCore]),
+        (.gpu, []),
         (.memory, [.processTable]),
-        (.network, [.wifi, .processTable]),
+        (.network, [.wifi]),
         (.thermals, [.rawTemperatures]),
-        (.power, [.processTable, .sleepAssertions]),
-        (.disk, [.processTable, .smart, .volumes]),
+        (.power, [.sleepAssertions]),
+        (.disk, [.smart, .volumes]),
         (.processes, [.processTable]),
         (.history, []),
     ]
@@ -28,9 +29,9 @@ import Testing
     }
 
     @Test(arguments: pageDemand)
-    func inspectedAppAddsConnections(_ page: DashboardPage, _ expected: SamplingDemand) {
+    func inspectedAppAddsConnectionsAndProcessTable(_ page: DashboardPage, _ expected: SamplingDemand) {
         let v = UIVisibility(dashboardVisible: true, page: page, inspectedApp: AppKey(kind: .app, id: "com.example"))
-        #expect(v.demand == expected.union(.connections))
+        #expect(v.demand == expected.union([.connections, .processTable]))
     }
 
     @Test func hiddenDashboardAddsNothing() {

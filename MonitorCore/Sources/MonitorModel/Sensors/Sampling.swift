@@ -48,22 +48,23 @@ public struct UIVisibility: Sendable, Equatable {
         popoverOpen || dashboardVisible ? .interactive : .background
     }
 
-    /// Page → demand (only while the dashboard is visible): overview/gpu/memory/processes → .processTable;
-    /// cpu → .perCore+.processTable; network → .wifi+.processTable; thermals → .rawTemperatures;
-    /// disk → .processTable+.smart+.volumes; power → .processTable+.sleepAssertions; history → [].
-    /// inspectedApp != nil → +.connections. The popover alone adds nothing.
+    /// Page → demand (only while the dashboard is visible). `.processTable` (enables the `ps` RSS sensor) only for
+    /// pages whose tables show a per-process memory column: overview, memory, processes (ICR-7).
+    /// cpu → .perCore; network → .wifi; thermals → .rawTemperatures; disk → .smart+.volumes;
+    /// power → .sleepAssertions; gpu/history → []. inspectedApp != nil → +.connections+.processTable.
+    /// The popover alone adds nothing.
     public var demand: SamplingDemand {
         guard dashboardVisible else { return .none }
         var d: SamplingDemand = switch page {
-        case .overview, .gpu, .memory, .processes: .processTable
-        case .cpu: [.perCore, .processTable]
-        case .network: [.wifi, .processTable]
+        case .overview, .memory, .processes: .processTable
+        case .cpu: .perCore
+        case .network: .wifi
         case .thermals: .rawTemperatures
-        case .disk: [.processTable, .smart, .volumes]
-        case .power: [.processTable, .sleepAssertions]
-        case .history, nil: .none
+        case .disk: [.smart, .volumes]
+        case .power: .sleepAssertions
+        case .gpu, .history, nil: .none
         }
-        if inspectedApp != nil { d.insert(.connections) }
+        if inspectedApp != nil { d.formUnion([.connections, .processTable]) }
         return d
     }
 }
