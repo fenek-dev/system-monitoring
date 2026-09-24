@@ -221,7 +221,7 @@ public final class LiveModel {
         switch category {
         case .cpu: a.cpuPercent
         case .gpu: a.gpuPercent
-        case .memory: a.memory.map { Double($0) }
+        case .memory: a.memory.map { Double($0) }     // closure form: the unapplied initializer is bitPattern
         case .network: sum(a.netRxBps, a.netTxBps)
         case .thermals, .power: a.energyWatts
         case .disk: sum(a.diskReadBps, a.diskWriteBps)
@@ -242,7 +242,7 @@ extension HistoryMetric {
         switch self {
         case .cpuUsage, .cpuUser, .cpuSystem, .cpuPCluster, .cpuECluster, .loadAvg1: .cpu
         case .gpuUsage, .gpuFrequency: .gpu
-        case .memUsed, .memApp, .memWired, .memCompressed, .memPressure, .swapUsed: .memory
+        case .memUsed, .memApp, .memWired, .memCompressed, .memPressure, .swapUsed, .memPressureLevel: .memory
         case .netRx, .netTx, .netLatency: .network
         case .diskRead, .diskWrite, .diskReadIOPS, .diskWriteIOPS: .disk
         case .socTemp, .cpuPTemp, .cpuETemp, .gpuTemp, .ssdTemp, .batteryTemp, .fan1RPM, .fan2RPM, .thermalPressure:
