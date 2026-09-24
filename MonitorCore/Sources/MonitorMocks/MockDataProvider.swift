@@ -513,9 +513,9 @@ public struct MockDataProvider: Sendable {
         m[.loadAvg1] = cpu.loadAverage?.first
         m[.gpuUsage] = gpu.usage
         m[.gpuFrequency] = gpu.frequencyMHz
-        // NOTE: `.map(Double.init)` on a `UInt64?` is a footgun — it can resolve to `Double(bitPattern:)`
-        // (bit-reinterpretation, giving a denormal ~8e-314) instead of the numeric conversion. Always use
-        // an explicit closure here.
+        // NOTE: mapping a `UInt64?` with Double's init (bare, unapplied) is a footgun — it can resolve to
+        // the bit-reinterpreting initializer instead of the numeric conversion, giving a denormal
+        // ~8e-314. Always use an explicit closure here (ci.sh greps Sources for the bare form).
         m[.memUsed] = memory.used.map { Double($0) }
         m[.memApp] = memory.appMemory.map { Double($0) }
         m[.memWired] = memory.wired.map { Double($0) }

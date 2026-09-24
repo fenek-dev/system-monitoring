@@ -3,9 +3,14 @@ import MonitorModel
 
 /// 30 days of synthetic history (ARCHITECTURE §5.11), generated lazily per query bucket via
 /// `HistorySignal` — no full-resolution arrays are ever materialized, so a query stays fast (<20 ms)
-/// regardless of how far back it reaches. `bucket` (or `range.displayBucket`) is honored exactly, gap
-/// buckets (nothing available, e.g. the seeded "paused hour") return `nil` values, and `.collecting`
-/// reports a short coverage window instead of the usual 30 days.
+/// regardless of how far back it reaches. Matches `MonitorStore.Queries`' real semantics (W2), not just
+/// its shape: buckets are epoch-aligned (`Buckets`'s `floorDiv` keys), not anchored to `end`, so a bucket's
+/// start is always an exact multiple of its width; windows are half-open `[start, end)`; each bucket
+/// averages several evenly-spaced interior samples, which — since every sample represents an equal slice
+/// of the bucket's duration — is the same time-weighted average the store computes via `SUM(v × interval_ms)
+/// / SUM(interval_ms)`; and a bucket is a gap (`nil`) only when every sample in it is unavailable (outside
+/// coverage, in the future, or the seeded "paused hour"), exactly like the store's `NULL` on an all-null
+/// denominator. `.collecting` reports a short coverage window instead of the usual 30 days.
 public final class MockHistoryProvider: HistoryProvider {
     private let signal: HistorySignal
     private let scenario: MockScenario
@@ -52,19 +57,27 @@ public final class MockHistoryProvider: HistoryProvider {
         return result
     }
 
+    /// Sorted top `limit` shares, plus an `.other` share for the remainder whenever more than `limit`
+    /// apps have a positive value — otherwise `fraction` only sums to 1 when `limit >= roster.count`.
     public func appShares(at time: Date, metric: AppMetric, range: HistoryRange, limit: Int) async throws -> [AppShare] {
         let values = roster.compactMap { app -> (DemoApp, Double)? in
             guard let v = signal.appValue(app, metric, at: time, scenario: scenario), v > 0 else { return nil }
             return (app, v)
         }
+        .sorted { $0.1 > $1.1 }
         let total = values.map(\.1).reduce(0, +)
-        return values
-            .sorted { $0.1 > $1.1 }
-            .prefix(limit)
-            .map { app, value in
-                AppShare(identity: AppIdentity(key: app.key, displayName: app.displayName, bundlePath: app.bundlePath),
-                          value: value, fraction: total > 0 ? value / total : 0)
-            }
+        let top = values.prefix(limit)
+        var shares = top.map { app, value in
+            AppShare(identity: AppIdentity(key: app.key, displayName: app.displayName, bundlePath: app.bundlePath),
+                      value: value, fraction: total > 0 ? value / total : 0)
+        }
+        if values.count > limit {
+            let shownValue = top.map(\.1).reduce(0, +)
+            let otherValue = max(0, total - shownValue)
+            shares.append(AppShare(identity: AppIdentity(key: .other, displayName: "Other"),
+                                    value: otherValue, fraction: total > 0 ? otherValue / total : 0))
+        }
+        return shares
     }
 
     public func topApps(_ metric: AppMetric, in interval: DateInterval, limit: Int) async throws -> [AppAggregate] {
@@ -130,14 +143,27 @@ public final class MockHistoryProvider: HistoryProvider {
     /// ~5 minutes), not one per second — this is what keeps a 30-day query well under the 20 ms budget.
     private static let samplesPerBucket = 6
 
+    /// Epoch-aligned buckets (matching `MonitorStore.Queries.Buckets`, not anchored to `end`): bucket
+    /// keys are `floorDiv(startEpoch, width) ... floorDiv(endEpoch + width - 1, width) - 1`, so every
+    /// bucket's start is an exact multiple of `width` seconds since the Unix epoch, and the last bucket
+    /// (which may only be partially covered, since `end` need not land on a boundary) still reads only up
+    /// to `end` — `HistorySignal.isAvailable` already refuses samples after `end` as "the future".
     private func buckets(range: HistoryRange, end: Date, bucket: Duration?) -> [DateInterval] {
-        let bucketSeconds = max(1, (bucket ?? range.displayBucket).seconds)
-        let windowSeconds = (range.duration ?? .seconds(86_400)).seconds
-        let count = max(1, Int((windowSeconds / bucketSeconds).rounded()))
-        let start = end.addingTimeInterval(-windowSeconds)
-        return (0..<count).map { i in
-            DateInterval(start: start.addingTimeInterval(Double(i) * bucketSeconds), duration: bucketSeconds)
+        let width = Int64(max(1, (bucket ?? range.displayBucket).seconds.rounded()))
+        let windowSeconds = Int64((range.duration ?? .seconds(86_400)).seconds.rounded())
+        let endEpoch = Int64(end.timeIntervalSince1970.rounded(.down))
+        let startEpoch = endEpoch - windowSeconds
+        let firstKey = Self.floorDiv(startEpoch, width)
+        let lastKey = Self.floorDiv(endEpoch + width - 1, width) - 1
+        guard lastKey >= firstKey else { return [] }
+        return (firstKey...lastKey).map { k in
+            DateInterval(start: Date(timeIntervalSince1970: Double(k * width)), duration: Double(width))
         }
+    }
+
+    private static func floorDiv(_ a: Int64, _ b: Int64) -> Int64 {
+        let q = a / b
+        return (a % b != 0 && (a < 0) != (b < 0)) ? q - 1 : q
     }
 
     /// Mean for rates/%, max for temperatures (§5.10); `nil` (a gap) only when every sample is unavailable.

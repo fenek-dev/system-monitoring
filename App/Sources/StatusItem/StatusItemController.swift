@@ -13,7 +13,7 @@ final class StatusItemController: NSObject {
     private let onToggle: @MainActor () -> Void
     private let menuProvider: @MainActor () -> NSMenu
     private var loop: ObservationLoop<AlertState>?
-    private var lastToken: Int?
+    private var presenter = StatusItemPresenter()
     private var pulseTask: Task<Void, Never>?
     /// DEBUG `--status-preview`: overrides `live.alert` (mock stubs are always calm).
     var previewState: AlertState? { didSet { if let previewState { render(previewState) } } }
@@ -42,22 +42,27 @@ final class StatusItemController: NSObject {
     /// Open-popover highlight (DESIGN §3.1).
     func setHighlighted(_ on: Bool) { item.button?.highlight(on) }
 
-    /// Screen rect of the button (popover anchor).
+    /// Called before the right-click menu opens (closes the popover).
+    var willShowMenu: (@MainActor () -> Void)?
+
+    /// Screen rect of the button (popover anchor); nil when the item is hidden (e.g. behind the notch on a full
+    /// menu bar: the window exists but is occluded), so the popover falls back to a centered placement.
     var buttonScreenFrame: NSRect? {
-        guard let b = item.button, let w = b.window else { return nil }
+        guard let b = item.button, let w = b.window, w.occlusionState.contains(.visible) else { return nil }
         return w.convertToScreen(b.convert(b.bounds, to: nil))
     }
 
+    /// Applies only what changed (`StatusItemPresenter`): per-tick alert noise (runaway `cpuPercent`) neither
+    /// redraws nor cancels a running pulse.
     func render(_ state: AlertState) {
-        let pulse = StatusPulse.shouldPulse(previousToken: lastToken, state: state,
-                                            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        lastToken = state.pulseToken
-        let line = StatusLine.text(for: state)
-        item.button?.toolTip = line
-        item.button?.setAccessibilityLabel("Telltale, \(line)")
-        pulseTask?.cancel()
-        item.button?.image = StatusIconRenderer.image(for: state)
-        if pulse { runPulse(state) }
+        let u = presenter.apply(state, reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        if let line = u.statusLine {
+            item.button?.toolTip = line
+            item.button?.setAccessibilityLabel("Telltale, \(line)")
+        }
+        if u.cancelPulse { pulseTask?.cancel() }
+        if u.glyph != nil || u.cancelPulse { item.button?.image = StatusIconRenderer.image(for: state) }
+        if u.startPulse { runPulse(state) }
     }
 
     /// 18 frames at 30 fps by swapping `button.image`, then the static critical image (DESIGN §4.3).
@@ -77,6 +82,7 @@ final class StatusItemController: NSObject {
     @objc private func clicked(_ sender: NSStatusBarButton) {
         let e = NSApp.currentEvent
         if e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true {
+            willShowMenu?()
             let menu = menuProvider()
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
         } else {

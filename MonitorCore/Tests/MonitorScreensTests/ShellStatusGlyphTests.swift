@@ -71,4 +71,44 @@ struct ShellStatusGlyphTests {
         st.paused = true
         #expect(StatusLine.text(for: st) == "Sampling paused")
     }
+
+    private func runaway(_ cpu: Double, token: Int = 0) -> AlertState {
+        let key = AppKey(kind: .app, id: "com.x")
+        var st = AlertState.preview(.elevated, arc: .cpu, pulseToken: token)
+        st.active = [ActiveAlert(kind: .runawayApp(key, cpuPercent: cpu), level: .elevated, arc: .cpu,
+                                 culprit: AppIdentity(key: key, displayName: "Xcode"))]
+        return st
+    }
+
+    @Test func presenterIgnoresPerTickAlertNoise() {
+        var p = StatusItemPresenter()
+        let first = p.apply(runaway(120), reduceMotion: false)
+        #expect(first.glyph == StatusGlyphSpec.make(runaway(120)))
+        #expect(first.statusLine == "Runaway app: Xcode")
+        #expect(!first.cancelPulse && !first.startPulse)
+        // cpuPercent moves every tick: nothing to do
+        #expect(p.apply(runaway(131), reduceMotion: false).isEmpty)
+        #expect(p.apply(runaway(97), reduceMotion: false).isEmpty)
+    }
+
+    @Test func presenterPulsesOncePerTokenAndCancelsOnlyOnSpecOrLevelChange() {
+        var p = StatusItemPresenter()
+        _ = p.apply(.calm, reduceMotion: false)
+        var crit = AlertState.preview(.critical, pulseToken: 1)
+        let enter = p.apply(crit, reduceMotion: false)
+        #expect(enter.startPulse && enter.glyph != nil && enter.statusLine == nil)
+        // same critical state again (e.g. next tick, active list detail changed): pulse keeps running
+        crit.active = [ActiveAlert(kind: .thermalPressure(.critical), level: .critical)]
+        let tick = p.apply(crit, reduceMotion: false)
+        #expect(!tick.cancelPulse && !tick.startPulse && tick.glyph == nil)
+        #expect(tick.statusLine == "Thermal pressure: Critical")
+        // stress clears → cancel pulse, redraw
+        let clear = p.apply(.calm, reduceMotion: false)
+        #expect(clear.cancelPulse && clear.glyph == StatusGlyphSpec.make(.calm) && !clear.startPulse)
+        // re-entering critical with a new token pulses again
+        #expect(p.apply(.preview(.critical, pulseToken: 2), reduceMotion: false).startPulse)
+        // reduce motion: no pulse
+        _ = p.apply(.calm, reduceMotion: true)
+        #expect(!p.apply(.preview(.critical, pulseToken: 3), reduceMotion: true).startPulse)
+    }
 }

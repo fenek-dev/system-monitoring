@@ -54,6 +54,6 @@ final class AppEnvironment {
     static func defaultDataDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("Telltale", isDirectory: true)
+        return base.appendingPathComponent("dev.telltale", isDirectory: true)      // ruling: never ~/Documents
     }
 }
