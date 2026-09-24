@@ -38,8 +38,10 @@ public struct RecordBuilder: Sendable {
                 other = o
             }
         }
-        if let other { apps.append(AppRecord(identity: .other, metrics: other)) }
-        return HistoryRecord(time: frame.wallTime, interval: frame.interval ?? frame.mode.interval ?? .zero,
+        // No `.other` row when nothing folded carried a value.
+        if let other, other != AppMetrics() { apps.append(AppRecord(identity: .other, metrics: other)) }
+        // interval_ms is NOMINAL (the mode's cadence), never the measured frame interval (ruling).
+        return HistoryRecord(time: frame.wallTime, interval: frame.mode.interval ?? .zero,
                              system: frame.metrics, apps: apps)
     }
 

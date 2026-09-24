@@ -153,6 +153,86 @@ private func app(_ id: String, cpu: Double?, kind: AppKey.Kind = .app, mem: UInt
         #expect(e.update(thermal: nil, memory: nil, apps: [], at: at(335)).state.level == .calm)
     }
 
+    // MARK: monotonic timers (ICR-9)
+
+    /// Sample at uptime `up` s with wall clock `wall` s.
+    private func tick(_ e: inout AlertEngine, up: Double, wall: Double, cpu: Double = 0, thermal: ThermalPressure? = nil,
+                      nominal: Duration = .seconds(1)) -> AlertState {
+        e.update(thermal: thermal, memory: nil, apps: [app("x", cpu: cpu)], at: at(wall),
+                 uptimeNs: UInt64(up * 1e9), nominalInterval: nominal).state
+    }
+
+    @Test func wallClockGoingBackwardsDoesNotDisturbTimers() {
+        var e = AlertEngine()
+        for s in 0..<150 { _ = tick(&e, up: Double(s), wall: Double(s), cpu: 150) }
+        // wall clock jumps back one hour mid-window; uptime keeps going
+        for s in 150...300 { _ = tick(&e, up: Double(s), wall: Double(s) - 3_600, cpu: 150) }
+        #expect(e.state.level == .elevated)
+        #expect(e.state.active.first?.since == at(300 - 3_600))   // Date only stamps the event
+    }
+
+    @Test func sleepGapRestartsRunawayWindowAndHolds() {
+        var e = AlertEngine()
+        for s in 0...200 { _ = tick(&e, up: Double(s), wall: Double(s), cpu: 150) }
+        // system sleeps for an hour: uptime barely moves, wall clock jumps
+        for s in 201...299 { _ = tick(&e, up: Double(s), wall: Double(s) + 3_600, cpu: 150) }
+        #expect(e.state.level == .calm)                            // the window restarted at the gap
+        #expect(tick(&e, up: 501, wall: 501 + 3_600, cpu: 150).level == .calm)   // uptime gap too: restart again
+        for s in 502...801 { _ = tick(&e, up: Double(s), wall: Double(s) + 3_600, cpu: 150) }
+        #expect(e.state.level == .elevated)
+    }
+
+    @Test func sleepGapRestartsStepDownHold() {
+        var e = AlertEngine()
+        _ = tick(&e, up: 0, wall: 0, thermal: .serious)
+        _ = tick(&e, up: 1, wall: 1, thermal: .nominal)
+        _ = tick(&e, up: 5, wall: 1_000, thermal: .nominal)       // gap: hold restarts at 5
+        for s in 6...13 { _ = tick(&e, up: Double(s), wall: 995 + Double(s), thermal: .nominal) }
+        #expect(tick(&e, up: 14, wall: 1_009, thermal: .nominal).level == .critical)
+        #expect(tick(&e, up: 15, wall: 1_010, thermal: .nominal).level == .calm)
+    }
+
+    @Test func mixedCadenceInsideOneRunawayWindow() {
+        var e = AlertEngine()
+        var up = 0.0
+        var toggle = false
+        while up < 299 {
+            let nominal: Duration = toggle ? .seconds(5) : .seconds(1)
+            _ = tick(&e, up: up, wall: up, cpu: 150, nominal: nominal)
+            up += toggle ? 5 : 1
+            if Int(up) % 20 == 0 { toggle.toggle() }                 // popover opens/closes every ~20 s
+        }
+        #expect(e.state.level == .calm)
+        #expect(tick(&e, up: 300, wall: 300, cpu: 150, nominal: .seconds(5)).level == .elevated)
+    }
+
+    @Test func stepDownUpdatesActiveKindToMatchLevel() {
+        var e = AlertEngine()
+        _ = e.update(thermal: .serious, memory: .critical, apps: [], at: at(0))
+        _ = e.update(thermal: .nominal, memory: .normal, apps: [], at: at(1))
+        _ = e.update(thermal: .fair, memory: .warning, apps: [], at: at(2))
+        let s = e.update(thermal: .nominal, memory: .normal, apps: [], at: at(11)).state
+        #expect(s.level == .elevated)
+        #expect(s.active.first { $0.id == "thermal" }?.kind == .thermalPressure(.fair))
+        #expect(s.active.first { $0.id == "memory" }?.kind == .memoryPressure(.warning))
+    }
+
+    @Test func thermalCulpritFallsBackToCPUWhenEnergyIsIncomplete() {
+        var e = AlertEngine()
+        let apps = [app("watts", cpu: 10, watts: 50), app("busy", cpu: 300)]           // "busy" has no energy
+        let s = e.update(thermal: .fair, memory: nil, apps: apps, at: at(0)).state
+        #expect(s.active.first?.culprit?.displayName == "busy")
+        #expect(s.active.first?.culpritValue == 300)
+    }
+
+    @Test func runawayExclusionByKind() {
+        var e = AlertEngine()
+        for t in stride(from: 0.0, through: 400, by: 5) {
+            _ = e.update(thermal: nil, memory: nil, apps: [app("kernel", cpu: 800, kind: .system)], at: at(t))
+        }
+        #expect(e.state == .calm)
+    }
+
     // MARK: events
 
     @Test func transitionEventsShareIdAndCloseOnExit() throws {

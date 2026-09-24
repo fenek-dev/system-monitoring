@@ -170,16 +170,8 @@ public struct LiveHistory: Sendable {
     /// producer left it empty.
     static func metrics(of app: AppSample) -> AppMetrics {
         if app.metrics[.cpu] != nil || app.cpuPercent == nil { return app.metrics }
-        // Not `AppSample.value(for:)`: its `memory.map(Double.init)` resolves to `Double(bitPattern:)` (Model bug).
         var m = AppMetrics()
-        m[.cpu] = app.cpuPercent
-        m[.gpu] = app.gpuPercent
-        m[.memory] = app.memory.map { Double($0) }
-        m[.netRx] = app.netRxBps
-        m[.netTx] = app.netTxBps
-        m[.diskRead] = app.diskReadBps
-        m[.diskWrite] = app.diskWriteBps
-        m[.energy] = app.energyWatts
+        for metric in AppMetric.allCases { m[metric] = app.value(for: metric) }
         return m
     }
 }

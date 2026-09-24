@@ -10,7 +10,29 @@ import Testing
                        app: String = "x", swap: UInt64? = nil) -> SystemFrame {
         let a = AppSample(identity: AppIdentity(key: AppKey(kind: .app, id: app), displayName: app), cpuPercent: cpu,
                           gpuPercent: gpu, netRxBps: rx, diskWriteBps: write)
-        return SystemFrame(wallTime: at(s), memory: MemorySnapshot(swapUsed: swap), apps: [a])
+        return SystemFrame(wallTime: at(s), uptimeNs: UInt64(s * 1e9), memory: MemorySnapshot(swapUsed: swap), apps: [a])
+    }
+
+    @Test func sleepGapClosesEpisodes() throws {
+        var d = EventDetector()
+        _ = run(&d, 0, 70) { frame($0, cpu: 300) }
+        // system sleeps: uptime moves 5 s, wall clock an hour → the episode ends at its last sample
+        var f = frame(75, cpu: 300)
+        f.wallTime = at(75 + 3_600)
+        let events = d.update(f)
+        let closed = try #require(events.first { $0.end != nil })
+        #expect(closed.end == at(70))
+    }
+
+    @Test func wallClockJumpBackDoesNotBreakDurations() throws {
+        var d = EventDetector()
+        var events: [HistoryEvent] = []
+        for s in stride(from: 0.0, through: 60, by: 5) {
+            var f = frame(s, cpu: 300)
+            if s >= 30 { f.wallTime = at(s - 7_200) }            // wall clock set back two hours at 30 s
+            events += d.update(f)
+        }
+        #expect(events.count == 1)                                // open event after 60 s of uptime
     }
 
     /// Feeds one frame per `step` seconds over [from, to]; returns every event.

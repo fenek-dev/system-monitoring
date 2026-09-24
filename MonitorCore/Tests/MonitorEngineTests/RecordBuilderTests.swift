@@ -25,6 +25,24 @@ import Testing
         #expect(r.apps.isEmpty)
     }
 
+    @Test func intervalIsNominalNotMeasured() {
+        var f = frame([])
+        f.mode = .interactive
+        f.interval = .milliseconds(1_200)
+        #expect(RecordBuilder().record(from: f).interval == .seconds(1))
+    }
+
+    @Test func zeroGPUFoldsIntoOther() {
+        let r = RecordBuilder().record(from: frame([app("idle", gpu: 0)]))
+        #expect(r.apps.map(\.identity.key) == [.other])
+        #expect(r.apps.first?.metrics[.gpu] == 0)
+    }
+
+    @Test func noOtherRowWhenFoldedAppsHaveNoValues() {
+        let r = RecordBuilder().record(from: frame([app("empty"), app("big", cpu: 50)]))
+        #expect(r.apps.map(\.identity.displayName) == ["big"])
+    }
+
     @Test func missingIntervalFallsBackToModeInterval() {
         var f = frame([])
         f.interval = nil

@@ -14,12 +14,17 @@ import MonitorModel
 /// Thermal/memory: step-up immediate; step-down after `stepDownHold` of continuously lower input, to the highest
 /// level seen during the hold. Runaway: enters when every sample over `runawayEnterAfter` is ≥ the enter threshold,
 /// exits after `runawayExitAfter` continuously below the exit threshold (an exited app reads 0 %).
+///
+/// Timers (ruling, ICR-9): holds and windows run on monotonic uptime; `Date` only stamps events and `since`.
+/// A gap between samples of more than 2× the nominal interval (sleep/wake, stalls; checked on uptime and wall clock)
+/// restarts every pending hold and window.
+///
 /// Events: one `HistoryEvent` per episode, emitted on entry (`end == nil`), again with the same id when the episode's
 /// peak level rises, and on exit with `end` set — the store upserts by id.
 public struct AlertEngine: Sendable {
     private struct LevelTracker: Sendable {
         var level: AlertLevel = .calm
-        var lowerSince: Date?
+        var lowerSince: Double?          // uptime seconds
         var pending: AlertLevel = .calm
         var since: Date?
         var eventID: UUID?
@@ -30,10 +35,10 @@ public struct AlertEngine: Sendable {
 
     private struct Runaway: Sendable {
         var identity: AppIdentity
-        var aboveSince: Date?
+        var aboveSince: Double?          // uptime seconds
         var active = false
         var since: Date?
-        var belowSince: Date?
+        var belowSince: Double?          // uptime seconds
         var cpu: Double = 0
         var peak: Double = 0
         var eventID = UUID()
@@ -46,6 +51,7 @@ public struct AlertEngine: Sendable {
     private var runaways: [AppKey: Runaway] = [:]
     private var thermalCulprit: (AppIdentity, Double)?
     private var memoryCulprit: (AppIdentity, Double)?
+    private var last: (uptime: Double, wall: Date, nominal: Duration?)?
     /// Episode-closing events produced by `setPaused(true)`; drained by the sampling engine.
     private var pendingEvents: [HistoryEvent] = []
 
@@ -53,11 +59,29 @@ public struct AlertEngine: Sendable {
         self.config = config
     }
 
-    public mutating func update(thermal thermalInput: ThermalPressure?, memory memoryInput: MemoryPressureLevel?,
-                                apps: [AppSample], at now: Date) -> (state: AlertState, events: [HistoryEvent]) {
-        guard !state.paused else { return (state, []) }
-        var events: [HistoryEvent] = []
+    /// Locked §5.8 signature: `now` doubles as the monotonic clock and no gap detection runs.
+    /// The sampling engine uses `update(thermal:memory:apps:at:uptimeNs:nominalInterval:)`.
+    public mutating func update(thermal: ThermalPressure?, memory: MemoryPressureLevel?, apps: [AppSample],
+                                at now: Date) -> (state: AlertState, events: [HistoryEvent]) {
+        let t = now.timeIntervalSince1970
+        return update(thermal: thermal, memory: memory, apps: apps, at: now,
+                      uptimeNs: t > 0 ? UInt64(t * 1e9) : 0, nominalInterval: nil)
+    }
 
+    /// ICR-9: timers on `uptimeNs`; `nominalInterval` (the mode's interval) enables gap detection.
+    public mutating func update(thermal thermalInput: ThermalPressure?, memory memoryInput: MemoryPressureLevel?,
+                                apps: [AppSample], at now: Date, uptimeNs: UInt64,
+                                nominalInterval: Duration?) -> (state: AlertState, events: [HistoryEvent]) {
+        guard !state.paused else { return (state, []) }
+        let clock = Double(uptimeNs) / 1e9
+        if let last, let nominal = nominalInterval {
+            let allowed = 2 * max(nominal, last.nominal ?? nominal).seconds
+            let wallGap = now.timeIntervalSince(last.wall)
+            if clock - last.uptime > allowed || wallGap > allowed { restartTimers() }
+        }
+        last = (clock, now, nominalInterval)
+
+        var events: [HistoryEvent] = []
         let tLevel: AlertLevel = switch thermalInput {
         case nil, .nominal?: .calm
         case .fair?: .elevated
@@ -68,13 +92,13 @@ public struct AlertEngine: Sendable {
         case .warning?: .elevated
         case .critical?: .critical
         }
-        Self.step(&thermal, to: tLevel, raw: thermalInput?.rawValue, now: now, hold: config.stepDownHold,
-                  kind: .thermalPressure, label: Self.thermalLabel, events: &events)
-        Self.step(&memory, to: mLevel, raw: memoryInput?.rawValue, now: now, hold: config.stepDownHold,
-                  kind: .memoryPressure, label: Self.memoryLabel, events: &events)
-        thermalCulprit = Self.top(apps) { $0.energyWatts ?? $0.cpuPercent }
-        memoryCulprit = Self.top(apps) { $0.memory.map { Double($0) } }
-        updateRunaways(apps, now: now, events: &events)
+        Self.step(&thermal, to: tLevel, raw: thermalInput?.rawValue, now: now, clock: clock, hold: config.stepDownHold,
+                  kind: .thermalPressure, events: &events)
+        Self.step(&memory, to: mLevel, raw: memoryInput?.rawValue, now: now, clock: clock, hold: config.stepDownHold,
+                  kind: .memoryPressure, events: &events)
+        thermalCulprit = topThermal(apps)
+        memoryCulprit = top(apps) { $0.memory.map { Double($0) } }
+        updateRunaways(apps, now: now, clock: clock, events: &events)
 
         let previous = state.level
         state = buildState()
@@ -84,12 +108,11 @@ public struct AlertEngine: Sendable {
 
     public mutating func setPaused(_ paused: Bool, at now: Date) -> AlertState {
         guard paused != state.paused else { return state }
-        if paused {
-            pendingEvents += closeAll(at: now)
-        }
+        if paused { pendingEvents += closeAll(at: now) }
         thermal = LevelTracker()
         memory = LevelTracker()
         runaways.removeAll()
+        last = nil
         state = AlertState(pulseToken: state.pulseToken, paused: paused)
         return state
     }
@@ -100,18 +123,25 @@ public struct AlertEngine: Sendable {
         return pendingEvents
     }
 
+    private mutating func restartTimers() {
+        thermal.lowerSince = nil
+        memory.lowerSince = nil
+        for key in Array(runaways.keys) {
+            runaways[key]?.aboveSince = nil
+            runaways[key]?.belowSince = nil
+        }
+    }
+
     // MARK: - Thermal / memory
 
-    private static func thermalLabel(_ raw: Int) -> String {
-        "Thermal pressure: \(name(ThermalPressure(rawValue: raw) ?? .nominal))"
+    private static func label(_ kind: HistoryEvent.Kind, _ raw: Int) -> String {
+        kind == .thermalPressure
+            ? "Thermal pressure: \(name(ThermalPressure(rawValue: raw) ?? .nominal))"
+            : "Memory pressure: \(name(MemoryPressureLevel(rawValue: raw) ?? .normal))"
     }
 
-    private static func memoryLabel(_ raw: Int) -> String {
-        "Memory pressure: \(name(MemoryPressureLevel(rawValue: raw) ?? .normal))"
-    }
-
-    private static func step(_ t: inout LevelTracker, to condition: AlertLevel, raw: Int?, now: Date, hold: Duration,
-                             kind: HistoryEvent.Kind, label: (Int) -> String, events: inout [HistoryEvent]) {
+    private static func step(_ t: inout LevelTracker, to condition: AlertLevel, raw: Int?, now: Date, clock: Double,
+                             hold: Duration, kind: HistoryEvent.Kind, events: inout [HistoryEvent]) {
         let before = t.level
         if condition > t.level {
             t.level = condition
@@ -120,79 +150,93 @@ public struct AlertEngine: Sendable {
             t.lowerSince = nil
         } else if let since = t.lowerSince {
             t.pending = max(t.pending, condition)
-            if now.timeIntervalSince(since) >= hold.seconds {
+            if clock - since >= hold.seconds {
                 t.level = t.pending
                 t.lowerSince = nil
             }
         } else {
-            t.lowerSince = now
+            t.lowerSince = clock
             t.pending = condition
         }
-        if let raw, Self.level(ofRaw: raw, kind: kind) == t.level { t.raw = raw }
+        // The alert's kind always matches its level: latest raw input of that level, else the level's canonical input.
+        if let raw, level(ofRaw: raw, kind: kind) == t.level {
+            t.raw = raw
+        } else if t.level > .calm, t.raw.map({ level(ofRaw: $0, kind: kind) }) != t.level {
+            t.raw = canonicalRaw(t.level, kind: kind)
+        }
 
         if before == .calm, t.level > .calm {
             t.since = now
             t.eventID = UUID()
             t.peakLevel = t.level
             t.peakRaw = raw.map(Double.init)
-            events.append(event(t, kind: kind, label: label, end: nil))
+            events.append(event(t, kind: kind, end: nil))
         } else if t.level > .calm {
             if let raw { t.peakRaw = max(t.peakRaw ?? Double(raw), Double(raw)) }
             if t.level > t.peakLevel {
                 t.peakLevel = t.level
-                events.append(event(t, kind: kind, label: label, end: nil))
+                events.append(event(t, kind: kind, end: nil))
             }
         } else if before > .calm {
-            events.append(event(t, kind: kind, label: label, end: now))
+            events.append(event(t, kind: kind, end: now))
             t = LevelTracker()
         }
     }
 
-    private static func event(_ t: LevelTracker, kind: HistoryEvent.Kind, label: (Int) -> String, end: Date?) -> HistoryEvent {
+    private static func event(_ t: LevelTracker, kind: HistoryEvent.Kind, end: Date?) -> HistoryEvent {
         let raw = t.peakRaw.map { Int($0) } ?? t.raw ?? 0
         return HistoryEvent(id: t.eventID ?? UUID(), kind: kind, start: t.since ?? end ?? .distantPast, end: end,
-                            level: t.peakLevel, peak: t.peakRaw, label: label(raw))
+                            level: t.peakLevel, peak: t.peakRaw, label: label(kind, raw))
     }
 
     private static func level(ofRaw raw: Int, kind: HistoryEvent.Kind) -> AlertLevel {
-        switch kind {
-        case .thermalPressure:
+        if kind == .thermalPressure {
             switch ThermalPressure(rawValue: raw) {
-            case .fair?: .elevated
-            case .serious?, .critical?: .critical
-            default: .calm
-            }
-        default:
-            switch MemoryPressureLevel(rawValue: raw) {
-            case .warning?: .elevated
-            case .critical?: .critical
-            default: .calm
+            case .fair?: return .elevated
+            case .serious?, .critical?: return .critical
+            default: return .calm
             }
         }
+        switch MemoryPressureLevel(rawValue: raw) {
+        case .warning?: return .elevated
+        case .critical?: return .critical
+        default: return .calm
+        }
+    }
+
+    private static func canonicalRaw(_ level: AlertLevel, kind: HistoryEvent.Kind) -> Int {
+        if kind == .thermalPressure {
+            return (level == .critical ? ThermalPressure.serious : level == .elevated ? .fair : .nominal).rawValue
+        }
+        return (level == .critical ? MemoryPressureLevel.critical : level == .elevated ? .warning : .normal).rawValue
     }
 
     // MARK: - Runaway apps
 
-    private mutating func updateRunaways(_ apps: [AppSample], now: Date, events: inout [HistoryEvent]) {
+    private func excluded(_ key: AppKey) -> Bool {
+        key.kind == .system || key.kind == .other || config.runawayExcluded.contains(key)
+    }
+
+    private mutating func updateRunaways(_ apps: [AppSample], now: Date, clock: Double, events: inout [HistoryEvent]) {
         var seen = Set<AppKey>()
-        for a in apps where !config.runawayExcluded.contains(a.identity.key) {
+        for a in apps where !excluded(a.identity.key) {
             seen.insert(a.identity.key)
             let tracked = runaways[a.identity.key] != nil
             guard tracked || (a.cpuPercent ?? 0) >= config.runawayEnterCPUPercent else { continue }
             var r = runaways[a.identity.key] ?? Runaway(identity: a.identity)
             r.identity = a.identity
-            Self.advance(&r, cpu: a.cpuPercent ?? 0, now: now, config: config, events: &events)
+            Self.advance(&r, cpu: a.cpuPercent ?? 0, now: now, clock: clock, config: config, events: &events)
             runaways[a.identity.key] = r
         }
         for key in Array(runaways.keys) where !seen.contains(key) {
             guard var r = runaways[key] else { continue }
-            Self.advance(&r, cpu: 0, now: now, config: config, events: &events)   // exited/missing app reads 0 %
+            Self.advance(&r, cpu: 0, now: now, clock: clock, config: config, events: &events)   // exited app reads 0 %
             runaways[key] = r
         }
         runaways = runaways.filter { $0.value.active || $0.value.aboveSince != nil }
     }
 
-    private static func advance(_ r: inout Runaway, cpu: Double, now: Date, config: AlertConfig,
+    private static func advance(_ r: inout Runaway, cpu: Double, now: Date, clock: Double, config: AlertConfig,
                                 events: inout [HistoryEvent]) {
         r.cpu = cpu
         if !r.active {
@@ -200,9 +244,9 @@ public struct AlertEngine: Sendable {
                 r.aboveSince = nil
                 return
             }
-            let start = r.aboveSince ?? now
+            let start = r.aboveSince ?? clock
             r.aboveSince = start
-            if now.timeIntervalSince(start) >= config.runawayEnterAfter.seconds {
+            if clock - start >= config.runawayEnterAfter.seconds {
                 r.active = true
                 r.since = now
                 r.peak = cpu
@@ -213,9 +257,9 @@ public struct AlertEngine: Sendable {
         }
         r.peak = max(r.peak, cpu)
         if cpu < config.runawayExitCPUPercent {
-            let below = r.belowSince ?? now
+            let below = r.belowSince ?? clock
             r.belowSince = below
-            if now.timeIntervalSince(below) >= config.runawayExitAfter.seconds {
+            if clock - below >= config.runawayExitAfter.seconds {
                 events.append(runawayEvent(r, end: now))
                 r = Runaway(identity: r.identity)
             }
@@ -264,27 +308,36 @@ public struct AlertEngine: Sendable {
 
     private mutating func closeAll(at now: Date) -> [HistoryEvent] {
         var out: [HistoryEvent] = []
-        if thermal.level > .calm {
-            out.append(Self.event(thermal, kind: .thermalPressure, label: Self.thermalLabel, end: now))
-        }
-        if memory.level > .calm {
-            out.append(Self.event(memory, kind: .memoryPressure, label: Self.memoryLabel, end: now))
-        }
+        if thermal.level > .calm { out.append(Self.event(thermal, kind: .thermalPressure, end: now)) }
+        if memory.level > .calm { out.append(Self.event(memory, kind: .memoryPressure, end: now)) }
         for r in runaways.values where r.active { out.append(Self.runawayEvent(r, end: now)) }
         return out
     }
 
-    // MARK: - Helpers
+    // MARK: - Culprits
 
-    /// Top app by `value`, excluding `.system`/`.other`.
-    private static func top(_ apps: [AppSample], by value: (AppSample) -> Double?) -> (AppIdentity, Double)? {
+    /// Candidates exclude `.system`/`.other`.
+    private func candidates(_ apps: [AppSample]) -> [AppSample] {
+        apps.filter { $0.identity.key.kind != .system && $0.identity.key.kind != .other }
+    }
+
+    private func top(_ apps: [AppSample], by value: (AppSample) -> Double?) -> (AppIdentity, Double)? {
         var best: (AppIdentity, Double)?
-        for a in apps where a.identity.key.kind != .system && a.identity.key.kind != .other {
+        for a in candidates(apps) {
             guard let v = value(a) else { continue }
             if best == nil || v > best!.1 { best = (a.identity, v) }
         }
         return best
     }
+
+    /// By energy when every candidate with CPU data also has energy, else by CPU — never mixing W with %.
+    private func topThermal(_ apps: [AppSample]) -> (AppIdentity, Double)? {
+        let c = candidates(apps).filter { $0.energyWatts != nil || $0.cpuPercent != nil }
+        guard !c.isEmpty else { return nil }
+        return c.allSatisfy({ $0.energyWatts != nil }) ? top(c) { $0.energyWatts } : top(c) { $0.cpuPercent }
+    }
+
+    // MARK: - Names
 
     static func name(_ p: ThermalPressure) -> String {
         switch p {

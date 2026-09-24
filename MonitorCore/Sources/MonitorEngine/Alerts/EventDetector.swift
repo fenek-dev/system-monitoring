@@ -9,6 +9,8 @@ import MonitorModel
 /// closing event with the same id (end = last sample above the threshold) — the store upserts by id.
 /// Swap growth: swap used grows by ≥ 1 GiB within 10 min → one `.swapGrowth` event (re-armed after swap shrinks
 /// by 256 MiB from its peak).
+/// Durations and windows run on the frame's monotonic `uptimeNs`; `wallTime` only stamps events. A sample gap longer
+/// than max(merge gap, 2× nominal interval), on either clock (sleep/wake), closes every episode.
 public struct EventDetector: Sendable {
     private struct Key: Hashable, Sendable {
         var app: AppKey
@@ -18,8 +20,10 @@ public struct EventDetector: Sendable {
     private struct Episode: Sendable {
         var id = UUID()
         var identity: AppIdentity
-        var start: Date
+        var start: Date                  // event timestamps (wall clock)
         var lastAbove: Date
+        var startUp: Double              // durations (monotonic uptime, seconds)
+        var lastAboveUp: Double
         var peak: Double
         var opened = false
     }
@@ -30,7 +34,8 @@ public struct EventDetector: Sendable {
 
     public let config: EpisodeConfig
     private var episodes: [Key: Episode] = [:]
-    private var swapSamples: [(time: Date, bytes: Double)] = []
+    private var swapSamples: [(time: Date, up: Double, bytes: Double)] = []
+    private var last: (up: Double, wall: Date, nominal: Duration?)?
     private var swapArmed = true
     private var swapPeakSinceFire = 0.0
 
@@ -40,7 +45,18 @@ public struct EventDetector: Sendable {
 
     public mutating func update(_ frame: SystemFrame) -> [HistoryEvent] {
         let now = frame.wallTime
+        let up = Double(frame.uptimeNs) / 1e9
         var events: [HistoryEvent] = []
+        // A gap (sleep/wake, stall) longer than the merge gap / 2× the nominal cadence ends every episode.
+        if let last {
+            let nominal = max(frame.mode.interval ?? .seconds(1), last.nominal ?? .seconds(1))
+            let allowed = max(2 * nominal.seconds, config.mergeGap.seconds)
+            if up - last.up > allowed || now.timeIntervalSince(last.wall) > allowed {
+                events += closeAll()
+                swapSamples.removeAll()
+            }
+        }
+        last = (up, now, frame.mode.interval)
         var above = Set<Key>()
         for a in frame.apps {
             for (metric, value, threshold) in thresholds(a) {
@@ -49,11 +65,13 @@ public struct EventDetector: Sendable {
                 above.insert(key)
                 if var e = episodes[key] {
                     e.lastAbove = now
+                    e.lastAboveUp = up
                     e.peak = max(e.peak, value)
                     e.identity = a.identity
                     episodes[key] = e
                 } else {
-                    episodes[key] = Episode(identity: a.identity, start: now, lastAbove: now, peak: value)
+                    episodes[key] = Episode(identity: a.identity, start: now, lastAbove: now, startUp: up,
+                                            lastAboveUp: up, peak: value)
                 }
             }
         }
@@ -61,29 +79,35 @@ public struct EventDetector: Sendable {
         for key in Array(episodes.keys) {
             guard var e = episodes[key] else { continue }
             if above.contains(key) {
-                if !e.opened, now.timeIntervalSince(e.start) >= minDuration {
+                if !e.opened, up - e.startUp >= minDuration {
                     e.opened = true
                     events.append(event(e, key, end: nil))
                     episodes[key] = e
                 }
-            } else if now.timeIntervalSince(e.lastAbove) > mergeGap {
-                if e.lastAbove.timeIntervalSince(e.start) >= minDuration { events.append(event(e, key, end: e.lastAbove)) }
+            } else if up - e.lastAboveUp > mergeGap {
+                if e.lastAboveUp - e.startUp >= minDuration { events.append(event(e, key, end: e.lastAbove)) }
                 episodes[key] = nil
             }
         }
-        if let swap = frame.memory.swapUsed { events += swapGrowth(Double(swap), at: now) }
+        if let swap = frame.memory.swapUsed { events += swapGrowth(Double(swap), at: now, up: up) }
         return events
     }
 
     /// Closes every open episode (pause, shutdown); only episodes of at least `minDuration` produce an event.
     public mutating func flush(at: Date) -> [HistoryEvent] {
+        let out = closeAll()
+        swapSamples.removeAll()
+        last = nil
+        return out
+    }
+
+    private mutating func closeAll() -> [HistoryEvent] {
         let minDuration = config.minDuration.seconds
         let out = episodes
-            .filter { $0.value.lastAbove.timeIntervalSince($0.value.start) >= minDuration }
+            .filter { $0.value.lastAboveUp - $0.value.startUp >= minDuration }
             .map { event($0.value, $0.key, end: $0.value.lastAbove) }
             .sorted { $0.start < $1.start }
         episodes.removeAll()
-        swapSamples.removeAll()
         return out
     }
 
@@ -113,15 +137,15 @@ public struct EventDetector: Sendable {
         }
     }
 
-    private mutating func swapGrowth(_ bytes: Double, at now: Date) -> [HistoryEvent] {
-        swapSamples.append((now, bytes))
-        swapSamples.removeAll { now.timeIntervalSince($0.time) > Self.swapWindow }
+    private mutating func swapGrowth(_ bytes: Double, at now: Date, up: Double) -> [HistoryEvent] {
+        swapSamples.append((now, up, bytes))
+        swapSamples.removeAll { up - $0.up > Self.swapWindow }
         if !swapArmed {
             swapPeakSinceFire = max(swapPeakSinceFire, bytes)
             if swapPeakSinceFire - bytes >= Self.swapRearmBytes { swapArmed = true }
             return []
         }
-        guard let low = swapSamples.min(by: { $0.bytes < $1.bytes }), low.time <= now,
+        guard let low = swapSamples.min(by: { $0.bytes < $1.bytes }),
               bytes - low.bytes >= Self.swapGrowthBytes else { return [] }
         swapArmed = false
         swapPeakSinceFire = bytes
