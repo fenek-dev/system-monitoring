@@ -5,7 +5,7 @@ import MonitorScreens
 import os
 
 /// App glue for `MonitorScreens.VisibilityTracker` (the pure reducer lives in Shell): builds the tracker whose
-/// sink drives `runtime.setVisibility` + `live.isPresenting`, and follows the NavigationModel's page/selection.
+/// sink drives `runtime.setVisibility` + `live.isPresenting`, and follows the NavigationModel page/inspectedApp (ICR-10).
 /// Window/panel facts are pushed by `DashboardWindowController` and `PopoverPanelController`.
 @MainActor
 final class VisibilityWiring {
@@ -15,7 +15,7 @@ final class VisibilityWiring {
 
     private struct NavKey: Equatable {
         var page: DashboardPage
-        var selection: NavigationModel.ProcessSelection?
+        var inspectedApp: AppKey?
     }
 
     init(env: AppEnvironment) {
@@ -31,10 +31,10 @@ final class VisibilityWiring {
                 """)
         }
         let nav = env.navigation
-        navLoop = ObservationLoop({ NavKey(page: nav.page, selection: nav.selection) }) { [tracker] key in
+        navLoop = ObservationLoop({ NavKey(page: nav.page, inspectedApp: nav.inspectedApp) }) { [tracker] key in
             tracker.update {
                 $0.page = key.page
-                $0.selection = key.selection
+                $0.inspectedApp = key.inspectedApp
             }
         }
     }

@@ -52,8 +52,18 @@ enum FixtureReplay {
     }
 
     /// Grouping without disk access (fixtures come from other machines): bundle keys fall back to bundle paths.
-    static func resolver() -> any AppResolving {
-        BundleAppResolver(currentUID: 501, readInfoPlist: { _ in nil })
+    /// Current user = the recording's own user: the most common uid ≥ 500 among non-restricted processes (fixtures carry no
+    /// metadata; recordings come from machines whose login uid isn't necessarily 501).
+    static func resolver(_ ticks: [RawTick] = []) -> any AppResolving {
+        BundleAppResolver(currentUID: recordingUID(ticks), readInfoPlist: { _ in nil })
+    }
+
+    static func recordingUID(_ ticks: [RawTick]) -> uid_t {
+        var counts: [UInt32: Int] = [:]
+        for t in ticks {
+            for p in t.processes.value?.processes ?? [] where !p.restricted && p.uid >= 500 { counts[p.uid, default: 0] += 1 }
+        }
+        return counts.max { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }?.key ?? 501
     }
 
     static func slept(_ a: RawTick, _ b: RawTick) -> Bool {
@@ -65,7 +75,7 @@ enum FixtureReplay {
     static func replayThroughEngine(_ ticks: [RawTick]) async -> [Step] {
         let cursor = ReplayCursor()
         let factory = SensorFactory { _ in suite(ticks, cursor) }
-        let engine = SamplingEngine(factory: factory, resolver: { resolver() },
+        let engine = SamplingEngine(factory: factory, resolver: { resolver(ticks) },
                                     interactiveInterval: .seconds(1), backgroundInterval: .seconds(5))
         var steps: [Step] = []
         for (i, t) in ticks.enumerated() {
@@ -84,7 +94,7 @@ enum FixtureReplay {
 
     /// A bare `FrameAssembler` with no wake handling: shows what the engine's reset protects against.
     static func replayWithoutWakeReset(_ ticks: [RawTick]) -> [SystemFrame] {
-        var fa = FrameAssembler(resolver: resolver())
+        var fa = FrameAssembler(resolver: resolver(ticks))
         return ticks.map { fa.assemble($0, inspectedApp: nil) }
     }
 

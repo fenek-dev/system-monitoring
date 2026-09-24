@@ -67,7 +67,9 @@ public struct PageHeader: View {
         let page = nav.page
         let paused = live.isPausedPhase
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
+            // Main@2x: title cap top 14 pt and subtitle cap top 31 pt below the band top, i.e. the title line
+            // advances 16.5 pt (≈ 1.1 × 15) rather than SF's default 18 → spacing −1.5.
+            VStack(alignment: .leading, spacing: -1.5) {
                 Text(page.title)
                     .font(ShellStyle.pageTitle).foregroundStyle(ShellStyle.textPrimary)
                     .lineLimit(1)
@@ -96,9 +98,12 @@ public struct PageHeader: View {
         }
         .padding(.leading, 20)
         .padding(.trailing, 16)
-        .frame(height: ShellStyle.headerHeight)
+        .frame(height: ShellStyle.headerHeight)                 // 52-pt band (traffic lights centred at y 26)
         .background(ShellStyle.bgHeader)
-        .overlay(alignment: .bottom) { ShellStyle.edgeHeader.frame(height: 1) }
+        .padding(.bottom, 1)                                     // + 1-pt edge *below* the band (Main@2x: 52 + 1)
+        .background(alignment: .bottom) {                        // black @ 0.45 over the header colour
+            ShellStyle.edgeHeader.background(ShellStyle.bgHeader).frame(height: 1)
+        }
     }
 
     /// Subtitles the shell can derive (DESIGN §3.4–3.13 "Sub:"); pages override with `.pageHeader(subtitle:)`.

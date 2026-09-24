@@ -163,6 +163,30 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         #expect(f.rxBps == 2_050)                                   // fallback: sum of up, non-loopback
     }
 
+    @Test func networkTotalsFallBackToSumWhenPrimaryHasNoRate() {
+        // en0 was not primary at tick 1; utun3 becomes primary at tick 2 (first sight → no rate yet).
+        var sa = SystemAssembler()
+        _ = assemble(&sa, RawTick(uptimeNs: sec, interfaces: fresh(InterfacesReading(interfaces: [
+            InterfaceCounter(bsdName: "en0", kind: .wifi, isUp: true, isPrimary: true, rxBytes: 1_000, txBytes: 100),
+        ]), sec)))
+        let s = assemble(&sa, RawTick(uptimeNs: 2 * sec, interfaces: fresh(InterfacesReading(interfaces: [
+            InterfaceCounter(bsdName: "en0", kind: .wifi, isUp: true, rxBytes: 3_000, txBytes: 300),
+            InterfaceCounter(bsdName: "en7", isUp: true, isPrimary: true, rxBytes: 9_999, txBytes: 9_999),
+        ]), 2 * sec))).network
+        #expect(s.rxBps == 2_000 && s.txBps == 200)                 // en0's rate, not nil
+        // Primary down → sum over up interfaces.
+        var down = SystemAssembler()
+        func r(_ k: UInt64) -> InterfacesReading {
+            InterfacesReading(interfaces: [
+                InterfaceCounter(bsdName: "en0", kind: .wifi, isUp: false, isPrimary: true, rxBytes: k, txBytes: k),
+                InterfaceCounter(bsdName: "en5", isUp: true, rxBytes: k * 500, txBytes: k * 50),
+            ])
+        }
+        _ = assemble(&down, RawTick(uptimeNs: sec, interfaces: fresh(r(1), sec)))
+        let d = assemble(&down, RawTick(uptimeNs: 2 * sec, interfaces: fresh(r(2), 2 * sec))).network
+        #expect(d.rxBps == 500 && d.txBps == 50)
+    }
+
     @Test(.disabled("waiting for W6d: BlockDriverCounter.isDiskImage (ICR); flip countsTowardDiskTotals then"))
     func diskImageDriversAreExcludedFromTotals() {
         // With a disk image mounted, its driver (disk4, isDiskImage) and the physical disk both report the I/O;

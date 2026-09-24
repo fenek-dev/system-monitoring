@@ -197,11 +197,16 @@ final class Collector<T: Sendable>: Sendable {
         let opened = f.events.first { $0.kind == .memoryPressure }
         #expect(opened?.end == nil)
         await e.setPaused(true)
+        // The pause itself drains the episode: the closed event is in `records` before stop() (not from stop's flush).
+        let deadline = ContinuousClock.now + .seconds(2)
+        func closed() -> HistoryEvent? {
+            records.all.flatMap(\.events).first { $0.kind == .memoryPressure && $0.end != nil }
+        }
+        while closed() == nil, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
+        #expect(!records.isFinished)
+        #expect(closed()?.id == opened?.id)
         await e.stop()
         #expect(await records.waitFinished())
-        let closed = records.all.flatMap(\.events).first { $0.kind == .memoryPressure }
-        #expect(closed?.id == opened?.id)
-        #expect(closed?.end != nil)
     }
 
     @Test func alertEngineResetsOnWake() async {
