@@ -153,6 +153,13 @@ enum MemoryFFI {
 // MARK: - Sensor
 
 /// VM page classes, compressor, swap, memory pressure (`host_statistics64`, `vm.swapusage`, memorystatus).
+///
+/// Units of the `MemoryReading` it returns:
+/// - BYTES (already × `pageSize`): `free` (excl. speculative, as `vm_stat`), `active`, `inactive`, `speculative`,
+///   `wired`, `purgeable`, `fileBacked`, `anonymous`; also `total`, `compressorBytes`, `compressedOriginalBytes`,
+///   `swapTotal`, `swapUsed`.
+/// - cumulative PAGE COUNTS: `pageins`, `pageouts`, `swapins`, `swapouts`.
+/// - `pageSize`: bytes per page. `pressureFraction`: 0…1 = 1 − `kern.memorystatus_level`/100.
 public final class MemorySensor: Sensor {
     public typealias Reading = MemoryReading
     public let id = SensorID.memory

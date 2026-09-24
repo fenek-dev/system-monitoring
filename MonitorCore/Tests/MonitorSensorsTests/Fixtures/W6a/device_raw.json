@@ -1,0 +1,21 @@
+{
+  "bootTimeSec" : 1788849529,
+  "bootTimeUsec" : 62128,
+  "brandString" : "Apple M1 Max",
+  "dramType" : "LPDDR5",
+  "efficiencyCores" : 2,
+  "fanCount" : 2,
+  "gpuCores" : 32,
+  "hasBattery" : true,
+  "hwModel" : "MacBookPro18,4",
+  "memoryBytes" : 68719476736,
+  "osBuild" : "25F71",
+  "osVersion" : [
+    26,
+    5,
+    0
+  ],
+  "performanceCores" : 8,
+  "productName" : "MacBook Pro (14-inch, 2021)",
+  "socName" : "Apple M1 Max"
+}
