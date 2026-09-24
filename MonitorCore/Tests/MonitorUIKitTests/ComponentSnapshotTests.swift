@@ -6,7 +6,8 @@ import Testing
 /// Goldens of the gallery items, recorded after a visual check against the reference artboards
 /// (see the W3 report for the side-by-side notes).
 @MainActor @Suite struct ComponentSnapshotTests {
-    nonisolated static let ids = ["icons", "metric-tiles", "stat-strip", "controls", "bars", "key-value", "states"]
+    nonisolated static let ids = ["icons", "metric-tiles", "stat-strip", "controls", "bars", "key-value", "states",
+                                  "timeline-card", "cpu-usage", "net-throughput", "thermal-lines", "gpu-dual"]
 
     @Test(arguments: ids)
     func galleryItem(id: String) throws {

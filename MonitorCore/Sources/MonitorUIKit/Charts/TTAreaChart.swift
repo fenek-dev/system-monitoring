@@ -2,9 +2,9 @@ import MonitorModel
 import SwiftUI
 
 /// DESIGN §2.3 sparkline / area chart, drawn with `Canvas` (ARCHITECTURE §7).
-/// Area (series color @ `fillOpacity`) then line (`lineWidth`, butt caps, round joins); x even over N samples,
-/// y clamped to `yDomain`; gaps break line and area; the line may bleed 1 pt past the frame.
-/// Fewer than 2 samples → "Collecting…" (DESIGN §3.15).
+/// Optional grid (page charts: lines at each 1/`grid`) and bands under the series; then area (series color @
+/// `fillOpacity`) and line (`lineWidth`, butt caps, round joins). x even over N samples, y clamped to `yDomain`;
+/// gaps break line and area; the line may bleed past the frame. Fewer than 2 samples → "Collecting…" (§3.15).
 /// Draws in a single pass (no intermediate arrays); decimates only when N > 2 × width.
 public struct TTAreaChart: View, Equatable {
     let points: [SeriesPoint]
@@ -15,14 +15,17 @@ public struct TTAreaChart: View, Equatable {
     let lineWidth: CGFloat
     let flipped: Bool
     let dash: [CGFloat]
+    let grid: Int
+    let bands: [TTChartBand]
     let showsCollecting: Bool
 
     /// - Parameters:
-    ///   - fillOpacity: area opacity applied to `color` (DESIGN §1.1 "Chart series fills", e.g. 0.22).
+    ///   - fillOpacity: area opacity applied to `color` (`TTChartFill`, e.g. `.sparkline` 0.22).
     ///   - flipped: area hangs down from the top edge (mirrored chart bottom half).
+    ///   - grid: number of divisions for the faint page-chart gridlines (0 = none; page charts use 4).
     public init(_ points: [SeriesPoint], color: Color, yDomain: ClosedRange<Double>, fillOpacity: Double = 1,
                 lineOnly: Bool = false, lineWidth: CGFloat = TTStroke.spark, flipped: Bool = false, dash: [CGFloat] = [],
-                showsCollecting: Bool = true) {
+                grid: Int = 0, bands: [TTChartBand] = [], showsCollecting: Bool = true) {
         self.points = points
         self.color = color
         self.yDomain = yDomain
@@ -31,6 +34,8 @@ public struct TTAreaChart: View, Equatable {
         self.lineWidth = lineWidth
         self.flipped = flipped
         self.dash = dash
+        self.grid = grid
+        self.bands = bands
         self.showsCollecting = showsCollecting
     }
 
@@ -39,26 +44,48 @@ public struct TTAreaChart: View, Equatable {
 
     public var body: some View {
         if showsCollecting && ChartSegments.sampleCount(points) < 2 {
-            TTEmptyState(.collecting(since: nil))
-        } else {
-            let points = points, color = color, domain = yDomain, fill = fillOpacity, lineOnly = lineOnly
-            let style = StrokeStyle(lineWidth: lineWidth, lineCap: .butt, lineJoin: .round, dash: dash)
-            let flipped = flipped
-            Canvas(rendersAsynchronously: false) { ctx, canvasSize in
-                let b = Self.bleed
-                let size = CGSize(width: canvasSize.width - 2 * b, height: canvasSize.height - 2 * b)
-                ctx.translateBy(x: b, y: b)
-                let drawn = points.count > Int(size.width * 2)
-                    ? ChartSegments.decimate(points, maxPoints: max(2, Int(size.width * 2)))
-                    : points
-                var line = Path()
-                var area: Path? = lineOnly ? nil : Path()
-                ChartSegments.addSeries(drawn, domain: domain, in: size, line: &line, area: &area, flipped: flipped)
-                if let area { ctx.fill(area, with: .color(color.opacity(fill))) }
-                ctx.stroke(line, with: .color(color), style: style)
+            ZStack {
+                if grid > 1 { TTChartCanvas { ctx, size in ChartGrid.draw(&ctx, size: size, divisions: grid) } }
+                TTEmptyState(.collecting(since: nil))
             }
-            .padding(-Self.bleed)
-            .accessibilityHidden(true)
+        } else {
+            let chart = self
+            TTChartCanvas { ctx, size in chart.draw(&ctx, size: size) }
+                .accessibilityHidden(true)
         }
+    }
+
+    func draw(_ ctx: inout GraphicsContext, size: CGSize) {
+        for band in bands {
+            let y0 = ChartSegments.y(value: band.range.upperBound, domain: yDomain, height: size.height)
+            let y1 = ChartSegments.y(value: band.range.lowerBound, domain: yDomain, height: size.height)
+            ctx.fill(Path(CGRect(x: 0, y: y0, width: size.width, height: y1 - y0)), with: .color(band.color))
+        }
+        ChartGrid.draw(&ctx, size: size, divisions: grid)
+        let limit = max(2, Int(size.width * 2))
+        let drawn = points.count > limit ? ChartSegments.decimate(points, maxPoints: limit) : points
+        var line = Path()
+        var area: Path? = lineOnly ? nil : Path()
+        ChartSegments.addSeries(drawn, domain: yDomain, in: size, line: &line, area: &area, flipped: flipped)
+        if let area { ctx.fill(area, with: .color(color.opacity(fillOpacity))) }
+        ctx.stroke(line, with: .color(color),
+                   style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt, lineJoin: .round, dash: dash))
+    }
+}
+
+/// A `Canvas` that extends `TTAreaChart.bleed` past its frame so strokes on the edges are not clipped;
+/// the drawing closure sees the unextended size with the origin at the frame's top-left.
+struct TTChartCanvas: View {
+    let draw: (inout GraphicsContext, CGSize) -> Void
+
+    init(_ draw: @escaping (inout GraphicsContext, CGSize) -> Void) { self.draw = draw }
+
+    var body: some View {
+        let b = TTAreaChart.bleed
+        Canvas(rendersAsynchronously: false) { ctx, canvasSize in
+            ctx.translateBy(x: b, y: b)
+            draw(&ctx, CGSize(width: canvasSize.width - 2 * b, height: canvasSize.height - 2 * b))
+        }
+        .padding(-b)
     }
 }
