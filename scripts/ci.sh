@@ -34,4 +34,12 @@ if [[ -n "$hits" ]]; then
     fail "map(Double.init) is ambiguous (bitPattern); use .map { Double(\$0) }"
 fi
 
+echo "== @unchecked grep"
+# Only MonitorMocks may use @unchecked (Sendable escape hatch); elsewhere use OSAllocatedUnfairLock/actors.
+hits=$(grep -rn '@unchecked' MonitorCore/Sources MonitorCore/Tests App --include='*.swift' | grep -v '/MonitorMocks/' || true)
+if [[ -n "$hits" ]]; then
+    echo "$hits" | head -20
+    fail "@unchecked outside MonitorMocks"
+fi
+
 echo "ci.sh: OK"
