@@ -1,0 +1,15 @@
+{
+  "_source": "ioreg -c IOBlockStorageDriver -r -d 2 -w0, internal SSD (disk0) driver, captured on MacBookPro18,4 2026-09-24",
+  "Operations (Read)": 120191932,
+  "Operations (Write)": 150107541,
+  "Bytes (Read)": 1402699673600,
+  "Bytes (Write)": 3126319808512,
+  "Latency Time (Read)": 0,
+  "Latency Time (Write)": 0,
+  "Errors (Read)": 0,
+  "Errors (Write)": 0,
+  "Retries (Read)": 0,
+  "Retries (Write)": 0,
+  "Total Time (Read)": 23848063019442,
+  "Total Time (Write)": 7915805182167
+}

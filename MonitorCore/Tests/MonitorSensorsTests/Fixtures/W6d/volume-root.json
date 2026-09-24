@@ -1,0 +1,14 @@
+{
+  "_source": "FileManager.mountedVolumeURLs + statfs + IOKit busLabel walk for \"/\", captured on MacBookPro18,4 2026-09-24; cross-checked against `diskutil info /` and `df -k /`",
+  "mountPath": "/",
+  "name": "Macintosh HD",
+  "bsdName": "disk3s3s1",
+  "fsType": "apfs",
+  "busLabel": "Apple Fabric",
+  "isInternal": true,
+  "isEjectable": false,
+  "isEncrypted": false,
+  "totalBytes": 1995218165760,
+  "availableBytes": 1091344072704,
+  "availableImportantBytes": 1185806311723
+}

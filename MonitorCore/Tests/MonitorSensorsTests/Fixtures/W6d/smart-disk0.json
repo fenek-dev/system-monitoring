@@ -1,0 +1,10 @@
+{
+  "_source": "nvme_smart_read(disk0) via NVMeSMARTLib CFPlugIn, cross-checked against `smartctl -a disk0` (smartmontools 7.2), captured on MacBookPro18,4 2026-09-24",
+  "criticalWarning": 0,
+  "temperatureKelvin": 314,
+  "percentageUsed": 4,
+  "dataUnitsRead": 236738427,
+  "dataUnitsWritten": 314125421,
+  "powerOnHours": 4694,
+  "unsafeShutdowns": 25
+}
