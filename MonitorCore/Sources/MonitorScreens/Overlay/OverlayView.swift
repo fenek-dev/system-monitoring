@@ -28,12 +28,15 @@ public struct OverlayView: View {
     public var body: some View {
         HStack(alignment: .top, spacing: 16) {
             ForEach(Self.metrics(live: live), id: \.label) { m in
+                let template = Self.template(m.label)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(m.label).font(TTFont.captionMedium).foregroundStyle(m.labelColor)
-                        Text(m.value).font(TTFont.body13Value).foregroundStyle(m.tint)
+                        Self.fixedWidth(Text(m.value).foregroundStyle(m.tint), template: template.value)
+                            .font(TTFont.body13Value)
                     }
-                    Text(m.stats).font(TTFont.micro).foregroundStyle(TTColor.textSecondary)
+                    Self.fixedWidth(Text(m.stats).foregroundStyle(TTColor.textSecondary), template: template.stats)
+                        .font(TTFont.micro)
                 }
             }
         }
@@ -44,6 +47,22 @@ public struct OverlayView: View {
         .fixedSize()
         .transaction { $0.disablesAnimations = true }
         .environment(\.colorScheme, .dark)
+    }
+
+    // MARK: - Fixed size
+
+    /// Worst-case strings per column (coordinator ruling): each column is at least this wide, so the overlay keeps
+    /// one size while values change.
+    static func template(_ label: String) -> (value: String, stats: String) {
+        label == "MEM" ? ("999.9 GB", "↓999.9 ↑999.9 ø999.9") : ("100%", "↓100 ↑100 ø100")
+    }
+
+    /// `text` over a hidden `template` in the same font: width = max(template, text), measured by layout.
+    private static func fixedWidth(_ text: some View, template: String) -> some View {
+        ZStack(alignment: .leading) {
+            Text(template).hidden()
+            text
+        }
     }
 
     // MARK: - Pure presentation

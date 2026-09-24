@@ -53,4 +53,39 @@ struct OverlaySnapshotTests {
     @Test func memoryCritical() { snap(ScreenFixture.context(.memoryCritical), "memoryCritical") }
     @Test func unavailable() { snap(OverlayFixture.gpuUnavailableContext(), "unavailable") }
     @Test func collecting() { snap(ScreenFixture.context(.collecting), "collecting") }
+
+    /// Ruling (width jitter): the overlay keeps one size whatever the values: calm, collecting ("—"),
+    /// GPU unavailable ("— — —") and worst-case values (100 %, 999.9 GB) all fit the same frame.
+    @Test func sizeIsStableAcrossValues() {
+        func size(_ ctx: ShellContext) -> CGSize {
+            TTFormat.$locale.withValue(Locale(identifier: "en_US")) {
+                NSHostingView(rootView: OverlayView().telltaleEnvironment(ctx)).fittingSize
+            }
+        }
+        let calm = size(ScreenFixture.context(.calm))
+        #expect(calm.width > 0 && calm.height > 0)
+        #expect(size(ScreenFixture.context(.collecting)) == calm)
+        #expect(size(OverlayFixture.gpuUnavailableContext()) == calm)
+        #expect(size(OverlayFixture.extremeContext()) == calm)
+        #expect(calm.width <= Self.canvas.width && calm.height <= Self.canvas.height)
+    }
+}
+
+extension OverlayFixture {
+    /// Worst-case values: CPU and GPU pinned at 100 %, memory ~999.9 GB.
+    static func extremeContext() -> ShellContext {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.cpu.usage = 1
+            f.gpu.usage = 1
+            f.memory.used = 1_073_634_000_000   // 999.9 GiB
+            live.apply(f)
+        }
+        live.isPresenting = true
+        var ctx = ScreenFixture.context(.calm)
+        ctx.live = live
+        return ctx
+    }
 }
