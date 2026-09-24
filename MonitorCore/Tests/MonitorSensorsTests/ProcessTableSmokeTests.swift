@@ -4,7 +4,8 @@ import Testing
 @testable import MonitorModel
 @testable import MonitorSensors
 
-/// Live FFI on this Mac. `TELLTALE_HW_TESTS=1 scripts/test.sh ProcessTableSmokeTests`.
+/// Live FFI on this Mac. Hardware smoke: opt-in, run one suite at a time at checkpoints; never in parallel with
+/// other suites or builds (load-sensitive). `TELLTALE_HW_TESTS=1 swift test --no-parallel --filter ProcessTableSmokeTests`.
 @Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
 struct ProcessTableSmokeTests {
     @Test func captureKinfoFixture() throws {

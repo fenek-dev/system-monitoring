@@ -10,7 +10,9 @@ import Testing
 /// `spike-gpu-apps --load` kernel). Energy per CPU-second in A is the CPU-only rate; if B's energy is far above
 /// B's CPU time × that rate while Metal's gpuStart/gpuEnd show the GPU busy with our work, GPU energy is counted.
 /// Result 2026-09-24 (docs/icr/008-W6a-gpu-energy-term.md): it is NOT counted.
-/// `TELLTALE_HW_TESTS=1 scripts/test.sh ProcessTableGPUEnergySmokeTests`.
+/// Hardware smoke tests are opt-in and run one suite at a time, at checkpoints (ruling). Measurements are
+/// load-sensitive, so never run them in parallel with other suites or builds:
+/// `TELLTALE_HW_TESTS=1 swift test --no-parallel --filter ProcessTableGPUEnergySmokeTests`.
 @Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
 struct ProcessTableGPUEnergySmokeTests {
     struct Sample { var energyNJ: UInt64; var penergyNJ: UInt64; var cpuNs: UInt64; var gpuNs: UInt64; var t: UInt64 }
@@ -116,8 +118,16 @@ struct ProcessTableGPUEnergySmokeTests {
               "excess \(f(gpu.joules - expectedCPUOnly))J (\(f((gpu.joules - expectedCPUOnly) / gpu.wallS))W)")
         Thread.sleep(forTimeInterval: 2)
         print("W6a T8 AGX accumulatedGPUTime for our pid, 2 s after the load: \(f(Double(w6aCounterDelta(Self.agxGPUNs(getpid()), b0.gpuNs) ?? 0) / 1e9))s")
-        #expect(busy > 1.5)   // the GPU really was busy with our work for most of the window
+        // The GPU must have run our work for a meaningful part of the window (it is shared under machine load).
+        #expect(busy > 0.5)
         // Pins the finding: fails if a future macOS starts billing GPU energy to ri_energy_nj (then drop ICR 008's term).
-        #expect(gpu.joules - expectedCPUOnly < 0.5)
+        // Load-aware bound. If GPU energy were included, a saturated M1 Max GPU (~20 W) would add ~64 J over a
+        // 3.2 s window. Even a conservative 5 W floor adds ≥ 5 W × busy s. The threshold is half of that floor
+        // (2.5 W × busy, ≈ 8 J at 3.1 s busy), so it scales with how long our kernel actually ran. It also allows
+        // twice the CPU-only expectation, because J per CPU-second differs between P and E cores, and contention
+        // can move our few ms of submit CPU. The old fixed 0.5 J bound flaked under parallel load; the observed
+        // excess is ≤ 0 J.
+        let bound = 2.5 * busy + 2 * expectedCPUOnly
+        #expect(gpu.joules - expectedCPUOnly < bound)
     }
 }

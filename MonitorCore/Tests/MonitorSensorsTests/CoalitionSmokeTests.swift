@@ -5,7 +5,8 @@ import Testing
 @testable import MonitorModel
 @testable import MonitorSensors
 
-/// `TELLTALE_HW_TESTS=1 scripts/test.sh CoalitionSmokeTests`.
+/// Hardware smoke: opt-in, run one suite at a time at checkpoints; never in parallel with other suites or builds
+/// (load-sensitive). `TELLTALE_HW_TESTS=1 swift test --no-parallel --filter CoalitionSmokeTests`.
 @Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
 struct CoalitionSmokeTests {
     @Test func captureUsageFixture() throws {

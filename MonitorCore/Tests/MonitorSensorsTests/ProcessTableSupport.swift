@@ -17,6 +17,9 @@ enum W6aFixture {
         URL(fileURLWithPath: "\(file)").deletingLastPathComponent().appendingPathComponent("Fixtures/W6a/\(name)")
     }
 
+    /// Gate for all W6a `*SmokeTests`. Hardware smoke tests are opt-in and run serialized, one suite at a time,
+    /// at checkpoints (`swift test --no-parallel --filter <Suite>`). They measure live load against reference
+    /// tools, so parallel suites or builds make them flaky.
     static var hardwareTests: Bool { ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1" }
     static var capture: Bool { ProcessInfo.processInfo.environment["TELLTALE_W6A_CAPTURE"] == "1" }
 
