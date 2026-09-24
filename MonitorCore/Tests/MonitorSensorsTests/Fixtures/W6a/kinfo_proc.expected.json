@@ -1,0 +1,23 @@
+[
+  {
+    "comm" : "launchd",
+    "pid" : 1,
+    "ppid" : 0,
+    "startTimeUs" : 1788849529837001,
+    "uid" : 0
+  },
+  {
+    "comm" : "swift-package",
+    "pid" : 10137,
+    "ppid" : 10135,
+    "startTimeUs" : 1790248664380578,
+    "uid" : 502
+  },
+  {
+    "comm" : "swiftpm-testing-",
+    "pid" : 10168,
+    "ppid" : 10137,
+    "startTimeUs" : 1790248667022729,
+    "uid" : 502
+  }
+]
