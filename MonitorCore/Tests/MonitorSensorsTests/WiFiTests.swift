@@ -57,7 +57,7 @@ import Testing
             usleep(10_000)
             return .success(WiFiParseTests.assoc)
         }
-        return WiFiSensor(box: box) { true }
+        return WiFiSensor(box: box)
     }
 
     /// Every invalidate → prepare cycle (Network page revisit) re-arms the first-read signal, so the first sample()
@@ -80,15 +80,37 @@ import Testing
         #expect(ms.allSatisfy { $0 < 150 }, "first sample per cycle: \(ms) ms") // 200 ms = the stalled-wait bug
     }
 
-    @Test func noInterfaceIsUnavailable() {
-        let s = WiFiSensor(box: WiFiBox { .success(WiFiParseTests.assoc) }) { false }
-        #expect(throws: SensorError.unavailable("No Wi-Fi interface")) { try s.prepare() }
-    }
-
-    @Test func readFailureSurfaces() throws {
-        let s = WiFiSensor(box: WiFiBox { .failure(.unavailable("No Wi-Fi interface")) }) { true }
+    /// S-M6: prepare() makes no CoreWLAN call on the sampler; "no interface" comes from the off-queue first read.
+    @Test func noInterfaceIsUnavailableFromTheFirstRead() throws {
+        let reads = OSAllocatedUnfairLock(initialState: 0)
+        let s = WiFiSensor(box: WiFiBox {
+            reads.withLock { $0 += 1 }
+            return .failure(.unavailable("No Wi-Fi interface"))
+        })
         try s.prepare()
         #expect(throws: SensorError.unavailable("No Wi-Fi interface")) { try s.sample(SampleContext(demand: .wifi)) }
+        #expect(reads.withLock { $0 } >= 1)
+    }
+
+    /// S-M5: an airportd call hung past the deadline → `.timeout` (never the stale reading as fresh); no second read
+    /// is stacked behind the hung one.
+    @Test func hungReadTimesOut() throws {
+        let release = DispatchSemaphore(value: 0)
+        let reads = OSAllocatedUnfairLock(initialState: 0)
+        let box = WiFiBox {
+            reads.withLock { $0 += 1 }
+            release.wait()
+            return .success(WiFiParseTests.assoc)
+        }
+        defer { release.signal() }
+        box.setPrepared(true)
+        let s: UInt64 = 1_000_000_000
+        box.startRead(nowNs: 100 * s)
+        #expect(!box.isStalled(nowNs: 105 * s))
+        #expect(box.isStalled(nowNs: 111 * s))
+        box.startRead(nowNs: 111 * s)
+        usleep(50_000)
+        #expect(reads.withLock { $0 } == 1)
     }
 }
 
