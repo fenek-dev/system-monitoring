@@ -120,15 +120,107 @@ import Testing
         #expect(siblings.contains { $0.hasPrefix("history.sqlite.newer-") && !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") })
     }
 
-    @Test func unusablePathsThrow() throws {
+    @Test func unusablePathThrows() throws {
         let dir = T.tempDir()
         let blocker = dir.appendingPathComponent("file")
         try Data("x".utf8).write(to: blocker)
         #expect(throws: (any Error).self) {
             _ = try HistoryStore(location: .file(blocker.appendingPathComponent("history.sqlite")))
         }
-        let garbage = dir.appendingPathComponent("garbage.sqlite")
-        try Data(repeating: 0x5A, count: 8_192).write(to: garbage)
-        #expect(throws: (any Error).self) { _ = try HistoryStore(location: .file(garbage)) }
+    }
+
+    /// R-M1: a non-SQLite (or corrupt) file is moved to `history.corrupt-<date>.sqlite` and a fresh store opens,
+    /// instead of every launch falling back to memory.
+    @Test func corruptFileIsMovedAsideAndRecreated() async throws {
+        let url = T.tempDB()
+        let garbage = Data(repeating: 0x5A, count: 8_192)
+        try garbage.write(to: url)
+        let store = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        await store.append(RecordBatch(record: fullRecord(T.t0)))
+        try await store.flush()
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 1)
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+        let aside = try #require(siblings.first { $0.hasPrefix("history.corrupt-") && $0.hasSuffix(".sqlite") })
+        #expect(try Data(contentsOf: url.deletingLastPathComponent().appendingPathComponent(aside)) == garbage)
+        #expect(StoreDatabase.corruptName(url, at: T.t0) == "history.corrupt-20260921T140000Z.sqlite")
+    }
+
+    /// R-I1 / E-I2: the process died (crash, kill -9, power loss) with episodes open. Its WAL is left behind
+    /// un-checkpointed and nothing wrote the closing rows; the next open ends each at the last sample recorded at
+    /// or after its start (or at its start when there is none).
+    @Test func eventsLeftOpenByACrashAreClosedOnOpen() async throws {
+        let url = T.tempDB()
+        let thermal = HistoryEvent(kind: .thermalPressure, start: T.t0 + 10, level: .elevated, label: "Thermal")
+        let sleep = HistoryEvent(kind: .systemSleep, start: T.t0 + 100, level: .calm, label: "System sleep")
+        let closed = HistoryEvent(kind: .samplingPaused, start: T.t0, end: T.t0 + 5, level: .calm, label: "Paused")
+        let crashed = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        for i in 0..<12 { await crashed.append(RecordBatch(record: fullRecord(T.t0 + Double(i) * 5))) }
+        await crashed.append(RecordBatch(events: [thermal, sleep, closed]))
+        try await crashed.flush()                         // no shutdown(): the process is gone, WAL not checkpointed
+        #expect(try await crashed.intValue("SELECT COUNT(*) FROM event WHERE \"end\" IS NULL") == 2)
+
+        let relaunched = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        let events = try await relaunched.events(in: DateInterval(start: T.t0 - 60, duration: 3_600))
+        #expect(events.first { $0.id == thermal.id }?.end == T.t0 + 55)       // last sample at/after its start
+        #expect(events.first { $0.id == sleep.id }?.end == sleep.start)       // no sample after it: zero length
+        #expect(events.first { $0.id == closed.id }?.end == closed.end)       // closed events untouched
+        #expect(try await relaunched.intValue("SELECT COUNT(*) FROM event WHERE \"end\" IS NULL") == 0)
+    }
+
+    /// R-M2: SQLITE_BUSY past the busy timeout is retried after a backoff; the batch lands once the lock is free.
+    @Test func busyWriteIsRetriedWithBackoff() async throws {
+        let url = T.tempDB()
+        let other = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        var config = T.config(TestClock())
+        config.busyRetryDelays = [.milliseconds(100), .milliseconds(100)]
+        let store = try HistoryStore(location: .file(url), config: config)
+        for i in 0..<3 { await store.append(RecordBatch(record: fullRecord(T.t0 + Double(i) * 5))) }
+        let locked = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await other.holdWriteLock(seconds: 2) { locked.withLock { $0 = true } } }
+        while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+
+        try await store.flush()                                            // 1st attempt busy at 1.5 s, 2nd waits
+        try await holder.value
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 3)
+        #expect(await store.droppedBatches == 0)
+        #expect(await store.carriedRecordCount == 0)
+    }
+
+    /// R-M2: still busy after every retry, the batch is kept and written ahead of the next flush (never dropped).
+    @Test func busyBatchIsCarriedToTheNextFlush() async throws {
+        let url = T.tempDB()
+        let other = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        var config = T.config(TestClock())
+        config.busyRetryDelays = []
+        let store = try HistoryStore(location: .file(url), config: config)
+        let open = HistoryEvent(kind: .thermalPressure, start: T.t0, level: .elevated, label: "Thermal")
+        await store.append(RecordBatch(record: fullRecord(T.t0), events: [open]))
+        let locked = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await other.holdWriteLock(seconds: 1.8) { locked.withLock { $0 = true } } }
+        while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+
+        await #expect(throws: (any Error).self) { try await store.flush() }
+        #expect(await store.carriedRecordCount == 1)
+        try await holder.value
+        var ended = open
+        ended.end = T.t0 + 5
+        await store.append(RecordBatch(record: fullRecord(T.t0 + 5), events: [ended]))
+        try await store.flush()
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 2)
+        #expect(try await store.intValue("SELECT \"end\" FROM event") == Int((T.t0 + 5).unixMs))   // update kept its order
+        #expect(await store.droppedBatches == 0)
+    }
+
+    /// R-M3: quit leaves no WAL behind, and the writer truncates the WAL to 8 MB after checkpoints.
+    @Test func shutdownTruncatesTheWAL() async throws {
+        let url = T.tempDB()
+        let store = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        #expect(try await store.writerInt("PRAGMA journal_size_limit") == 8_388_608)
+        for i in 0..<50 { await store.append(RecordBatch(record: fullRecord(T.t0 + Double(i) * 5))) }
+        try await store.flush()
+        let wal = url.path + "-wal"
+        #expect((try FileManager.default.attributesOfItem(atPath: wal)[.size] as? Int ?? 0) > 0)
+        try await store.shutdown()
+        #expect(try FileManager.default.attributesOfItem(atPath: wal)[.size] as? Int == 0)
     }
 }

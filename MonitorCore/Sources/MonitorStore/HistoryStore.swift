@@ -10,6 +10,15 @@ public struct StoreConfig: Sendable {
     public var minuteRetention: Duration
     public var quarterRetention: Duration
     public var maintenanceInterval: Duration
+    /// Apps below every threshold (bucket average) fold into `other` in the 1 m/15 m rollups (R-I2); nil keeps all.
+    public var rollupThresholds: RollupThresholds?
+    /// Size guard (R-I2): above this many bytes after maintenance, the oldest raw is pruned early; nil disables.
+    public var sizeCapBytes: Int64?
+    /// Raw newer than this is never pruned by the size guard.
+    public var sizeGuardKeepsRaw: Duration
+    /// Waits before retrying a write that failed with SQLITE_BUSY (each attempt also waits the busy timeout).
+    /// After the last one the batch is kept and written ahead of the next flush, never dropped (R-M2).
+    public var busyRetryDelays: [Duration]
     public var now: @Sendable () -> Date
 
     public init(
@@ -19,6 +28,10 @@ public struct StoreConfig: Sendable {
         minuteRetention: Duration = .seconds(7 * 86_400),
         quarterRetention: Duration = .seconds(30 * 86_400),
         maintenanceInterval: Duration = .seconds(300),
+        rollupThresholds: RollupThresholds? = RollupThresholds(),
+        sizeCapBytes: Int64? = 180 << 20,
+        sizeGuardKeepsRaw: Duration = .seconds(3_600),
+        busyRetryDelays: [Duration] = [.milliseconds(250), .seconds(1)],
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.flushInterval = flushInterval
@@ -27,7 +40,20 @@ public struct StoreConfig: Sendable {
         self.minuteRetention = minuteRetention
         self.quarterRetention = quarterRetention
         self.maintenanceInterval = maintenanceInterval
+        self.rollupThresholds = rollupThresholds
+        self.sizeCapBytes = sizeCapBytes
+        self.sizeGuardKeepsRaw = sizeGuardKeepsRaw
+        self.busyRetryDelays = busyRetryDelays
         self.now = now
+    }
+
+    /// In-memory fallback when the file store can't open (ruling R-I3): raw 1 h, 1 m for 24 h, 15 m for 7 d;
+    /// target < 10 MB of RAM. The size guard caps it at 10 MB (keeping the last 15 min of raw) for a dashboard
+    /// left open at 1 s.
+    public static func inMemoryFallback(rollupThresholds: RollupThresholds? = RollupThresholds()) -> StoreConfig {
+        StoreConfig(rawRetention: .seconds(3_600), minuteRetention: .seconds(86_400),
+                    quarterRetention: .seconds(7 * 86_400), rollupThresholds: rollupThresholds,
+                    sizeCapBytes: 10 << 20, sizeGuardKeepsRaw: .seconds(900))
     }
 }
 
@@ -89,21 +115,37 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     }
 
     /// Termination path (ARCHITECTURE §4, via `.terminateLater`; no flushSync): stops the maintenance timer,
-    /// waits for a pass in flight, then flushes everything buffered. The runtime bounds it with its 3 s timeout.
-    /// Budget: a `maintain()` pass is not cancellable once its transaction started (worst seen ~710 ms) and is
-    /// awaited here; the final flush then completes, or fails after the 1.5 s SQLite busy timeout if another
-    /// connection holds the write lock — the batch is dropped and logged, and this throws.
+    /// waits for a pass in flight, flushes everything buffered, then checkpoints the WAL (TRUNCATE). The runtime
+    /// bounds it with its 3 s timeout. Budget: a `maintain()` pass is not cancellable once its transaction started
+    /// (worst seen ~710 ms) and is awaited here; the final flush makes one attempt (no busy retries) and completes,
+    /// or fails after the 1.5 s SQLite busy timeout if another connection holds the write lock — the batch is lost
+    /// with the process: logged, counted in `droppedBatches`, and this throws.
     public func shutdown() async throws {
         isShutDown = true
         maintenanceTask?.cancel()
         await maintenanceTask?.value
-        try await flush()
+        do {
+            try await flush()
+        } catch {
+            if !carried.records.isEmpty || !carried.events.isEmpty {
+                StoreDatabase.log.fault("shutdown: lost \(self.carried.records.count) records, \(self.carried.events.count) events (database busy)")
+                droppedBatches += 1
+                carried = ([], [])
+            }
+            throw error
+        }
+        do {
+            try await writer.writeWithoutTransaction { db in try db.checkpoint(.truncate) }
+        } catch {
+            StoreDatabase.log.error("shutdown: WAL checkpoint failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: HistoryRecorder
 
     /// Buffers; on `flushMaxRecords` or `flushInterval` it hands the buffer to the ordered write chain and returns
-    /// without waiting for the write. Write failures drop the batch and log a fault (ARCHITECTURE §6).
+    /// without waiting for the write. A busy database is retried, then the batch is carried to the next flush;
+    /// any other write failure drops the batch and logs a fault (ARCHITECTURE §6).
     /// After `shutdown()` the store accepts nothing: the batch is dropped with a fault log (never buffered,
     /// since no later flush would write it).
     public func append(_ batch: RecordBatch) async {
@@ -133,23 +175,52 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         pendingRecords.removeAll(keepingCapacity: true)
         pendingEvents.removeAll(keepingCapacity: true)
         let previous = writeChain
-        let writer = self.writer
         let task = Task {
             _ = await previous?.result
-            guard !records.isEmpty || !events.isEmpty else { return }
-            do {
-                try await writer.write { db in try RecordWriter.write(records, events, db) }
-            } catch {
-                StoreDatabase.log.fault("dropped \(records.count) records, \(events.count) events: \(error.localizedDescription, privacy: .public)")
-                self.droppedBatches += 1
-                throw error
-            }
+            try await self.write(records, events)
         }
         writeChain = task
         return task
     }
 
-    /// Batches dropped after a failed write (tests; each one is also logged as a fault).
+    /// One flush's write, after every earlier one (the chain). A batch carried from a busy failure goes first,
+    /// in the same transaction, so rows and event updates keep their order.
+    private func write(_ newRecords: [HistoryRecord], _ newEvents: [HistoryEvent]) async throws {
+        let records = carried.records + newRecords
+        let events = carried.events + newEvents
+        carried = ([], [])
+        guard !records.isEmpty || !events.isEmpty else { return }
+        var delays = isShutDown ? [] : config.busyRetryDelays[...]
+        while true {
+            do {
+                try await writer.write { db in try RecordWriter.write(records, events, db) }
+                return
+            } catch let error as DatabaseError where Self.isBusy(error) {
+                if !isShutDown, let delay = delays.popFirst() {
+                    try? await Task.sleep(for: delay)
+                    continue
+                }
+                carried = (records, events)
+                StoreDatabase.log.error("database busy: kept \(records.count) records, \(events.count) events for the next flush")
+                throw error
+            } catch {
+                StoreDatabase.log.fault("dropped \(records.count) records, \(events.count) events: \(error.localizedDescription, privacy: .public)")
+                droppedBatches += 1
+                throw error
+            }
+        }
+    }
+
+    static func isBusy(_ error: DatabaseError) -> Bool {
+        error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED
+    }
+
+    /// Written ahead of the next flush: a batch whose write stayed busy through every retry (R-M2).
+    private var carried: (records: [HistoryRecord], events: [HistoryEvent]) = ([], [])
+    /// Carried records (tests).
+    var carriedRecordCount: Int { carried.records.count }
+
+    /// Batches dropped after a failed write, or lost at shutdown (tests; each one is also logged as a fault).
     private(set) var droppedBatches = 0
 
     /// Flush, then rollups (completed buckets) and retention in one transaction, then incremental vacuum.
@@ -161,18 +232,38 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         defer { maintaining = false }
         try await flush()
         let columns = self.columns
+        let thresholds = config.rollupThresholds
         let nowMs = now.unixMs
         let cutoffs = Retention.cutoffs(nowMs: nowMs, config: config)
         // Appends can hand new flushes to the chain while this pass awaits; one landing after the rollup is
         // benign: the buffer was flushed above, so it only carries samples from about `now` on, i.e. rows of
         // buckets this pass didn't treat as complete; the next (idempotent) pass rolls them up.
         try await writer.write { db in
-            try Rollup.run(db, columns: columns, nowMs: nowMs, rawCutoff: cutoffs.raw, minuteCutoff: cutoffs.minute)
+            try Rollup.run(db, columns: columns, thresholds: thresholds, nowMs: nowMs,
+                           rawCutoff: cutoffs.raw, minuteCutoff: cutoffs.minute)
             try Retention.run(db, cutoffs)
         }
         try await writer.writeWithoutTransaction { db in try Retention.vacuumIfNeeded(db) }
+        if let cap = config.sizeCapBytes {
+            let keepFrom = nowMs - config.sizeGuardKeepsRaw.milliseconds
+            if let pruned = try await writer.write({ db in try Retention.enforceSize(db, capBytes: cap, keepFrom: keepFrom) }) {
+                try await writer.writeWithoutTransaction { db in try Retention.vacuumIfNeeded(db, threshold: 0) }
+                StoreDatabase.log.error("""
+                    history over its \(cap >> 20) MB cap (\(pruned.bytesBefore >> 20) MB): pruned raw before \
+                    \(Date(unixMs: pruned.rawCutoff).formatted(.iso8601), privacy: .public) early, now \(pruned.bytesAfter >> 20) MB
+                    """)
+                sizeGuardRuns += 1
+            }
+        }
+        rawFloorMs = try await writer.read { db in try Retention.rawFloor(db, rawCutoff: cutoffs.raw) }
         maintenanceRuns += 1
     }
+
+    /// Passes in which the size guard pruned raw early (tests).
+    private(set) var sizeGuardRuns = 0
+    /// Oldest raw row when the size guard pruned raw early (see `Retention.rawFloor`): ranges starting before it
+    /// read 1 m rollups.
+    private var rawFloorMs: Int64?
 
     private func scheduledMaintenance() async {
         guard !isShutDown else { return }
@@ -305,10 +396,10 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         }
     }
 
-    /// Finest level that still holds `start` under retention.
+    /// Finest level that still holds `start` under retention (and the size guard's early raw pruning).
     func level(forIntervalStart start: Date) -> Level {
         let age = config.now().timeIntervalSince(start)
-        if age <= config.rawRetention.timeInterval { return .raw }
+        if age <= config.rawRetention.timeInterval, rawFloorMs.map({ start.unixMs >= $0 }) ?? true { return .raw }
         if age <= config.minuteRetention.timeInterval { return .minute }
         return .quarter
     }

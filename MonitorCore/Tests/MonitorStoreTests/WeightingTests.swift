@@ -37,19 +37,20 @@ import Testing
         #expect(try await store.total(.netRx, in: interval) == 100 * 120)
         #expect(try await store.topApps(.netRx, in: interval, limit: 1).first?.total == 100 * 120)
 
-        // Same data after rollups, read from the 1 m level (raw expired).
+        // Same data after rollups, read from the 1 m level (raw expired). The app's rate passes the rollup fold's
+        // network threshold (1 KB/s), so it keeps its own row.
         let rolled = try HistoryStore(location: .inMemory, config: T.config(clock))
         try await T.fill(rolled, from: T.t0 - 3 * 86_400, duration: 60, step: 1) { t, _ in
-            T.record(at: t, interval: .seconds(1), system: [.netRx: 100, .cpuUsage: 10], apps: [(app, [.netRx: 100])])
+            T.record(at: t, interval: .seconds(1), system: [.netRx: 100, .cpuUsage: 10], apps: [(app, [.netRx: 2_000])])
         }
         try await T.fill(rolled, from: T.t0 - 3 * 86_400 + 60, duration: 60) { t, _ in
-            T.record(at: t, system: [.netRx: 100, .cpuUsage: 40], apps: [(app, [.netRx: 100])])
+            T.record(at: t, system: [.netRx: 100, .cpuUsage: 40], apps: [(app, [.netRx: 2_000])])
         }
         try await rolled.maintain(now: T.t0)
         #expect(try await rolled.intValue("SELECT COUNT(*) FROM system_raw") == 0)
         let old = DateInterval(start: T.t0 - 3 * 86_400, duration: 120)
         #expect(try await rolled.total(.netRx, in: old) == 100 * 120)
-        #expect(try await rolled.topApps(.netRx, in: old, limit: 1).first?.total == 100 * 120)
+        #expect(try await rolled.topApps(.netRx, in: old, limit: 1).first?.total == 2_000 * 120)
         let week = try #require(try await rolled.series([.cpuUsage], range: .week, end: T.t0, bucket: .seconds(120))[.cpuUsage])
         #expect(week.compactMap(\.value) == [25])
     }
