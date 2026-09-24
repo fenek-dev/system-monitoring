@@ -1,0 +1,35 @@
+name: Telltale
+options:
+  bundleIdPrefix: dev.telltale
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    ARCHS: arm64
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    ENABLE_HARDENED_RUNTIME: NO
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Debug otherwise splits the code into Telltale.debug.dylib (previews); keep one binary so
+    # `otool -l Contents/MacOS/Telltale` shows the weak private-library loads.
+    ENABLE_DEBUG_DYLIB: NO
+packages:
+  MonitorCore:
+    path: MonitorCore
+targets:
+  Telltale:
+    type: application
+    platform: macOS
+    sources: [App/Sources, App/Resources]
+    info:
+      path: App/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleDisplayName: Telltale
+        LSMinimumSystemVersion: "14.0"
+    dependencies:
+      - package: MonitorCore
+        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit]
