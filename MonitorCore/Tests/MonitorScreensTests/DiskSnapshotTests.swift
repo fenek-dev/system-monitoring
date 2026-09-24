@@ -12,10 +12,32 @@ import Testing
 @MainActor
 @Suite("DiskSnapshotTests", .enabled { await ScreenFixture.snapshotsAvailable })
 struct DiskSnapshotTests {
+    // The mock's sensorsUnavailable/collecting/restricted scenarios render identically to calm on this page, so
+    // the unavailable state uses its own fixture and firstTick covers "Collecting…".
     @Test func calm() { assertScreen("disk", scenario: .calm) }
-    @Test func sensorsUnavailable() { assertScreen("disk", scenario: .sensorsUnavailable) }
-    @Test func collecting() { assertScreen("disk", scenario: .collecting) }
-    @Test func restricted() { assertScreen("disk", scenario: .restricted) }
+
+    /// diskIO, volumes and SMART unavailable: strip "—" with reasons, volumes/SSD health/throughput messages.
+    @Test func sensorsUnavailable() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.disk = DiskSnapshot(volumes: [])
+            f.metrics[.diskRead] = nil
+            f.metrics[.diskWrite] = nil
+            f.metrics[.diskReadIOPS] = nil
+            f.metrics[.diskWriteIOPS] = nil
+            f.sensorHealth[.diskIO] = .unavailable("IOBlockStorageDriver statistics not found")
+            f.sensorHealth[.volumes] = .unavailable("Volume list unavailable")
+            f.sensorHealth[.smart] = .unavailable("SMART data unavailable without root")
+            live.apply(f)
+        }
+        live.isPresenting = true
+        let ctx = ShellContext(live: live, settings: ScreenCatalog.snapshotSettings(), history: provider.history(),
+                               isSnapshot: true, now: MockDataProvider.referenceDate)
+        assertSnapshot(DiskPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent,
+                       named: "disk-unavailable")
+    }
 
     /// First tick: one sample → charts "Collecting…", values already shown.
     @Test func firstTick() {
@@ -78,6 +100,21 @@ struct DiskPageLogicTests {
         #expect(DiskCopy.isStatusOnly(SMARTInfo(status: .healthy)))
         #expect(!DiskCopy.isStatusOnly(SMARTInfo(status: .healthy, percentageUsed: 2)))
         #expect(DiskCopy.wear(2) == "2% used")
+    }
+
+    /// Eject runs the action and toasts the result (busy / not permitted shown, success confirmed).
+    @Test func ejectReportsResult() async {
+        let archive = VolumeInfo(id: "/Volumes/Archive", name: "Archive", isEjectable: true)
+        let log = PowerDiskCallLog()
+        let feedback = ProcessActionFeedback()
+        let busy = ProcessActions(eject: { v in log.volumes.append(v.name); return .failed("volume in use") })
+        await DiskCopy.eject(archive, actions: busy, feedback: feedback)
+        #expect(log.volumes == ["Archive"])
+        #expect(feedback.toast == "Couldn't eject Archive: volume in use")
+        await DiskCopy.eject(archive, actions: ProcessActions(eject: { _ in .notPermitted }), feedback: feedback)
+        #expect(feedback.toast == "Not permitted to eject Archive.")
+        await DiskCopy.eject(archive, actions: ProcessActions(eject: { _ in .done }), feedback: feedback)
+        #expect(feedback.toast == "Archive ejected.")
     }
 
     @Test func rowsOnlyActiveProcesses() {

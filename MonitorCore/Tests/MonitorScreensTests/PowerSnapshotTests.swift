@@ -12,10 +12,19 @@ import Testing
 @MainActor
 @Suite("PowerSnapshotTests", .enabled { await ScreenFixture.snapshotsAvailable })
 struct PowerSnapshotTests {
+    // collecting is identical to calm here (firstTick covers "Collecting…").
     @Test func calm() { assertScreen("power", scenario: .calm) }
     @Test func sensorsUnavailable() { assertScreen("power", scenario: .sensorsUnavailable) }
-    @Test func collecting() { assertScreen("power", scenario: .collecting) }
     @Test func restricted() { assertScreen("power", scenario: .restricted) }
+
+    /// Force Quit confirm (TTConfirmDialog over the page area).
+    @Test func forceQuitConfirm() {
+        let feedback = ProcessActionFeedback()
+        let fcp = AppIdentity(key: AppKey(kind: .app, id: "com.apple.FinalCut"), displayName: "Final Cut Pro")
+        feedback.requestForceQuit?(.app(fcp, pids: [812]))
+        assertSnapshot(PowerPage(selectedRowID: nil, feedback: feedback).screenEnvironment(.calm, page: .power),
+                       size: ScreenSize.pageContent, named: "power-forcequit-calm")
+    }
 
     /// First tick: one sample → chart "Collecting…", values already shown.
     @Test func firstTick() {
@@ -51,6 +60,12 @@ struct PowerSnapshotTests {
         assertSnapshot(DashboardRoot().frame(width: 1280, height: 860).telltaleEnvironment(ctx),
                        size: ScreenSize.dashboard, named: "power-desktop-calm")
     }
+}
+
+/// Records action calls (main-actor only).
+@MainActor final class PowerDiskCallLog {
+    var calls: [ProcessTarget] = []
+    var volumes: [String] = []
 }
 
 @MainActor
@@ -102,6 +117,36 @@ struct PowerPageLogicTests {
         #expect(PowerChartScale.ceiling([[]]) == 1)
     }
 
+    /// Force Quit always confirms: request → pending dialog; Cancel clears; confirm runs forceQuit and toasts.
+    @Test func forceQuitConfirmFlow() async {
+        let feedback = ProcessActionFeedback()
+        let target = ProcessTarget.process(pid: 42, name: "ffmpeg", path: nil, uid: 501)
+        let log = PowerDiskCallLog()
+        let actions = ProcessActions(canControl: { _ in true },
+                                     forceQuit: { t in log.calls.append(t); return .done })
+        feedback.requestForceQuit?(target)
+        #expect(feedback.pending == .init(target: target, name: "ffmpeg"))
+        feedback.cancel()
+        #expect(feedback.pending == nil)
+        await feedback.confirm(using: actions)
+        #expect(log.calls.isEmpty)                                  // nothing pending → no action
+        feedback.requestForceQuit?(target)
+        await feedback.confirm(using: actions)
+        #expect(log.calls == [target])
+        #expect(feedback.pending == nil)
+        #expect(feedback.toast == "ffmpeg was force quit.")
+        feedback.onResult?(target, .notPermitted)
+        #expect(feedback.toast == "Not permitted to quit ffmpeg.")
+        feedback.onResult?(target, .cancelled)                       // cancelled keeps the previous toast
+        #expect(feedback.toast == "Not permitted to quit ffmpeg.")
+    }
+
+    /// Handlers are created once (stable environment values → row menus aren't invalidated per tick).
+    @Test func feedbackHandlersAreStable() {
+        let feedback = ProcessActionFeedback()
+        #expect(feedback.requestForceQuit != nil && feedback.onResult != nil)
+    }
+
     @Test func energyRowsFilterAndTargets() {
         let fcp = AppIdentity(key: AppKey(kind: .app, id: "fcp"), displayName: "Final Cut Pro")
         let idle = AppIdentity(key: AppKey(kind: .app, id: "idle"), displayName: "Idle")
@@ -112,8 +157,8 @@ struct PowerPageLogicTests {
             AppSample(identity: sleepy, energyWatts: 0, preventsSleep: true),
             AppSample(identity: AppIdentity(key: .other, displayName: "Other"), energyWatts: 3),
         ]
-        let rows = EnergyRows.apps(apps, averages: [fcp.key: 5.2], health: [:])
-        #expect(rows.map(\.name) == ["Final Cut Pro", "Sleepy"])
+        let rows = EnergyRows.apps(apps.reversed(), averages: [fcp.key: 5.2], health: [:])
+        #expect(rows.map(\.name) == ["Final Cut Pro", "Sleepy"])        // sorted by energy, descending
         #expect(rows[0].estimated && rows[0].average12h == 5.2 && rows[0].reason == nil)
         #expect(rows[0].target == .app(fcp, pids: []))
     }

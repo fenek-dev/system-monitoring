@@ -8,69 +8,30 @@ import SwiftUI
 /// Raw sensors (HID + SMC) arrive only while this page is visible (`UIVisibility.demand` → `.rawTemperatures`).
 public struct ThermalsPage: View {
     private let showRawSensors: Bool
+    private let openStrips: Set<String>
 
-    public init() { showRawSensors = false }
+    public init() {
+        showRawSensors = false
+        openStrips = []
+    }
 
-    /// Tests/renders: start with the raw sensor list expanded.
-    init(showRawSensors: Bool) { self.showRawSensors = showRawSensors }
+    /// Tests/renders: start with the raw sensor list expanded and (optionally) some raw strips open.
+    init(showRawSensors: Bool, openStrips: Set<String> = []) {
+        self.showRawSensors = showRawSensors
+        self.openStrips = openStrips
+    }
 
     public var body: some View {
-        ThermalsPageColumn {
+        SystemPageColumn {
             ThermalsStatStrip()
             ThermalPressureCard()
-            ThermalsGrid3Row(minHeight: 244) {
+            SystemGrid3Row(minHeight: 244) {
                 TemperaturesCard()
                 FansCard()
             }
-            SensorsCard(showRaw: showRawSensors)
-                .frame(maxHeight: .infinity, alignment: .top)
+            SensorsCard(showRaw: showRawSensors, openStrips: openStrips)
         }
         .pageHeader(subtitle: "SoC sensors, fans and macOS thermal pressure")
-    }
-}
-
-// MARK: - Layout helpers (file-private; each page owns its own)
-
-/// DESIGN §3.0 content: padding 20, VStack gap 12, fills the page area; the bottom card is the flex child and
-/// scrolls its own rows (no page-level ScrollView, so nested scrolling never collapses the table).
-private struct ThermalsPageColumn<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: TTSpace.gridGap) { content }
-            .padding(TTSpace.pagePadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(TTColor.bgWindow)
-    }
-}
-
-/// `grid3` row of two cells: span 2 (676 at the default width) + one column (332). The row is as tall as its
-/// tallest cell (at least `minHeight`) and both cells are stretched to it (DESIGN §3.0 height rule).
-private struct ThermalsGrid3Row: Layout {
-    let minHeight: CGFloat
-
-    static func widths(_ total: CGFloat) -> (span2: CGFloat, single: CGFloat) {
-        let col = max(0, total - 2 * TTSpace.gridGap) / 3
-        return (2 * col + TTSpace.gridGap, col)
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let total = proposal.width ?? 1020
-        let (a, b) = Self.widths(total)
-        var h = minHeight
-        for (i, s) in subviews.prefix(2).enumerated() {
-            h = max(h, s.sizeThatFits(ProposedViewSize(width: i == 0 ? a : b, height: nil)).height)
-        }
-        return CGSize(width: total, height: h)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let (a, b) = Self.widths(bounds.width)
-        for (i, s) in subviews.prefix(2).enumerated() {
-            let x = i == 0 ? bounds.minX : bounds.minX + a + TTSpace.gridGap
-            s.place(at: CGPoint(x: x, y: bounds.minY), anchor: .topLeading,
-                    proposal: ProposedViewSize(width: i == 0 ? a : b, height: bounds.height))
-        }
     }
 }
 
@@ -87,21 +48,16 @@ private struct ThermalsStatStrip: View {
         TTStatStrip([
             .init(id: "soc", label: "SoC average", value: t.socAverage.map { TTFormat.temperature($0, units: units) },
                   // A blank sub keeps the strip's ≈82-pt height when every value is unavailable.
-                  detail: socCount.map { "\($0) sensor\($0 == 1 ? "" : "s")" } ?? "\u{00A0}", tint: TTColor.thermal,
-                  unavailableReason: unavailableReason(.socTemp, health: health)),
+                  detail: socCount.map { "\($0) sensor\($0 == 1 ? "" : "s")" } ?? SystemPageCopy.blankSub,
+                  tint: TTColor.thermal, unavailableReason: unavailableReason(.socTemp, health: health)),
             .init(id: "hottest", label: "Hottest sensor",
                   value: t.hottest.map { TTFormat.temperature($0.celsius, units: units) },
-                  detail: t.hottest?.name,
-                  unavailableReason: unavailableReason(.socTemp, health: health)),
-            pressureItem(t.pressure, health: health),
+                  detail: t.hottest?.name, unavailableReason: unavailableReason(.socTemp, health: health)),
+            .init(id: "pressure", label: "Thermal pressure", value: t.pressure.map(ThermalLevelCopy.title),
+                  detail: t.pressure.map(ThermalLevelCopy.statSub), tint: t.pressure.map(ThermalLevelCopy.color),
+                  unavailableReason: unavailableReason(.thermalPressure, health: health) ?? "Not reported by macOS"),
             fansItem(t.fans, health: health),
         ])
-    }
-
-    private func pressureItem(_ p: ThermalPressure?, health: [SensorID: SensorStatus]) -> TTStatStrip.Item {
-        .init(id: "pressure", label: "Thermal pressure", value: p.map(ThermalLevelCopy.title),
-              detail: p.map(ThermalLevelCopy.statSub), tint: p.map(ThermalLevelCopy.color),
-              unavailableReason: unavailableReason(.thermalPressure, health: health) ?? "Not reported by macOS")
     }
 
     private func fansItem(_ fans: [FanSnapshot], health: [SensorID: SensorStatus]) -> TTStatStrip.Item {
@@ -165,13 +121,14 @@ private struct ThermalPressureCard: View {
     }
 
     var body: some View {
+        let pressure = live.thermals.pressure
         TTCard(spacing: TTSpace.x10) {
             TTCardHeader("Thermal pressure") {
                 TTCaption("Reported by macOS · changes are logged to History")
             }
-            TTThermalScale(levels: Self.levels, current: live.thermals.pressure?.rawValue)
-                .help(live.thermals.pressure == nil
-                      ? (unavailableReason(.thermalPressure, health: live.sensorHealth) ?? "Not reported by macOS") : "")
+            TTThermalScale(levels: Self.levels, current: pressure?.rawValue)
+                .helpIfPresent(pressure == nil
+                    ? (unavailableReason(.thermalPressure, health: live.sensorHealth) ?? "Not reported by macOS") : nil)
         }
     }
 }
@@ -183,23 +140,23 @@ private struct TemperaturesCard: View {
     @Environment(NavigationModel.self) private var nav
     @Environment(\.unitPreferences) private var units
     @Environment(\.now) private var fixedNow
-    @Environment(\.historyProvider) private var history
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
 
-    private static let metrics: [HistoryMetric] = [.cpuPTemp, .gpuTemp, .batteryTemp]
+    static let metrics: [HistoryMetric] = [.cpuPTemp, .gpuTemp, .batteryTemp]
     /// DESIGN §5.10 Thermals chart domain (°C; labels follow the unit setting).
     static let domain: ClosedRange<Double> = 40...105
 
     var body: some View {
         let range = nav.range
         let end = fixedNow ?? live.lastUpdate ?? Date()
+        let points = { (m: HistoryMetric) in SystemRangeSeries.points(m, range: range, live: live, stored: stored) }
         let series = [
-            ChartSeries(id: "p", label: "P-cores", color: TTColor.thermal, points: points(.cpuPTemp, range),
+            ChartSeries(id: "p", label: "P-cores", color: TTColor.thermal, points: points(.cpuPTemp),
                         fillOpacity: nil, lineWidth: TTStroke.sparkHeavy),
-            ChartSeries(id: "gpu", label: "GPU", color: TTColor.thermalGPU, points: points(.gpuTemp, range),
+            ChartSeries(id: "gpu", label: "GPU", color: TTColor.thermalGPU, points: points(.gpuTemp),
                         fillOpacity: nil, lineWidth: TTStroke.spark),
-            ChartSeries(id: "battery", label: "Battery", color: TTColor.thermalBattery,
-                        points: points(.batteryTemp, range), fillOpacity: nil, lineWidth: TTStroke.spark),
+            ChartSeries(id: "battery", label: "Battery", color: TTColor.thermalBattery, points: points(.batteryTemp),
+                        fillOpacity: nil, lineWidth: TTStroke.spark),
         ]
         let reason = unavailableReason(.cpuPTemp, health: live.sensorHealth)
         let empty = series.allSatisfy { ChartSegments.sampleCount($0.points) < 2 }
@@ -212,35 +169,14 @@ private struct TemperaturesCard: View {
                     TTLineChart(series, yDomain: Self.domain) { TTFormat.temperatureCompact($0, units: units) }
                 }
             }
-            .frame(minHeight: 150, maxHeight: .infinity)
-            TTTimeAxis(range: range, end: end)
-                .padding(.leading, 34)
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .task(id: ThermalsRangeKey(range: range, end: end)) {
-            guard range != .live else {
-                if !stored.isEmpty { stored = [:] }
-                return
+            .frame(height: 150)
+            // The plot keeps its 150; extra row height goes under the axis (reference).
+            VStack(spacing: 0) {
+                TTTimeAxis(range: range, end: end).padding(.leading, 34)
+                Spacer(minLength: 0)
             }
-            let result = try? await history.series(Self.metrics, range: range, end: end, bucket: nil)
-            if !Task.isCancelled { stored = result ?? [:] }
         }
-    }
-
-    private func points(_ metric: HistoryMetric, _ range: HistoryRange) -> [SeriesPoint] {
-        range == .live ? live.series(metric) : (stored[metric] ?? [])
-    }
-}
-
-/// Reload key for store-backed ranges: changes once per display bucket (Live never reloads).
-private struct ThermalsRangeKey: Hashable {
-    let range: HistoryRange
-    let slot: Int
-
-    init(range: HistoryRange, end: Date) {
-        self.range = range
-        let bucket = Double(range.displayBucket.components.seconds)
-        slot = range == .live ? 0 : Int(end.timeIntervalSince1970 / max(bucket, 1))
+        .rangeSeries(Self.metrics, range: range, end: end, into: $stored)
     }
 }
 
@@ -261,13 +197,12 @@ private struct FansCard: View {
             if fans.isEmpty {
                 emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ForEach(FansCardLabels.labeled(fans)) { fan in
-                    TTFanGauge(fan: fan)
+                VStack(alignment: .leading, spacing: TTSpace.x12) {
+                    ForEach(FansCardLabels.labeled(fans)) { TTFanGauge(fan: $0) }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
             }
         }
-        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     @ViewBuilder private var emptyState: some View {
@@ -301,6 +236,7 @@ struct ThermalSensorLine: Identifiable, Equatable {
     var id: String
     var name: String
     var detail: String?
+    var detailHelp: String?
     var celsius: Double?
     var peak: Double?
     var depth: Int
@@ -308,33 +244,47 @@ struct ThermalSensorLine: Identifiable, Equatable {
 }
 
 /// Last-hour maxima per sensor in 15-s buckets (the 1H display bucket, 240 points), recorded while the page is
-/// open. Covers the raw sensors and the groups the store does not record (Airflow). Not observable: the table
-/// re-reads it whenever `LiveModel.thermals` changes.
+/// open, with a running peak per key (recomputed only when a bucket leaves the window). Covers the raw sensors
+/// and the groups the store does not record (Airflow). Not observable: the table re-reads it whenever
+/// `LiveModel.thermals` changes.
 @MainActor final class ThermalPeakTracker {
     static let bucketSeconds = 15.0
     static let bucketCount = 240
     private var buckets: [String: [(slot: Int, value: Double)]] = [:]
+    private var peaks: [String: Double] = [:]
+
+    var isEmpty: Bool { buckets.isEmpty }
 
     func record(_ key: String, _ value: Double, at time: Date) {
         guard value.isFinite else { return }
-        let slot = Int(time.timeIntervalSince1970 / Self.bucketSeconds)
+        let slot = Int((time.timeIntervalSince1970 / Self.bucketSeconds).rounded(.down))
         var list = buckets[key] ?? []
         if let last = list.last, last.slot == slot {
             list[list.count - 1].value = max(last.value, value)
+        } else if let last = list.last, slot < last.slot {
+            return                                        // out of order (seeded history newer than this)
         } else {
             list.append((slot, value))
         }
         if let first = list.first, first.slot <= slot - Self.bucketCount {
             list.removeAll { $0.slot <= slot - Self.bucketCount }
+            peaks[key] = list.map(\.value).max()
+        } else {
+            peaks[key] = max(peaks[key] ?? value, value)
         }
         buckets[key] = list
     }
 
-    func peak(_ key: String) -> Double? { buckets[key]?.map(\.value).max() }
+    /// Seeds a key from an existing series (the live ring when the page opens).
+    func seed(_ key: String, _ points: [SeriesPoint]) {
+        for p in points { if let v = p.value { record(key, v, at: p.time) } }
+    }
+
+    func peak(_ key: String) -> Double? { peaks[key] }
 
     /// 240 slots ending at `end` (nil = gap), for the 1H sparkline strip.
     func points(_ key: String, end: Date) -> [SeriesPoint] {
-        let endSlot = Int(end.timeIntervalSince1970 / Self.bucketSeconds)
+        let endSlot = Int((end.timeIntervalSince1970 / Self.bucketSeconds).rounded(.down))
         let byslot = Dictionary((buckets[key] ?? []).map { ($0.slot, $0.value) }, uniquingKeysWith: max)
         return (0..<Self.bucketCount).map { i in
             let slot = endSlot - Self.bucketCount + 1 + i
@@ -343,11 +293,17 @@ struct ThermalSensorLine: Identifiable, Equatable {
     }
 
     func prune(keeping keys: Set<String>) {
-        for k in buckets.keys where !keys.contains(k) { buckets[k] = nil }
+        for k in buckets.keys where !keys.contains(k) {
+            buckets[k] = nil
+            peaks[k] = nil
+        }
     }
 }
 
 enum ThermalGroupCopy {
+    /// Ruling: the E-core group mapping is low confidence.
+    static let eCoreApproximate = "Estimated from SMC sensors; E-core mapping is approximate"
+
     /// DESIGN §3.9 group names, in display order.
     static func name(_ g: TemperatureGroup) -> String {
         switch g {
@@ -363,15 +319,20 @@ enum ThermalGroupCopy {
     }
 
     /// Detail next to the name: "avg of 8" for averaged clusters, else the source ("PMU die", "NAND", "cell avg").
+    /// E-cores add "approximate" (ruling).
     static func detail(_ g: TemperatureGroupSnapshot) -> String? {
+        let avg = g.sensorCount > 1 ? "avg of \(g.sensorCount)" : nil
         switch g.group {
         case .soc: return "PMU die"
         case .ssd: return "NAND"
         case .battery: return "cell avg"
-        case .airflow: return g.sensorCount > 1 ? "avg of \(g.sensorCount)" : "intake"
-        case .cpuPerformance, .cpuEfficiency, .gpu, .other: return g.sensorCount > 1 ? "avg of \(g.sensorCount)" : nil
+        case .airflow: return avg ?? "intake"
+        case .cpuEfficiency: return [avg, "approximate"].compactMap { $0 }.joined(separator: " · ")
+        case .cpuPerformance, .gpu, .other: return avg
         }
     }
+
+    static func detailHelp(_ g: TemperatureGroup) -> String? { g == .cpuEfficiency ? eCoreApproximate : nil }
 
     /// Store metric holding the group's average (its peak comes from `historyProvider.peak`).
     static func metric(_ g: TemperatureGroup) -> HistoryMetric? {
@@ -395,11 +356,14 @@ private struct SensorsCard: View {
     @Environment(\.historyProvider) private var history
     @Environment(\.now) private var fixedNow
     @State private var showRaw: Bool
-    @State private var openStrips: Set<String> = []
+    @State private var openStrips: Set<String>
     @State private var storePeaks: [HistoryMetric: Double] = [:]
     @State private var tracker = ThermalPeakTracker()
 
-    init(showRaw: Bool) { _showRaw = State(initialValue: showRaw) }
+    init(showRaw: Bool, openStrips: Set<String>) {
+        _showRaw = State(initialValue: showRaw)
+        _openStrips = State(initialValue: openStrips)
+    }
 
     var body: some View {
         let t = live.thermals
@@ -409,9 +373,9 @@ private struct SensorsCard: View {
             TTCardHeader("Sensors") {
                 HStack(spacing: TTSpace.x12) {
                     if !t.groups.isEmpty {
-                        TTCaption(caption(t))
-                            .help(t.approximateMapping
-                                  ? "This Mac model isn't in the sensor catalog; groups use an approximate mapping" : "")
+                        TTCaption(SensorsCardLines.caption(t))
+                            .helpIfPresent(t.approximateMapping
+                                ? "This Mac model isn't in the sensor catalog; groups use an approximate mapping" : nil)
                     }
                     if !t.sensors.isEmpty || showRaw {
                         TTLink(showRaw ? "Hide raw sensors" : "Show raw sensors") { showRaw.toggle() }
@@ -430,29 +394,21 @@ private struct SensorsCard: View {
         unavailableReason(.socTemp, health: live.sensorHealth) ?? "No temperature sensors reported"
     }
 
-    private func caption(_ t: ThermalSnapshot) -> String {
-        let g = t.groups.count
-        var parts: [String] = []
-        if t.approximateMapping { parts.append("Approximate mapping") }
-        parts.append("\(g) group\(g == 1 ? "" : "s")")
-        if !t.sensors.isEmpty { parts.append("\(t.sensors.count) raw sensor\(t.sensors.count == 1 ? "" : "s")") }
-        return parts.joined(separator: " · ")
-    }
-
-    /// Peak (1 h) = max of the store peak, the live ring (≤ 1 h), what this page recorded, and the current value.
+    /// Peak (1 h) = max of the store peak, the running peak recorded on this page (seeded from the live ring),
+    /// and the current value.
     private func peak(key: String, metric: HistoryMetric?, now: Double?) -> Double? {
-        var candidates: [Double] = []
-        if let now { candidates.append(now) }
-        if let p = tracker.peak(key) { candidates.append(p) }
-        if let metric {
-            if let p = storePeaks[metric] { candidates.append(p) }
-            if let p = live.series(metric, window: .seconds(3_600)).compactMap(\.value).max() { candidates.append(p) }
-        }
-        return candidates.max()
+        [now, tracker.peak(key), metric.flatMap { storePeaks[$0] }].compactMap { $0 }.max()
     }
 
     private func record(end: Date) {
         let t = live.thermals
+        if tracker.isEmpty {
+            for g in t.groups {
+                if let m = ThermalGroupCopy.metric(g.group) {
+                    tracker.seed(ThermalGroupCopy.groupKey(g.group), live.series(m, window: .seconds(3_600)))
+                }
+            }
+        }
         var keys = Set<String>()
         for g in t.groups {
             let k = ThermalGroupCopy.groupKey(g.group)
@@ -479,6 +435,16 @@ private struct SensorsCard: View {
 }
 
 enum SensorsCardLines {
+    /// "7 groups · 38 raw sensors" (ICR-6: "Approximate mapping · …" when the model isn't in the catalog).
+    static func caption(_ t: ThermalSnapshot) -> String {
+        let g = t.groups.count
+        var parts: [String] = []
+        if t.approximateMapping { parts.append("Approximate mapping") }
+        parts.append("\(g) group\(g == 1 ? "" : "s")")
+        if !t.sensors.isEmpty { parts.append("\(t.sensors.count) raw sensor\(t.sensors.count == 1 ? "" : "s")") }
+        return parts.joined(separator: " · ")
+    }
+
     /// Groups in DESIGN order; in raw mode each group is followed by its raw sensors (hottest first). Raw sensors
     /// of groups the catalog did not report go under a trailing "Other" group. `peak(key, storeMetric, now)`.
     static func lines(_ t: ThermalSnapshot, showRaw: Bool,
@@ -486,28 +452,24 @@ enum SensorsCardLines {
         -> [ThermalSensorLine] {
         let order = Dictionary(uniqueKeysWithValues: TemperatureGroup.allCases.enumerated().map { ($1, $0) })
         var groups = t.groups.sorted { (order[$0.group] ?? 99) < (order[$1.group] ?? 99) }
-        let raw = showRaw ? Dictionary(grouping: t.sensors, by: \.group) : [:]
-        if showRaw {
-            let known = Set(groups.map(\.group))
-            let orphans = t.sensors.filter { !known.contains($0.group) }
-            if !orphans.isEmpty {
-                let avg = orphans.map(\.celsius).reduce(0, +) / Double(orphans.count)
-                groups.append(TemperatureGroupSnapshot(group: .other, average: avg,
-                                                       maximum: orphans.map(\.celsius).max() ?? avg,
-                                                       sensorCount: orphans.count))
-            }
+        let known = Set(t.groups.map(\.group))
+        let orphans = showRaw ? t.sensors.filter { !known.contains($0.group) } : []
+        if !orphans.isEmpty {
+            let avg = orphans.map(\.celsius).reduce(0, +) / Double(orphans.count)
+            groups.append(TemperatureGroupSnapshot(group: .other, average: avg,
+                                                   maximum: orphans.map(\.celsius).max() ?? avg,
+                                                   sensorCount: orphans.count))
         }
+        let raw = showRaw ? Dictionary(grouping: t.sensors, by: \.group) : [:]
         var out: [ThermalSensorLine] = []
         for (i, g) in groups.enumerated() {
             let key = ThermalGroupCopy.groupKey(g.group)
             out.append(ThermalSensorLine(id: key, name: ThermalGroupCopy.name(g.group), detail: ThermalGroupCopy.detail(g),
-                                         celsius: g.average, peak: peak(key, ThermalGroupCopy.metric(g.group), g.average),
+                                         detailHelp: ThermalGroupCopy.detailHelp(g.group), celsius: g.average,
+                                         peak: peak(key, ThermalGroupCopy.metric(g.group), g.average),
                                          depth: 0, parity: i % 2))
             guard showRaw else { continue }
-            let known = Set(t.groups.map(\.group))
-            let members = g.group == .other && !known.contains(.other)
-                ? t.sensors.filter { !known.contains($0.group) }
-                : (raw[g.group] ?? [])
+            let members = g.group == .other && !known.contains(.other) ? orphans : (raw[g.group] ?? [])
             for s in members.sorted(by: { $0.celsius > $1.celsius }) {
                 let k = ThermalGroupCopy.rawKey(s)
                 out.append(ThermalSensorLine(id: k, name: s.name, detail: s.source == .hid ? "HID" : "SMC",
@@ -515,6 +477,14 @@ enum SensorsCardLines {
             }
         }
         return out
+    }
+
+    /// Raw rows toggle their sparkline strip; group rows do nothing.
+    static func toggled(_ open: Set<String>, _ line: ThermalSensorLine) -> Set<String> {
+        guard line.depth > 0 else { return open }
+        var s = open
+        if s.contains(line.id) { s.remove(line.id) } else { s.insert(line.id) }
+        return s
     }
 }
 
@@ -536,9 +506,11 @@ private struct ThermalSensorTable: View {
                     Text(emptyMessage).font(TTFont.body12).foregroundStyle(TTColor.textSecondary)
                         .lineLimit(1).frame(maxWidth: .infinity).frame(height: 80)
                 } else if isSnapshot {
-                    rows(w).padding(.top, TTSpace.x4)
+                    // Whole rows only (no clipped sliver).
+                    let limit = SystemFittedRows<EmptyView>.limit(height: geo.size.height, rowHeight: 28, headerHeight: 26)
+                    rows(w, Array(lines.prefix(limit))).padding(.top, TTSpace.x4)
                 } else {
-                    ScrollView(.vertical) { rows(w).padding(.top, TTSpace.x4) }
+                    ScrollView(.vertical) { rows(w, lines).padding(.top, TTSpace.x4) }
                         .scrollIndicators(.automatic)
                 }
             }
@@ -569,17 +541,14 @@ private struct ThermalSensorTable: View {
             .frame(width: width, alignment: alignment)
     }
 
-    private func rows(_ w: [CGFloat]) -> some View {
+    private func rows(_ w: [CGFloat], _ lines: [ThermalSensorLine]) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(lines) { line in
                 VStack(spacing: 0) {
                     ThermalSensorRow(line: line, widths: w)
                         .equatable()
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard line.depth > 0 else { return }
-                            if openStrips.contains(line.id) { openStrips.remove(line.id) } else { openStrips.insert(line.id) }
-                        }
+                        .onTapGesture { openStrips = SensorsCardLines.toggled(openStrips, line) }
                     if line.depth > 0, openStrips.contains(line.id) {
                         TTAreaChart(strip(line.id), color: TTColor.thermal, yDomain: 20...105,
                                     fillOpacity: TTChartFill.timeline, lineWidth: TTStroke.sparkThin)
@@ -609,7 +578,6 @@ private struct ThermalSensorRow: View, Equatable {
 
     nonisolated static func == (a: Self, b: Self) -> Bool { a.line == b.line && a.widths == b.widths }
 
-
     var body: some View {
         let child = line.depth > 0
         HStack(spacing: TTSpace.tableCellGap) {
@@ -620,6 +588,7 @@ private struct ThermalSensorRow: View, Equatable {
                 if let d = line.detail {
                     Text(d).font(TTFont.caption).foregroundStyle(TTColor.textTertiary).lineLimit(1)
                         .layoutPriority(-1)
+                        .helpIfPresent(line.detailHelp)
                 }
             }
             .padding(.leading, child ? 20 : 0)
@@ -639,5 +608,246 @@ private struct ThermalSensorRow: View, Equatable {
         .background(RoundedRectangle(cornerRadius: TTRadius.r6, style: .continuous)
             .fill(hovering ? TTColor.fillHover : .clear))
         .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - W5b shared page helpers (Thermals, Power & Battery, Disk)
+
+enum SystemPageCopy {
+    /// Non-breaking space: keeps a stat cell's sub-line height when its value is unavailable.
+    static let blankSub = "\u{00A0}"
+}
+
+enum SystemPageSort {
+    /// Stable descending sort by `key`, nil/non-finite last (the tables' fixed headline sort).
+    static func descending<T>(_ items: [T], by key: (T) -> Double?) -> [T] {
+        items.enumerated()
+            .map { (i: $0.offset, k: key($0.element).flatMap { $0.isFinite ? $0 : nil }, v: $0.element) }
+            .sorted { a, b in
+                switch (a.k, b.k) {
+                case let (x?, y?): x != y ? x > y : a.i < b.i
+                case (.some, nil): true
+                case (nil, .some): false
+                case (nil, nil): a.i < b.i
+                }
+            }
+            .map(\.v)
+    }
+}
+
+/// Bottom table cards: snapshot renders show only whole rows (no clipped sliver of a last row); live tables pass
+/// every row and scroll. `content(limit)` receives the row budget for the height it is given.
+struct SystemFittedRows<Content: View>: View {
+    let rowHeight: CGFloat
+    var headerHeight: CGFloat = 26
+    @ViewBuilder let content: (Int) -> Content
+    @Environment(\.isSnapshot) private var isSnapshot
+
+    static func limit(height: CGFloat, rowHeight: CGFloat, headerHeight: CGFloat) -> Int {
+        max(0, Int(((height - headerHeight - TTSpace.x4) / rowHeight).rounded(.down)))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            content(isSnapshot ? Self.limit(height: geo.size.height, rowHeight: rowHeight, headerHeight: headerHeight)
+                               : Int.max)
+        }
+        .clipped()
+    }
+}
+
+/// DESIGN §3.0 content: padding 20, VStack gap 12, fills the page area; the bottom card is the flex child and
+/// scrolls its own rows (no page-level ScrollView, so nested scrolling never collapses the table).
+struct SystemPageColumn<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: TTSpace.gridGap) { content }
+            .padding(TTSpace.pagePadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(TTColor.bgWindow)
+    }
+}
+
+/// `grid3` row of two cells: span 2 (676 at the default width) + one column (332). The row is as tall as its
+/// tallest cell (at least `minHeight`) and both cells are stretched to it (DESIGN §3.0 height rule).
+struct SystemGrid3Row: Layout {
+    let minHeight: CGFloat
+
+    static func widths(_ total: CGFloat) -> (span2: CGFloat, single: CGFloat) {
+        let col = max(0, total - 2 * TTSpace.gridGap) / 3
+        return (2 * col + TTSpace.gridGap, col)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let total = proposal.width ?? 1020
+        let (a, b) = Self.widths(total)
+        var h = minHeight
+        for (i, s) in subviews.prefix(2).enumerated() {
+            h = max(h, s.sizeThatFits(ProposedViewSize(width: i == 0 ? a : b, height: nil)).height)
+        }
+        return CGSize(width: total, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let (a, b) = Self.widths(bounds.width)
+        for (i, s) in subviews.prefix(2).enumerated() {
+            s.place(at: CGPoint(x: i == 0 ? bounds.minX : bounds.minX + a + TTSpace.gridGap, y: bounds.minY),
+                    anchor: .topLeading, proposal: ProposedViewSize(width: i == 0 ? a : b, height: bounds.height))
+        }
+    }
+}
+
+/// Range → chart points: Live reads the `LiveModel` ring (60 s); other ranges read the store, bucketed to the
+/// range's display bucket (`bucket: nil`), reloaded once per bucket.
+enum SystemRangeSeries {
+    struct Key: Hashable {
+        let range: HistoryRange
+        let slot: Int
+
+        init(range: HistoryRange, end: Date) {
+            self.range = range
+            let bucket = Double(range.displayBucket.components.seconds)
+            slot = range == .live ? 0 : Int(end.timeIntervalSince1970 / max(bucket, 1))
+        }
+    }
+
+    @MainActor static func points(_ metric: HistoryMetric, range: HistoryRange, live: LiveModel,
+                                  stored: [HistoryMetric: [SeriesPoint]]) -> [SeriesPoint] {
+        range == .live ? live.series(metric) : (stored[metric] ?? [])
+    }
+
+    /// Store series for a non-live range; Live → empty (the ring is read directly).
+    static func load(_ metrics: [HistoryMetric], range: HistoryRange, end: Date,
+                     history: any HistoryProvider) async -> [HistoryMetric: [SeriesPoint]] {
+        guard range != .live else { return [:] }
+        return (try? await history.series(metrics, range: range, end: end, bucket: nil)) ?? [:]
+    }
+}
+
+private struct RangeSeriesLoader: ViewModifier {
+    let metrics: [HistoryMetric]
+    let range: HistoryRange
+    let end: Date
+    @Binding var stored: [HistoryMetric: [SeriesPoint]]
+    @Environment(\.historyProvider) private var history
+
+    func body(content: Content) -> some View {
+        content.task(id: SystemRangeSeries.Key(range: range, end: end)) {
+            let result = await SystemRangeSeries.load(metrics, range: range, end: end, history: history)
+            if !Task.isCancelled, result != stored { stored = result }
+        }
+    }
+}
+
+extension View {
+    /// Loads store series for non-live ranges into `stored` (see `SystemRangeSeries`).
+    func rangeSeries(_ metrics: [HistoryMetric], range: HistoryRange, end: Date,
+                     into stored: Binding<[HistoryMetric: [SeriesPoint]]>) -> some View {
+        modifier(RangeSeriesLoader(metrics: metrics, range: range, end: end, stored: stored))
+    }
+
+    /// `.help(text)` only when there is text (no empty tooltips).
+    @ViewBuilder func helpIfPresent(_ text: String?) -> some View {
+        if let text { help(text) } else { self }
+    }
+}
+
+/// Page-level process-action feedback shared by the Power and Disk tables: the Force Quit confirm
+/// (`TTConfirmDialog`) and result toasts ("{name} quit.", eject failures). The environment handlers are created
+/// once, so row menus are not invalidated on every tick.
+@MainActor @Observable final class ProcessActionFeedback {
+    struct Pending: Equatable {
+        var target: ProcessTarget
+        var name: String
+    }
+
+    var pending: Pending?
+    var toast: String?
+    @ObservationIgnored private(set) var requestForceQuit: (@MainActor @Sendable (ProcessTarget) -> Void)?
+    @ObservationIgnored private(set) var onResult: (@MainActor @Sendable (ProcessTarget, ActionResult) -> Void)?
+
+    init() {
+        requestForceQuit = { [weak self] target in
+            self?.pending = Pending(target: target, name: Self.name(of: target))
+        }
+        onResult = { [weak self] target, result in
+            self?.show(Self.toast(name: Self.name(of: target), forced: false, result: result))
+        }
+    }
+
+    func show(_ text: String?) {
+        if let text { toast = text }
+    }
+
+    func cancel() { pending = nil }
+
+    /// Confirmed Force Quit: runs the action, clears the dialog and shows the result.
+    func confirm(using actions: ProcessActions) async {
+        guard let p = pending else { return }
+        pending = nil
+        show(Self.toast(name: p.name, forced: true, result: await actions.forceQuit(p.target)))
+    }
+
+    static func name(of target: ProcessTarget) -> String {
+        switch target {
+        case .app(let identity, _): identity.displayName
+        case .process(_, let name, _, _): name
+        }
+    }
+
+    static func toast(name: String, forced: Bool, result: ActionResult) -> String? {
+        switch result {
+        case .done: forced ? "\(name) was force quit." : "\(name) quit."
+        case .notPermitted: "Not permitted to quit \(name)."
+        case .failed(let message): "Couldn't quit \(name): \(message)"
+        case .cancelled: nil
+        }
+    }
+}
+
+private struct ProcessActionFeedbackModifier: ViewModifier {
+    let feedback: ProcessActionFeedback
+    @Environment(\.processActions) private var actions
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.requestForceQuit, feedback.requestForceQuit)
+            .environment(\.onProcessActionResult, feedback.onResult)
+            .overlay {
+                // TTConfirmDialog covers the page area (the shell has no window-level host).
+                if let p = feedback.pending {
+                    TTConfirmDialog(
+                        title: "Force quit “\(p.name)”?",
+                        message: "Unsaved changes will be lost. The process ends immediately without cleanup.",
+                        confirmTitle: "Force Quit",
+                        onConfirm: { [feedback, actions] in Task { await feedback.confirm(using: actions) } },
+                        onCancel: { [feedback] in feedback.cancel() })
+                        .transition(TTConfirmDialog.transition)
+                }
+            }
+    }
+}
+
+extension View {
+    /// Installs the Force Quit confirm + result handlers of `feedback` for the row menus and inline buttons below.
+    func processActionFeedback(_ feedback: ProcessActionFeedback) -> some View {
+        modifier(ProcessActionFeedbackModifier(feedback: feedback))
+    }
+}
+
+/// The current toast (`TTToast`), removed after `TTToast.lifetime`. Placed in the table card header.
+struct ProcessActionToast: View {
+    let feedback: ProcessActionFeedback
+
+    var body: some View {
+        Group {
+            if let text = feedback.toast { TTToast(text) }
+        }
+        .task(id: feedback.toast) {
+            guard feedback.toast != nil else { return }
+            try? await Task.sleep(for: TTToast.lifetime)
+            if !Task.isCancelled { feedback.toast = nil }
+        }
     }
 }

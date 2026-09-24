@@ -7,54 +7,43 @@ import SwiftUI
 /// DESIGN §3.10 Power & Battery: stat strip (6) · Power by component (span 2) + Battery · Energy impact (flex).
 /// Energy values are average watts (§5.6); estimated rows carry an "Estimated" tooltip (ICR-8). No App Nap column.
 public struct PowerPage: View {
-    @Environment(LiveModel.self) private var live
-    @State private var forceQuit: PowerPendingForceQuit?
-    @State private var toast: String?
-
+    @State private var feedback: ProcessActionFeedback
     private let initialSelection: String?
 
-    public init() { initialSelection = nil }
+    public init() {
+        _feedback = State(initialValue: ProcessActionFeedback())
+        initialSelection = nil
+    }
 
-    /// Tests/renders: start with an energy row selected (e.g. "app:app:com.apple.FinalCut").
-    init(selectedRowID: String?) { initialSelection = selectedRowID }
+    /// Tests/renders: start with an energy row selected (e.g. "app:app:com.apple.FinalCut") and/or a pending
+    /// Force Quit confirm.
+    init(selectedRowID: String?, feedback: ProcessActionFeedback = ProcessActionFeedback()) {
+        _feedback = State(initialValue: feedback)
+        initialSelection = selectedRowID
+    }
 
+    /// The root reads no live data (the subtitle lives in its own view), so it isn't re-evaluated per tick.
     public var body: some View {
-        PowerPageColumn {
+        SystemPageColumn {
             PowerStatStrip()
-            PowerGrid3Row(minHeight: 285) {
+            SystemGrid3Row(minHeight: 285) {
                 PowerByComponentCard()
                 BatteryCard()
             }
-            EnergyImpactCard(selection: initialSelection)
-                .frame(maxHeight: .infinity, alignment: .top)
+            EnergyImpactCard(selection: initialSelection, feedback: feedback)
         }
-        .overlay(alignment: .bottom) {
-            if let toast { PowerToast(text: toast).padding(.bottom, TTSpace.x20) }
-        }
-        .overlay {
-            if let pending = forceQuit {
-                PowerForceQuitDialog(pending: pending, onDone: { result in
-                    forceQuit = nil
-                    if let result { show(PowerCopy.toast(name: pending.name, forced: true, result: result)) }
-                })
-            }
-        }
-        .environment(\.requestForceQuit, { [binding = $forceQuit, live] target in
-            binding.wrappedValue = PowerPendingForceQuit(target: target, name: PowerCopy.name(of: target, live: live))
-        })
-        .environment(\.onProcessActionResult, { [binding = $toast, live] target, result in
-            let text = PowerCopy.toast(name: PowerCopy.name(of: target, live: live), forced: false, result: result)
-            binding.wrappedValue = text
-        })
-        .task(id: toast) {
-            guard toast != nil else { return }
-            try? await Task.sleep(for: .seconds(4))
-            if !Task.isCancelled { toast = nil }
-        }
-        .pageHeader(subtitle: PowerCopy.subtitle(live.power))
+        .processActionFeedback(feedback)
+        .background(PowerHeaderSubtitle())
     }
+}
 
-    private func show(_ text: String?) { toast = text }
+/// Sets the header subtitle from `live.power` (only this view re-evaluates when power changes).
+private struct PowerHeaderSubtitle: View {
+    @Environment(LiveModel.self) private var live
+
+    var body: some View {
+        Color.clear.pageHeader(subtitle: PowerCopy.subtitle(live.power))
+    }
 }
 
 // MARK: - Copy
@@ -106,63 +95,6 @@ enum PowerCopy {
         if percent <= 20 { return TTColor.statusElevated }
         return TTColor.battery
     }
-
-    @MainActor static func name(of target: ProcessTarget, live: LiveModel) -> String {
-        switch target {
-        case .app(let identity, _): identity.displayName
-        case .process(_, let name, _, _): name
-        }
-    }
-
-    static func toast(name: String, forced: Bool, result: ActionResult) -> String? {
-        switch result {
-        case .done: forced ? "\(name) was force quit." : "\(name) quit."
-        case .notPermitted: "Not permitted to quit \(name)."
-        case .failed(let message): "Couldn't quit \(name): \(message)"
-        case .cancelled: nil
-        }
-    }
-}
-
-// MARK: - Layout helpers
-
-private struct PowerPageColumn<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: TTSpace.gridGap) { content }
-            .padding(TTSpace.pagePadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(TTColor.bgWindow)
-    }
-}
-
-/// `grid3` row of span 2 + 1, stretched to the tallest cell (at least `minHeight`).
-private struct PowerGrid3Row: Layout {
-    let minHeight: CGFloat
-
-    static func widths(_ total: CGFloat) -> (CGFloat, CGFloat) {
-        let col = max(0, total - 2 * TTSpace.gridGap) / 3
-        return (2 * col + TTSpace.gridGap, col)
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let total = proposal.width ?? 1020
-        let (a, b) = Self.widths(total)
-        var h = minHeight
-        for (i, s) in subviews.prefix(2).enumerated() {
-            h = max(h, s.sizeThatFits(ProposedViewSize(width: i == 0 ? a : b, height: nil)).height)
-        }
-        return CGSize(width: total, height: h)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let (a, b) = Self.widths(bounds.width)
-        for (i, s) in subviews.prefix(2).enumerated() {
-            s.place(at: CGPoint(x: i == 0 ? bounds.minX : bounds.minX + a + TTSpace.gridGap, y: bounds.minY),
-                    anchor: .topLeading, proposal: ProposedViewSize(width: i == 0 ? a : b, height: bounds.height))
-        }
-    }
 }
 
 // MARK: - Stat strip
@@ -197,7 +129,6 @@ private struct PowerByComponentCard: View {
     @Environment(LiveModel.self) private var live
     @Environment(NavigationModel.self) private var nav
     @Environment(\.now) private var fixedNow
-    @Environment(\.historyProvider) private var history
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
 
     private static let metrics: [HistoryMetric] = [.cpuWatts, .gpuWatts, .aneWatts, .dramWatts]
@@ -205,14 +136,15 @@ private struct PowerByComponentCard: View {
     var body: some View {
         let range = nav.range
         let end = fixedNow ?? live.lastUpdate ?? Date()
+        let points = { (m: HistoryMetric) in SystemRangeSeries.points(m, range: range, live: live, stored: stored) }
         let series = [
-            ChartSeries(id: "cpu", label: "CPU", color: TTColor.cpu, points: points(.cpuWatts, range),
+            ChartSeries(id: "cpu", label: "CPU", color: TTColor.cpu, points: points(.cpuWatts),
                         fillOpacity: TTChartFill.powerCPU),
-            ChartSeries(id: "gpu", label: "GPU", color: TTColor.gpu, points: points(.gpuWatts, range),
+            ChartSeries(id: "gpu", label: "GPU", color: TTColor.gpu, points: points(.gpuWatts),
                         fillOpacity: TTChartFill.powerGPU),
-            ChartSeries(id: "ane", label: "ANE", color: TTColor.power, points: points(.aneWatts, range),
+            ChartSeries(id: "ane", label: "ANE", color: TTColor.power, points: points(.aneWatts),
                         fillOpacity: TTChartFill.powerANE),
-            ChartSeries(id: "dram", label: "DRAM", color: TTColor.dram, points: points(.dramWatts, range),
+            ChartSeries(id: "dram", label: "DRAM", color: TTColor.dram, points: points(.dramWatts),
                         fillOpacity: TTChartFill.powerDRAM),
         ]
         let reason = unavailableReason(.cpuWatts, health: live.sensorHealth)
@@ -229,19 +161,7 @@ private struct PowerByComponentCard: View {
             .frame(minHeight: 160, maxHeight: .infinity)
             TTTimeAxis(range: range, end: end)
         }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .task(id: PowerRangeKey(range: range, end: end)) {
-            guard range != .live else {
-                if !stored.isEmpty { stored = [:] }
-                return
-            }
-            let result = try? await history.series(Self.metrics, range: range, end: end, bucket: nil)
-            if !Task.isCancelled { stored = result ?? [:] }
-        }
-    }
-
-    private func points(_ metric: HistoryMetric, _ range: HistoryRange) -> [SeriesPoint] {
-        range == .live ? live.series(metric) : (stored[metric] ?? [])
+        .rangeSeries(Self.metrics, range: range, end: end, into: $stored)
     }
 }
 
@@ -259,17 +179,6 @@ enum PowerChartScale {
             peak = max(peak, sum)
         }
         return TTFormat.niceCeiling(peak, minimum: 1)
-    }
-}
-
-private struct PowerRangeKey: Hashable {
-    let range: HistoryRange
-    let slot: Int
-
-    init(range: HistoryRange, end: Date) {
-        self.range = range
-        let bucket = Double(range.displayBucket.components.seconds)
-        slot = range == .live ? 0 : Int(end.timeIntervalSince1970 / max(bucket, 1))
     }
 }
 
@@ -300,23 +209,27 @@ private struct BatteryCard: View {
                             .lineLimit(1)
                     }
                 }
-                TTKeyValueList(rows: [
-                    .init("Health", b.healthFraction.map { "\(TTFormat.percent($0)) maximum capacity" },
-                          unavailableReason: "Not reported by the battery"),
-                    .init("Condition", b.condition, unavailableReason: "Not reported by the battery"),
-                    .init("Cycle count", b.cycleCount.map { TTFormat.count($0) }, unavailableReason: "Not reported by the battery"),
-                    .init("Capacity", Self.capacity(b), unavailableReason: "Not reported by the battery"),
-                    .init("Temperature", b.temperatureC.map { TTFormat.temperature($0, units: units) },
-                          unavailableReason: "Not reported by the battery"),
-                    .init("Power adapter", PowerCopy.adapter(p)),
-                ])
-                Spacer(minLength: 0)
+                // Spacer inside (not a card child) so the stretch adds no extra 8-pt card gap.
+                VStack(spacing: 0) {
+                    TTKeyValueList(rows: [
+                        .init("Health", b.healthFraction.map { "\(TTFormat.percent($0)) maximum capacity" },
+                              unavailableReason: Self.notReported),
+                        .init("Condition", b.condition, unavailableReason: Self.notReported),
+                        .init("Cycle count", b.cycleCount.map { TTFormat.count($0) }, unavailableReason: Self.notReported),
+                        .init("Capacity", Self.capacity(b), unavailableReason: Self.notReported),
+                        .init("Temperature", b.temperatureC.map { TTFormat.temperature($0, units: units) },
+                              unavailableReason: Self.notReported),
+                        .init("Power adapter", PowerCopy.adapter(p)),
+                    ])
+                    Spacer(minLength: 0)
+                }
             } else {
                 TTEmptyState(.empty("No battery")).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(maxHeight: .infinity, alignment: .top)
     }
+
+    private static let notReported = "Not reported by the battery"
 
     static func capacity(_ b: BatterySnapshot) -> String? {
         guard b.maxCapacityWh != nil, b.designCapacityWh != nil else { return nil }
@@ -363,8 +276,14 @@ struct EnergyRow: Identifiable, Equatable {
 }
 
 enum EnergyRows {
-    /// App groups with energy > 0 or a sleep assertion (or an unavailable value to explain), excluding "Other".
+    /// App groups with energy > 0 or a sleep assertion (or an unavailable value to explain), excluding "Other";
+    /// sorted by energy, descending (nil last, stable).
     static func apps(_ apps: [AppSample], averages: [AppKey: Double], health: [SensorID: SensorStatus]) -> [EnergyRow] {
+        SystemPageSort.descending(rows(apps, averages: averages, health: health)) { $0.watts }
+    }
+
+    private static func rows(_ apps: [AppSample], averages: [AppKey: Double],
+                             health: [SensorID: SensorStatus]) -> [EnergyRow] {
         apps.compactMap { a in
             guard a.identity.key != .other else { return nil }
             let reason = unavailableReason(.energy, a, health: health)
@@ -392,8 +311,12 @@ private struct EnergyImpactCard: View {
     @Environment(\.now) private var fixedNow
     @State private var selection: String?
     @State private var averages: [AppKey: Double] = [:]
+    let feedback: ProcessActionFeedback
 
-    init(selection: String? = nil) { _selection = State(initialValue: selection) }
+    init(selection: String? = nil, feedback: ProcessActionFeedback) {
+        _selection = State(initialValue: selection)
+        self.feedback = feedback
+    }
 
     var body: some View {
         let health = live.sensorHealth
@@ -403,17 +326,21 @@ private struct EnergyImpactCard: View {
         let end = fixedNow ?? live.lastUpdate ?? Date()
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Energy impact") {
-                TTLink("All processes") {
-                    nav.processesMode = .apps
-                    nav.page = .processes
+                HStack(spacing: TTSpace.x12) {
+                    ProcessActionToast(feedback: feedback)
+                    TTLink("All processes") {
+                        nav.processesMode = .apps
+                        nav.page = .processes
+                    }
                 }
             }
-            TTTable(rows: rows, columns: columns(sleepReason: sleepReason), selection: $selection,
-                    sort: .constant((column: "energy", descending: true)),
-                    rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
-                    children: { children[$0.id] ?? [] },
-                    style: TTTableStyle(emptyMessage: "No app energy use"))
-                .clipped()
+            SystemFittedRows(rowHeight: TTTableStyle.standard.rowHeight) { limit in
+                TTTable(rows: Array(rows.prefix(limit)), columns: columns(sleepReason: sleepReason),
+                        selection: $selection, sort: .constant((column: "energy", descending: true)),
+                        rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
+                        children: { children[$0.id] ?? [] },
+                        style: TTTableStyle(emptyMessage: "No app energy use"))
+            }
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .task(id: Int(end.timeIntervalSince1970 / 60)) { await loadAverages(end: end) }
@@ -500,59 +427,3 @@ private struct EnergyInlineActions: View {
     }
 }
 
-// MARK: - Force quit confirm + toast (placeholders)
-
-struct PowerPendingForceQuit: Identifiable, Equatable {
-    var target: ProcessTarget
-    var name: String
-    var id: ProcessTarget { target }
-}
-
-// TODO(W3 T12): replace with TTConfirmDialog once it renders (the W0b stub draws nothing).
-/// DESIGN §2.26 over the page area: scrim, 380-wide `bgElevated` dialog 52 below the top, [Cancel] [Force Quit].
-private struct PowerForceQuitDialog: View {
-    let pending: PowerPendingForceQuit
-    let onDone: (ActionResult?) -> Void
-    @Environment(\.processActions) private var actions
-
-    var body: some View {
-        ZStack(alignment: .top) {
-            TTColor.bgScrim.onTapGesture { onDone(nil) }
-            VStack(alignment: .leading, spacing: TTSpace.x12) {
-                Text("Force quit “\(pending.name)”?").font(TTFont.dialogTitle).foregroundStyle(TTColor.textPrimary)
-                Text("Unsaved changes will be lost. The process ends immediately without cleanup.")
-                    .font(TTFont.body12Para).foregroundStyle(TTColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: TTSpace.x8) {
-                    Spacer(minLength: 0)
-                    Button("Cancel") { onDone(nil) }
-                        .buttonStyle(.tt(.regularSecondary))
-                        .keyboardShortcut(.cancelAction)
-                    Button("Force Quit") {
-                        let target = pending.target, actions = actions
-                        Task { @MainActor in onDone(await actions.forceQuit(target)) }
-                    }
-                    .buttonStyle(.tt(.regularDestructive))
-                }
-                .padding(.top, TTSpace.x4)
-            }
-            .padding(TTSpace.x20)
-            .frame(width: 380)
-            .background(RoundedRectangle(cornerRadius: TTRadius.window, style: .continuous).fill(TTColor.bgElevated)
-                .strokeBorder(TTColor.borderPopover, lineWidth: TTStroke.hairline))
-            .shadow(color: .black.opacity(0.55), radius: 30, y: 24)
-            .padding(.top, 52)
-        }
-    }
-}
-
-// TODO(W3 T12): replace with TTToast once it renders.
-private struct PowerToast: View {
-    let text: String
-
-    var body: some View {
-        Text(text).font(TTFont.body12).foregroundStyle(TTColor.textSecondary).lineLimit(1)
-            .padding(.horizontal, TTSpace.x12).frame(height: 28)
-            .background(Capsule().fill(TTColor.bgElevated).strokeBorder(TTColor.borderPopover, lineWidth: TTStroke.hairline))
-    }
-}
