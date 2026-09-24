@@ -80,13 +80,22 @@ public final class WiFiSensor: Sensor {
     public let id: SensorID = .wifi
     public let cadence: SensorCadence = .every(.seconds(2), background: .seconds(30), requires: .wifi)
 
-    let box = WiFiBox()
+    let box: WiFiBox
+    private let hasInterface: () -> Bool
 
-    public init() {}
+    public convenience init() {
+        self.init(box: WiFiBox()) { !(CWWiFiClient.interfaceNames() ?? []).isEmpty }
+    }
+
+    /// Tests inject a fake read (`WiFiBox(read:)`) and hardware check.
+    init(box: WiFiBox, hasInterface: @escaping () -> Bool) {
+        self.box = box
+        self.hasInterface = hasInterface
+    }
 
     public func prepare() throws(SensorError) {
         guard !box.isPrepared else { return }
-        guard !(CWWiFiClient.interfaceNames() ?? []).isEmpty else { throw .unavailable("No Wi-Fi interface") }
+        guard hasInterface() else { throw .unavailable("No Wi-Fi interface") }
         box.setPrepared(true)
         box.startRead()
     }
@@ -99,8 +108,7 @@ public final class WiFiSensor: Sensor {
         }
         // First sample: the read started in prepare(); give it ≤ 200 ms.
         box.startRead()
-        _ = box.firstRead.wait(timeout: .now() + .milliseconds(200))
-        guard let last = box.last() else { throw .transient("Wi-Fi: first read pending") }
+        guard let last = box.awaitFirst(timeoutMs: 200) else { throw .transient("Wi-Fi: first read pending") }
         return try last.get()
     }
 
@@ -122,14 +130,36 @@ final class WiFiBox: Sendable {
     let queue = DispatchQueue(label: "dev.telltale.wifi", qos: .utility)
     let lock = OSAllocatedUnfairLock(initialState: State())
     let firstRead = DispatchSemaphore(value: 0)
+    /// Blocking read (runs on `queue` only). Injectable for tests.
+    let read: @Sendable () -> Result<WiFiFields, SensorError>
+
+    init(read: @escaping @Sendable () -> Result<WiFiFields, SensorError> = WiFiBox.coreWLANRead) {
+        self.read = read
+    }
+
+    @Sendable static func coreWLANRead() -> Result<WiFiFields, SensorError> {
+        guard let i = CWWiFiClient.shared().interface() else { return .failure(.unavailable("No Wi-Fi interface")) }
+        return .success(fields(i))
+    }
+
+    /// Waits ≤ `timeoutMs` for this prepare cycle's first read.
+    func awaitFirst(timeoutMs: Int) -> Result<(reading: WiFiInfo, capturedNs: UInt64), SensorError>? {
+        if let l = last() { return l }
+        _ = firstRead.wait(timeout: .now() + .milliseconds(timeoutMs))
+        return last()
+    }
 
     var isPrepared: Bool { lock.withLock { $0.prepared } }
     var lastReadCostNs: UInt64 { lock.withLock { $0.lastReadCostNs } }
 
+    /// Preparing re-arms the first-read signal (each invalidate → prepare cycle waits for its own first read, and a
+    /// stale unconsumed signal from an earlier cycle can't satisfy that wait early).
     func setPrepared(_ p: Bool) {
+        if p { while firstRead.wait(timeout: .now()) == .success {} }
         lock.withLock { s in
             s.prepared = p
-            if !p { s.last = nil }
+            s.last = nil
+            if p { s.firstSignalled = false }
         }
     }
 
@@ -146,12 +176,7 @@ final class WiFiBox: Sendable {
         guard go else { return }
         queue.async { [self] in
             let t0 = W6cClock.uptimeNs()
-            let result: Result<WiFiFields, SensorError>
-            if let i = CWWiFiClient.shared().interface() {
-                result = .success(WiFiBox.fields(i))
-            } else {
-                result = .failure(.unavailable("No Wi-Fi interface"))
-            }
+            let result = read()
             let now = W6cClock.uptimeNs()
             let signal = lock.withLock { s -> Bool in
                 s.inFlight = false
