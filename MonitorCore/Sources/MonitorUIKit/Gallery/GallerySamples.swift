@@ -12,10 +12,12 @@ import SwiftUI
             .init(id: "metric-tiles", size: CGSize(width: 1020, height: 168)) { AnyView(MetricTilesSample()) },
             // CPU@2x: stat strip at (240, 72), 1020×82.
             .init(id: "stat-strip", size: CGSize(width: 1020, height: 82)) { AnyView(StatStripSample()) },
-            .init(id: "controls", size: CGSize(width: 1020, height: 120)) { AnyView(ControlsSample()) },
+            .init(id: "controls", size: CGSize(width: 1020, height: 150)) { AnyView(ControlsSample()) },
             .init(id: "bars", size: CGSize(width: 500, height: 150)) { AnyView(BarsSample()) },
             .init(id: "key-value", size: CGSize(width: 332, height: 170)) { AnyView(KeyValueSample()) },
             .init(id: "states", size: CGSize(width: 1020, height: 90)) { AnyView(StatesSample()) },
+            // Diagnostic: "Open Dashboard" (13) in regular / medium / semibold on 261×30 accent buttons.
+            .init(id: "weights", size: CGSize(width: 261, height: 90)) { AnyView(WeightsSample()) },
         ] + GalleryCharts.items + GalleryTable.items + GalleryGauges.items + GalleryOverlays.items
     }
 }
@@ -124,6 +126,20 @@ private struct ControlsSample: View {
             }
             .padding(10)
         )
+    }
+}
+
+private struct WeightsSample: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach([Font.Weight.regular, .medium, .semibold], id: \.self) { w in
+                Text("Open Dashboard")
+                    .font(.system(size: 13, weight: w))
+                    .foregroundStyle(.white)
+                    .frame(width: 261, height: 30)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(TTColor.accent))
+            }
+        }
     }
 }
 

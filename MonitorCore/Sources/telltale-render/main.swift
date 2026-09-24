@@ -20,7 +20,8 @@ usage: telltale-render [options]
   --crop x,y,w,h                  crop (points, @2x applied) before writing/comparing
   --path hosting|imageRenderer    render path (default hosting)
   --cg smooth|nosmooth            (with --component) diagnostic ImageRenderer→CGContext path, font smoothing on/off
-  --out <path>                    output file (or directory with --all); default .build/renders/<name>.png
+  --stats                         print the mean luminance of the (cropped) render/image (text-weight proxy)
+  --out <path>                  output file (or directory with --all); default .build/renders/<name>.png
 """
 
 struct Options {
@@ -28,6 +29,7 @@ struct Options {
     var screen: String?, scenario = "calm", component: String?, image: String?, compare: String?, out: String?
     var crop: CGRect?
     var cgSmooth: Bool?
+    var stats = false
     var path: SnapshotRenderer.Path = .hosting
 }
 
@@ -59,11 +61,15 @@ func parse(_ args: [String]) -> Options {
             let parts = value().split(separator: ",").compactMap { Double($0) }
             guard parts.count == 4 else { fail("--crop expects x,y,w,h") }
             o.crop = CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
+        case "--stats": o.stats = true
         case "--cg":
             // Diagnostic: ImageRenderer into our CGContext; "smooth" or "nosmooth" font smoothing.
             o.cgSmooth = value() != "nosmooth"
         case "--path":
             o.path = value() == "imageRenderer" ? .imageRenderer : .hosting
+        case let arg where arg.hasPrefix("-Apple") || arg.hasPrefix("-CG"):
+            // NSArgumentDomain defaults (e.g. -AppleFontSmoothing 0): read by AppKit/CoreText at launch; skip value.
+            _ = value()
         case "-h", "--help":
             print(usage)
             exit(0)
@@ -165,6 +171,21 @@ func cropped(_ image: CGImage, _ crop: CGRect?) -> CGImage {
         exit(2)
     }
 
+    if o.stats {
+        // Mean luminance (0…1) of the (cropped) image: a proxy for text ink weight in comparisons.
+        let img = cropped(ours, o.crop)
+        if let px = SnapshotImage.pixels(img) {
+            var sum = 0.0
+            var i = 0
+            while i < px.count {
+                sum += 0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])
+                i += 4
+            }
+            print(String(format: "mean luminance: %.4f", sum / Double(px.count / 4) / 255))
+        }
+        return
+    }
+
     if let ref = o.compare {
         guard let refImage = SnapshotRenderer.readPNG(URL(fileURLWithPath: ref)) else { fail("cannot read \(ref)") }
         let r = cropped(refImage, o.crop)
@@ -179,4 +200,5 @@ func cropped(_ image: CGImage, _ crop: CGRect?) -> CGImage {
     }
 }
 
+SnapshotRenderer.configureTextRendering()
 MainActor.assumeIsolated { run() }
