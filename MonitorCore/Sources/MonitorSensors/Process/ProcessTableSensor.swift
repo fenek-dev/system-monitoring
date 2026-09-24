@@ -137,26 +137,26 @@ struct LiveProcessSource: ProcessSource {
     let hasResponsibility: Bool
 
     func rusage(_ pid: Int32) -> RusageOutcome {
-        let rc: Int32
-        let values: RusageValues
         if useV6 {
             var ri = rusage_info_v6()
-            rc = withUnsafeMutablePointer(to: &ri) { p in
-                p.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V6, $0) }
+            let (rc, err) = withUnsafeMutablePointer(to: &ri) { p in
+                p.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { (proc_pid_rusage(pid, RUSAGE_INFO_V6, $0), errno) }
             }
-            values = RusageValues(v6: ri, timebase: timebase)
+            return rc == 0 ? .ok(RusageValues(v6: ri, timebase: timebase)) : Self.outcome(err)
         } else {
             var ri = rusage_info_v4()
-            rc = withUnsafeMutablePointer(to: &ri) { p in
-                p.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+            let (rc, err) = withUnsafeMutablePointer(to: &ri) { p in
+                p.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { (proc_pid_rusage(pid, RUSAGE_INFO_V4, $0), errno) }
             }
-            values = RusageValues(v4: ri, timebase: timebase)
+            return rc == 0 ? .ok(RusageValues(v4: ri, timebase: timebase)) : Self.outcome(err)
         }
-        if rc == 0 { return .ok(values) }
-        switch errno {
-        case EPERM, EACCES: return .denied
-        case ESRCH: return .gone
-        case let e: return .failed(e)
+    }
+
+    private static func outcome(_ err: Int32) -> RusageOutcome {
+        switch err {
+        case EPERM, EACCES: .denied
+        case ESRCH: .gone
+        default: .failed(err)
         }
     }
 
@@ -228,11 +228,12 @@ public final class ProcessTableSensor: Sensor {
         if builder == nil { try prepare() }
         guard let list, var b = builder else { throw SensorError.unavailable("process table not prepared") }
         let entries = try list.read()
-        let captured = w6aUptimeNs()
         builder = nil   // keep the builder's dictionaries uniquely referenced while mutating
+        let t0 = w6aUptimeNs()
         let rows = b.build(entries)
+        let t1 = w6aUptimeNs()
         builder = b
-        return (ProcessTableReading(processes: rows), captured)
+        return (ProcessTableReading(processes: rows), t0 + (t1 - t0) / 2)   // midpoint of the rusage reads
     }
 
     public func invalidate() {

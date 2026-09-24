@@ -75,55 +75,75 @@ import Testing
 
     // MARK: membership
 
+    /// pid → (coalition, start µs); a missing pid fails the lookup (e.g. a zombie).
     final class Lookup {
-        var table: [Int32: UInt64] = [:]
+        var table: [Int32: (UInt64, UInt64)] = [:]
         var calls: [Int32] = []
-        func callAsFunction(_ pid: Int32) -> UInt64? { calls.append(pid); return table[pid] }
+        func callAsFunction(_ pid: Int32) -> CoalitionMembership.Info? {
+            calls.append(pid)
+            return table[pid].map { .init(coalition: $0.0, startTimeUs: $0.1) }
+        }
     }
 
-    static func e(_ pid: Int32, start: UInt64) -> KinfoEntry {
-        KinfoEntry(pid: pid, ppid: 1, uid: 0, comm: "p\(pid)", startTimeUs: start)
-    }
-
-    @Test func membershipQueriesOnlyNewProcessIDsAndDropsExited() {
+    @Test func membershipQueriesOnlyNewPidsAndDropsExited() {
         let lookup = Lookup()
-        lookup.table = [1: 10, 2: 10, 3: 20]
+        lookup.table = [1: (10, 5), 2: (10, 6), 3: (20, 7)]
         var m = CoalitionMembership()
-        m.update([Self.e(1, start: 5), Self.e(2, start: 6), Self.e(3, start: 7)]) { lookup($0) }
+        m.update(pids: [3, 2, 1]) { lookup($0) }
         #expect(lookup.calls.sorted() == [1, 2, 3])
         #expect(m.members[10] == [1, 2])
         #expect(m.members[20] == [3])
 
         lookup.calls = []
-        lookup.table[4] = 20
-        m.update([Self.e(1, start: 5), Self.e(3, start: 7), Self.e(4, start: 8)]) { lookup($0) }
+        lookup.table[4] = (20, 8)
+        m.update(pids: [1, 3, 4]) { lookup($0) }
         #expect(lookup.calls == [4])
         #expect(m.members[10] == [1])
         #expect(m.members[20] == [3, 4])
-
-        // pid 3 reused by a new process in another coalition.
-        lookup.calls = []
-        lookup.table[3] = 30
-        m.update([Self.e(1, start: 5), Self.e(3, start: 99), Self.e(4, start: 8)]) { lookup($0) }
-        #expect(lookup.calls == [3])
-        #expect(m.members[20] == [4])
-        #expect(m.members[30] == [3])
         #expect(m.trackedCount == 3)
+    }
+
+    /// Review fix: an exit and a failing lookup in the same tick must still prune the exited pid.
+    @Test func exitAndFailedLookupInSameTickPrunes() {
+        let lookup = Lookup()
+        lookup.table = [1: (10, 1), 2: (10, 2)]
+        var m = CoalitionMembership()
+        m.update(pids: [1, 2]) { lookup($0) }
+        #expect(m.leader(of: 10) == 1)
+        // pid 1 exits; pid 3 appears but its lookup fails. Tracked count stays equal to the live count.
+        m.update(pids: [2, 3]) { lookup($0) }
+        #expect(m.members[10] == [2])
+        #expect(m.leader(of: 10) == 2)
+        #expect(m.trackedCount == 1)
     }
 
     @Test func membershipRetriesPidsWithoutCoalitionInfo() {
         let lookup = Lookup()
         var m = CoalitionMembership()
-        m.update([Self.e(1, start: 5)]) { lookup($0) }
-        m.update([Self.e(1, start: 5)]) { lookup($0) }
+        m.update(pids: [1]) { lookup($0) }
+        m.update(pids: [1]) { lookup($0) }
         #expect(lookup.calls == [1, 1])
+        lookup.table[1] = (10, 1)
+        m.update(pids: [1]) { lookup($0) }
+        #expect(m.members[10] == [1])
+    }
+
+    @Test func unchangedPidSetDoesNotRebuild() {
+        let lookup = Lookup()
+        lookup.table = [1: (10, 1), 2: (10, 2)]
+        var m = CoalitionMembership()
+        m.update(pids: [1, 2]) { lookup($0) }
+        let rebuilds = m.rebuilds
+        m.update(pids: [2, 1]) { lookup($0) }
+        #expect(m.rebuilds == rebuilds)
+        #expect(lookup.calls.count == 2)
     }
 
     @Test func leaderIsEarliestStartedMember() {
         let lookup = Lookup()
-        lookup.table = [50: 10, 40: 10, 60: 10]
+        lookup.table = [50: (10, 3), 40: (10, 9), 60: (10, 3)]
         var m = CoalitionMembership()
-        m.update([Self.e(50, start: 3), Self.e(40, start: 9), Self.e(60, start: 3)]) { lookup($0) }
+        m.update(pids: [60, 50, 40]) { lookup($0) }
         #expect(m.leader(of: 10) == 50)   // tie on start time → lower pid
         #expect(m.leader(of: 99) == nil)
     }

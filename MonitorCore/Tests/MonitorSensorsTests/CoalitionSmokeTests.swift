@@ -31,8 +31,14 @@ struct CoalitionSmokeTests {
         #expect(members > 500)
     }
 
-    /// Plausibility: Σ coalition CPU over a window ≈ `top` total (user+sys × ncpu).
+    /// Controlled load (`yes` child, same coalition as us): Σ coalition CPU ≈ `top` total (user+sys × ncpu),
+    /// ±30 % with a 50-point floor; our own coalition carries the `yes` core.
     @Test func sumOfCoalitionCPUMatchesTop() throws {
+        let yes = try W6aFixture.spawnYes()
+        defer { yes.terminate(); yes.waitUntilExit() }
+        Thread.sleep(forTimeInterval: 0.3)
+        let own = try #require(CoalitionFFI.resourceCoalition(of: getpid()))
+        #expect(CoalitionFFI.resourceCoalition(of: yes.processIdentifier) == own)
         let sensor = CoalitionSensor()
         try sensor.prepare()
         let a = try sensor.sample(SampleContext())
@@ -40,16 +46,19 @@ struct CoalitionSmokeTests {
         let b = try sensor.sample(SampleContext())
         let dt = Double(b.capturedNs - a.capturedNs) / 1e9
         let before = Dictionary(a.reading.coalitions.map { ($0.id, $0.cpuTimeNs) }, uniquingKeysWith: { x, _ in x })
-        var sumNs: UInt64 = 0
+        var sumNs: UInt64 = 0, ownNs: UInt64 = 0
         for c in b.reading.coalitions {
-            if let old = before[c.id], let d = w6aCounterDelta(c.cpuTimeNs, old) { sumNs += d }
+            guard let old = before[c.id], let d = w6aCounterDelta(c.cpuTimeNs, old) else { continue }
+            sumNs += d
+            if c.id == own { ownNs = d }
         }
         let coalPct = Double(sumNs) / 1e9 / dt * 100
-        let line = top.split(separator: "\n").last { $0.hasPrefix("CPU usage") }.map(String.init) ?? ""
-        let nums = line.split(whereSeparator: { !"0123456789.".contains($0) }).compactMap { Double($0) }
-        let topPct = nums.count >= 2 ? (nums[0] + nums[1]) * Double(ProcessInfo.processInfo.activeProcessorCount) : -1
-        print("W6a Σcoalition cpu=\(String(format: "%.1f", coalPct))% (of one core) top=\(String(format: "%.1f", topPct))% dt=\(String(format: "%.2f", dt))s")
-        #expect(coalPct > 0)
+        let ownPct = Double(ownNs) / 1e9 / dt * 100
+        let topPct = try #require(W6aFixture.topTotalCores(top))
+        print("W6a Σcoalition cpu=\(String(format: "%.1f", coalPct))% own=\(String(format: "%.1f", ownPct))% " +
+              "top=\(String(format: "%.1f", topPct))% (of one core) dt=\(String(format: "%.2f", dt))s")
+        #expect(abs(coalPct - topPct) <= max(0.3 * topPct, 50))
+        #expect(ownPct >= 70)
     }
 
     @Test func bench() throws {
@@ -63,7 +72,8 @@ struct CoalitionSmokeTests {
             _ = try sensor.sample(SampleContext())
             ns.append(w6aUptimeNs() - t)
         }
-        print("W6a bench coalitions prepare=\(W6aFixture.ms(prep))ms \(W6aFixture.percentiles(ns))")
+        print("W6a bench coalitions prepare=\(W6aFixture.ms(prep))ms \(W6aFixture.percentiles(ns)) " +
+              "membershipRebuilds=\(sensor.membershipRebuilds)/31")
     }
 
     private func pidComm(_ pid: Int32) -> String {

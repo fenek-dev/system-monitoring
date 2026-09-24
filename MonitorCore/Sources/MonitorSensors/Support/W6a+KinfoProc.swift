@@ -72,9 +72,13 @@ final class KinfoProcList {
                 byteCount = size
                 return KinfoProcParser.entries(UnsafeRawBufferPointer(rebasing: buffer[0..<size]))
             }
-            guard errno == ENOMEM else { throw SensorError.fromErrno("sysctl KERN_PROC_ALL") }
+            let err = errno
+            guard err == ENOMEM else { throw w6aErrnoError(err, "sysctl KERN_PROC_ALL") }
             var needed = 0
-            guard sysctl(&mib, 4, nil, &needed, nil, 0) == 0 else { throw SensorError.fromErrno("sysctl KERN_PROC_ALL size") }
+            guard sysctl(&mib, 4, nil, &needed, nil, 0) == 0 else {
+                let e = errno
+                throw w6aErrnoError(e, "sysctl KERN_PROC_ALL size")
+            }
             let grown = max(needed + needed / 4, buffer.count * 2)
             buffer.deallocate()
             buffer = .allocate(byteCount: grown, alignment: MemoryLayout<kinfo_proc>.alignment)

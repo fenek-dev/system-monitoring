@@ -9,6 +9,7 @@
 // A resource coalition is a SUPERSET of a responsible-pid group: it never splits one, but it can hold
 // several responsible roots. Use it only where proc_pid_rusage is denied (foreign-uid pids) and for
 // per-app energy, never as the app key.
+// The kernel exposes no leader query: CoalitionSensor names the earliest-started live member the leader.
 //
 // Private functions are weak (ARCHITECTURE §1): check tt_coalition_available() before calling.
 

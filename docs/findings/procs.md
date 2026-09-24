@@ -85,3 +85,12 @@ Every private/system API, struct, flavor constant, and field this spike touches,
     - `ri_energy_nj` — cumulative total energy attributed to the task, in **nanojoules (nJ)**; confirmed functional and recommended (see above).
     - `ri_penergy_nj` — the P-core-only subset of `ri_energy_nj`, in **nanojoules (nJ)**; confirmed functional.
 - `NSWorkspace.shared.runningApplications` / `NSRunningApplication.activationPolicy`/`.processIdentifier`/`.localizedName` (AppKit, public API): used only by the `--energy-test` harness to find a running GUI app for the idle-control scenario; not part of the production sweep design, no unit (enums/strings/pid).
+
+### Production verification (W6a, 2026-09-24, M1 Max, macOS 26.5, unprivileged)
+Source: `ProcessTableSmokeTests` (`TELLTALE_HW_TESTS=1`), `ProcessTableSensor` = sysctl `KERN_PROC_ALL` + `proc_pid_rusage(RUSAGE_INFO_V6)`.
+- **`proc_pidpath` on root pids: works.** 194/195 uid-0 pids return a path (e.g. launchd → `/sbin/launchd`). The one failure is kernel_task (pid 0, no executable; ESRCH per sysmon.md §B). Across all foreign-uid pids the same holds (sysmon.md: 329/330).
+- `proc_name` on root pids: 0/195 (EPERM, same gate as rusage), so `RawProcess.name` is nil there; `comm` (kinfo `p_comm`, ≤ 16 chars) is always present.
+- rusage EPERM → `restricted`: 330/330 foreign-uid pids, 0 own-uid pids. List vs `ps -Axo pid,uid`: uid mismatches 0; row counts equal ±2 (process churn between the two calls).
+- Responsible PID: present for ~590–650 pids (own uid only; `responsibility_get_pid_responsible_for_pid` returns nothing for foreign-uid pids).
+- CPU accuracy (controlled `yes` child, ~3 s window): Δ`cpuTimeNs` 2.98 s vs `ps -o time=` Δ 3.06 s (−2.6 %). `top -l 2 -pid` read 75.6 % for the same process over its own 2 s window; `ps` TIME is the stable reference.
+- Cost (release, 30 ticks): p50 1.93 ms, p95 2.63 ms at 901 pids (debug: p50 ~3 ms). Target ≤ 7 ms at ~920 pids.

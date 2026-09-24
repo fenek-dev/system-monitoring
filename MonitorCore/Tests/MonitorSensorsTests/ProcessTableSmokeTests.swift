@@ -65,24 +65,30 @@ struct ProcessTableSmokeTests {
         #expect(ours[1]?.comm == "launchd")
     }
 
-    @Test func cpuDeltasTrackPs() throws {
+    /// Controlled load: a `yes` child pinned at ~100 %. Our Δcpu over the window vs `ps -o time=` Δ over the same
+    /// window (±30 %, floor 10 points); `top -pid` printed for context (its window is only the middle 2 s).
+    @Test func cpuDeltaOfYesChildMatchesPs() throws {
+        let yes = try W6aFixture.spawnYes()
+        defer { yes.terminate(); yes.waitUntilExit() }
+        let pid = yes.processIdentifier
+        Thread.sleep(forTimeInterval: 0.3)
         let sensor = ProcessTableSensor()
         try sensor.prepare()
+        let psA = try #require(try W6aFixture.psCPUSeconds(pid))
         let a = try sensor.sample(SampleContext())
-        Thread.sleep(forTimeInterval: 2)
+        let top = try W6aFixture.run(["/usr/bin/top", "-l", "2", "-s", "2", "-pid", "\(pid)", "-stats", "pid,cpu"])
         let b = try sensor.sample(SampleContext())
+        let psB = try #require(try W6aFixture.psCPUSeconds(pid))
         let dt = Double(b.capturedNs - a.capturedNs) / 1e9
-        let before = Dictionary(a.reading.processes.map { ($0.id, $0) }, uniquingKeysWith: { x, _ in x })
-        var pct: [(ProcessID, String, Double)] = []
-        for p in b.reading.processes {
-            guard let old = before[p.id]?.cpuTimeNs, let new = p.cpuTimeNs, let d = w6aCounterDelta(new, old) else { continue }
-            pct.append((p.id, p.comm, Double(d) / 1e9 / dt * 100))
-        }
-        pct.sort { $0.2 > $1.2 }
-        for (id, comm, v) in pct.prefix(5) { print("W6a cpu% \(id.pid) \(comm) \(String(format: "%.1f", v))") }
-        let total = pct.reduce(0) { $0 + $1.2 }
-        print("W6a cpu% total(own-uid)=\(String(format: "%.1f", total)) over \(String(format: "%.2f", dt))s")
-        #expect(total >= 0)
+        let old = a.reading.processes.first { $0.id.pid == pid }?.cpuTimeNs
+        let new = b.reading.processes.first { $0.id.pid == pid }?.cpuTimeNs
+        let delta = try #require(old.flatMap { o in new.flatMap { w6aCounterDelta($0, o) } })
+        let ours = Double(delta) / 1e9
+        let ref = psB - psA
+        print("W6a yes cpu: ours=\(String(format: "%.2f", ours))s ps=\(String(format: "%.2f", ref))s " +
+              "(\(String(format: "%.1f", ours / dt * 100))% over \(String(format: "%.2f", dt))s; top=\(W6aFixture.topValue(top, pid: pid) ?? -1)%)")
+        #expect(abs(ours - ref) / dt * 100 <= max(0.3 * ref / dt * 100, 10))
+        #expect(ours / dt > 0.3)
     }
 
     @Test func bench() throws {
