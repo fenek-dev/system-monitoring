@@ -67,18 +67,54 @@ private func raw(_ pid: Int32, path: String?, uid: UInt32 = 501, comm: String = 
         #expect(id.displayName == "zsh")
     }
 
-    @Test(arguments: ["/System/Library/CoreServices/Dock", "/usr/libexec/trustd", "/sbin/launchd", "/bin/zsh",
-                      "/Library/Apple/System/Library/foo"])
-    func userOwnedSystemPathIsSystem(_ path: String) {
+    @Test(arguments: [
+        ("/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer", "WindowServer"),
+        ("/usr/libexec/trustd", "trustd"), ("/sbin/launchd", "launchd"), ("/usr/local/bin/node", "node"),
+        ("/opt/homebrew/bin/postgres", "postgres"),
+    ])
+    func bundleLessDaemonsOfAnyUIDAreOwnProcessGroups(_ path: String, _ name: String) {
         let r = BundleAppResolver(currentUID: me)
-        #expect(r.identity(for: raw(40, path: path), responsible: nil).key == .system)
+        for uid: UInt32 in [0, 501, 88] {
+            let id = r.identity(for: raw(40 + Int32(uid), path: path, uid: uid, restricted: uid != 501), responsible: nil)
+            #expect(id.key == AppKey(kind: .process, id: path))
+            #expect(id.displayName == name)
+        }
     }
 
-    @Test func otherUserNonBundleIsSystem() {
+    @Test func usrLocalNodeGetsItsOwnGroup() {
         let r = BundleAppResolver(currentUID: me)
-        let id = r.identity(for: raw(418, path: "/opt/homebrew/bin/postgres", uid: 0, restricted: true), responsible: nil)
+        let a = r.identity(for: raw(41, path: "/usr/local/bin/node", comm: "node"), responsible: nil)
+        let b = r.identity(for: raw(42, path: "/usr/libexec/trustd"), responsible: nil)
+        #expect(a.key == AppKey(kind: .process, id: "/usr/local/bin/node"))
+        #expect(a.key != b.key)
+    }
+
+    @Test func noPathNoNameIsSystem() {
+        let r = BundleAppResolver(currentUID: me)
+        let id = r.identity(for: raw(43, path: nil, uid: 0, comm: "", restricted: true), responsible: nil)
         #expect(id.key == .system)
         #expect(id.displayName == "System")
+    }
+
+    @Test func unreadableResponsiblePathUsesItsCommNeverChildPath() throws {
+        let b = try FakeBundles()
+        let childExe = try b.app("Child", bundleID: "com.x.child")
+        let r = BundleAppResolver(currentUID: me)
+        let parent = raw(90, path: nil, uid: 0, comm: "launchd_helper", restricted: true)
+        let id = r.identity(for: raw(91, path: childExe, responsible: 90), responsible: parent)
+        #expect(id.key == AppKey(kind: .process, id: "launchd_helper"))
+        // a later sibling under the same responsible pid must not see a cache poisoned by a child's path
+        let sibling = r.identity(for: raw(92, path: "/usr/bin/other", responsible: 90), responsible: parent)
+        #expect(sibling == id)
+    }
+
+    @Test func restrictedChildWithKnownResponsibleGroupsUnderIt() throws {
+        let b = try FakeBundles()
+        let app = try b.app("Docker", bundleID: "com.docker.docker", displayName: "Docker Desktop")
+        let r = BundleAppResolver(currentUID: me)
+        let child = raw(95, path: "/Library/PrivilegedHelperTools/com.docker.vmnetd", uid: 0, responsible: 94,
+                        restricted: true)
+        #expect(r.identity(for: child, responsible: raw(94, path: app)).displayName == "Docker Desktop")
     }
 
     @Test func otherUserInsideAppBundleStillGroupsByApp() throws {
@@ -88,10 +124,11 @@ private func raw(_ pid: Int32, path: String?, uid: UInt32 = 501, comm: String = 
         #expect(r.identity(for: raw(50, path: exe, uid: 0, restricted: true), responsible: nil).key.kind == .app)
     }
 
-    @Test func restrictedWithoutResponsibleUsesOwnPathElseSystem() {
+    @Test func restrictedWithoutPathUsesComm() {
         let r = BundleAppResolver(currentUID: me)
         let id = r.identity(for: raw(60, path: nil, uid: 0, comm: "kernel_task", restricted: true), responsible: nil)
-        #expect(id.key == .system)
+        #expect(id.key == AppKey(kind: .process, id: "kernel_task"))
+        #expect(id.displayName == "kernel_task")
     }
 
     @Test func cacheHitDoesNotTouchDisk() throws {
@@ -112,11 +149,17 @@ private func raw(_ pid: Int32, path: String?, uid: UInt32 = 501, comm: String = 
         let exe = try b.app("P", bundleID: "com.x.p")
         let reads = ReadCounter()
         let r = BundleAppResolver(currentUID: me, readInfoPlist: { reads.count += 1; return BundleAppResolver.readInfoPlist($0) })
-        _ = r.identity(for: raw(80, path: exe), responsible: nil)
+        let p80 = raw(80, path: exe), p81 = raw(81, path: exe)
+        _ = r.identity(for: p80, responsible: nil)
+        _ = r.identity(for: p81, responsible: nil)
+        r.prune(keeping: [p81.id])
+        #expect(r.cachedProcessCount == 1)
+        #expect(r.cachedBundleCount == 1)                                // still referenced by 81
         r.prune(keeping: [])
         #expect(r.cachedProcessCount == 0)
-        _ = r.identity(for: raw(80, path: exe), responsible: nil)
-        #expect(reads.count == 1)                                        // bundle info is still cached by path
+        #expect(r.cachedBundleCount == 0)
+        _ = r.identity(for: p80, responsible: nil)
+        #expect(reads.count == 2)                                        // re-read after the bundle entry was pruned
     }
 
     // MARK: FixtureAppResolver
@@ -177,6 +220,32 @@ private func raw(_ pid: Int32, path: String?, uid: UInt32 = 501, comm: String = 
         #expect(app.coalitionResidual?[.diskWrite] == 10)
         #expect(app.coalitionResidual?[.energy] == 0.2)
         #expect(app.coalitionResidual?[.memory] == nil)
+    }
+
+    @Test func unattributedUsageGoesToSystem() {
+        let a = AppKey(kind: .app, id: "a")
+        let procs = [ProcessSample(id: ProcessID(pid: 1), app: a, cpuPercent: 1, gpuPercent: 2)]
+        let un = UnattributedUsage(gpuPercent: 7, netRxBps: 100, netTxBps: nil)
+        let apps = AppGrouper.group(procs, identities: [:], unattributed: un)
+        let sys = apps.first { $0.identity.key == .system }
+        #expect(sys != nil)                                              // created although no process maps to it
+        #expect(sys?.identity.displayName == "System")
+        #expect(sys?.gpuPercent == 7)
+        #expect(sys?.netRxBps == 100)
+        #expect(sys?.netTxBps == nil)
+        #expect(sys?.metrics[.gpu] == 7)
+        #expect(apps.first { $0.identity.key == a }?.gpuPercent == 2)
+
+        let withSys = AppGrouper.group(procs + [ProcessSample(id: ProcessID(pid: 2), app: .system, gpuPercent: 1)],
+                                       identities: [:], unattributed: un)
+        #expect(withSys.filter { $0.identity.key == .system }.count == 1)
+        #expect(withSys.first { $0.identity.key == .system }?.gpuPercent == 8)
+    }
+
+    @Test func emptyUnattributedAddsNoSystemRow() {
+        let apps = AppGrouper.group([ProcessSample(id: ProcessID(pid: 1), app: AppKey(kind: .app, id: "a"))],
+                                    identities: [:], unattributed: UnattributedUsage())
+        #expect(apps.count == 1)
     }
 
     @Test func noSyntheticRowsMeansNoResidual() {

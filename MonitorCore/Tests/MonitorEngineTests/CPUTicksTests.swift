@@ -33,6 +33,15 @@ import Testing
         #expect(CPUTicks.usage(previous: [CoreTicks()], current: [CoreTicks(), CoreTicks()]) == nil)
     }
 
+    @Test func hugeDeltasDoNotTrap() throws {
+        let big = UInt64.max / 2
+        let u = try #require(CPUTicks.usage(previous: [CoreTicks(), CoreTicks()],
+                                             current: [CoreTicks(user: big, system: big, idle: big, nice: big),
+                                                       CoreTicks(user: big, system: big, idle: big, nice: big)]))
+        #expect(abs(u.perCore[0] - 0.75) < 1e-9)
+        #expect(abs(u.idle - 0.25) < 1e-9)
+    }
+
     @Test func counterDecreaseIsNil() {
         let prev = [CoreTicks(user: 100, system: 100, idle: 100)]
         #expect(CPUTicks.usage(previous: prev, current: [CoreTicks(user: 1, system: 200, idle: 200)]) == nil)

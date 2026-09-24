@@ -8,20 +8,21 @@ public enum CPUTicks {
         guard !current.isEmpty, previous.count == current.count else { return nil }
         var perCore: [Double] = []
         perCore.reserveCapacity(current.count)
-        var user: UInt64 = 0, system: UInt64 = 0, idle: UInt64 = 0
+        // Sums in Double: tick deltas are small, but garbage counters must not trap on overflow.
+        var user = 0.0, system = 0.0, idle = 0.0
         for (p, c) in zip(previous, current) {
             guard let du = diff(c.user, p.user), let ds = diff(c.system, p.system),
                   let di = diff(c.idle, p.idle), let dn = diff(c.nice, p.nice) else { return nil }
-            let busy = du + ds + dn
-            let total = busy + di
-            perCore.append(total == 0 ? 0 : Double(busy) / Double(total))
-            user += du + dn
-            system += ds
-            idle += di
+            let busy = Double(du) + Double(ds) + Double(dn)
+            let total = busy + Double(di)
+            perCore.append(total == 0 ? 0 : busy / total)
+            user += Double(du) + Double(dn)
+            system += Double(ds)
+            idle += Double(di)
         }
-        let total = Double(user + system + idle)
+        let total = user + system + idle
         guard total > 0 else { return (perCore, 0, 0, 0) }
-        return (perCore, Double(user) / total, Double(system) / total, Double(idle) / total)
+        return (perCore, user / total, system / total, idle / total)
     }
 
     /// Guarded counter difference; nil when the counter went backwards.

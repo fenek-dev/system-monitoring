@@ -12,21 +12,21 @@ extension AppIdentity {
     static let other = AppIdentity(key: .other, displayName: "Other")
 }
 
-/// Grouping by responsible PID (§5.1):
-/// 1. `r = responsible ?? process`; path of `r` (falls back to the process's own path when `r`'s is unreadable).
+/// Grouping by responsible PID (§5.1, ruling 2026-09-24):
+/// 1. `r = responsible ?? process`; path of `r` (nil if EPERM — never the child's path).
 /// 2. Path contains `.app/` → outermost `.app` → `AppKey(.app, bundleID ?? bundlePath)`,
 ///    name `CFBundleDisplayName ?? CFBundleName ?? filename`.
-/// 3. Else owned by the current uid and not under a system prefix → `AppKey(.process, path ?? p_comm)`.
-/// 4. Else → `.system`.
-/// Identities are cached per `ProcessID` of `r`; bundle info is cached per bundle path (disk read once).
+/// 3. Else, any uid → `AppKey(.process, path ?? p_comm)`, named by the executable name.
+/// 4. No path and no name → `.system`.
+/// Identities depend on `r` only and are cached per `ProcessID` of `r`; bundle info is cached per bundle path
+/// (disk read once) while a cached process still references it.
 public final class BundleAppResolver: AppResolving {
-    static let systemPrefixes = ["/System/", "/usr/", "/sbin/", "/bin/", "/Library/Apple/"]
-
     private struct BundleInfo {
         var key: AppKey
         var displayName: String
     }
 
+    /// Kept for the locked signature; grouping no longer depends on the uid (ruling 2026-09-24).
     private let currentUID: uid_t
     private let readInfoPlist: (String) -> [String: Any]?
     private var byProcess: [ProcessID: AppIdentity] = [:]
@@ -43,31 +43,38 @@ public final class BundleAppResolver: AppResolving {
     }
 
     var cachedProcessCount: Int { byProcess.count }
+    var cachedBundleCount: Int { byBundle.count }
 
     public func identity(for process: RawProcess, responsible: RawProcess?) -> AppIdentity {
         let r = responsible ?? process
         if let hit = byProcess[r.id] { return hit }
-        let id = resolve(r, fallbackPath: process.path)
+        let id = resolve(r)
         byProcess[r.id] = id
         return id
     }
 
+    /// Drops identities of dead processes and bundle info no remaining identity references.
     public func prune(keeping live: Set<ProcessID>) {
-        for key in byProcess.keys.filter({ !live.contains($0) }) { byProcess[key] = nil }
+        let dead = byProcess.keys.filter { !live.contains($0) }
+        guard !dead.isEmpty else { return }
+        for key in dead { byProcess[key] = nil }
+        let referenced = Set(byProcess.values.compactMap(\.bundlePath))
+        for path in byBundle.keys.filter({ !referenced.contains($0) }) { byBundle[path] = nil }
     }
 
     // MARK: - Rules
 
-    private func resolve(_ r: RawProcess, fallbackPath: String?) -> AppIdentity {
-        let path = r.path ?? fallbackPath
-        if let path, let bundlePath = Self.outermostBundle(in: path) {
+    private func resolve(_ r: RawProcess) -> AppIdentity {
+        if let path = r.path, let bundlePath = Self.outermostBundle(in: path) {
             let info = bundleInfo(bundlePath)
             return AppIdentity(key: info.key, displayName: info.displayName, bundlePath: bundlePath)
         }
-        if r.uid == currentUID, !(path.map(Self.isSystemPath) ?? false) {
-            let key = AppKey(kind: .process, id: path ?? r.comm)
-            let name = path.map { ($0 as NSString).lastPathComponent } ?? r.comm
-            return AppIdentity(key: key, displayName: name.isEmpty ? r.comm : name)
+        if let path = r.path, !path.isEmpty {
+            let name = (path as NSString).lastPathComponent
+            return AppIdentity(key: AppKey(kind: .process, id: path), displayName: name.isEmpty ? r.comm : name)
+        }
+        if !r.comm.isEmpty {
+            return AppIdentity(key: AppKey(kind: .process, id: r.comm), displayName: r.comm)
         }
         return .system
     }
@@ -89,10 +96,6 @@ public final class BundleAppResolver: AppResolving {
     static func outermostBundle(in path: String) -> String? {
         guard let r = path.range(of: ".app/") else { return nil }
         return String(path[..<path.index(r.lowerBound, offsetBy: 4)])
-    }
-
-    static func isSystemPath(_ path: String) -> Bool {
-        systemPrefixes.contains { path.hasPrefix($0) }
     }
 
     /// Reads `<bundle>/Contents/Info.plist` directly (no `Bundle` cache, which would outlive a deleted bundle).
