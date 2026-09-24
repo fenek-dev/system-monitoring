@@ -1,0 +1,11 @@
+{
+  "band" : 2,
+  "channel" : 52,
+  "interface" : "en0",
+  "noise" : -88,
+  "phy" : 5,
+  "powerOn" : true,
+  "rssi" : -64,
+  "txRateMbps" : 260,
+  "width" : 3
+}

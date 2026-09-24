@@ -19,7 +19,13 @@ public struct GPUClientCounter: Sendable, Codable, Hashable {
 
 public struct GPUClientsReading: Sendable, Codable {
     public var clients: [GPUClientCounter]
-    public var deviceUtilization: Double?, inUseSystemMemory: UInt64?
+    /// AGX `PerformanceStatistics["Device Utilization %"]` (0–100). FALLBACK ONLY: the driver computes it
+    /// over the window since the previous read by ANY reader (Activity Monitor, ioreg, …), so back-to-back
+    /// reads return 0. System GPU % comes from `SoCPowerReading.gpuActiveFraction` (IOReport residency);
+    /// per-app shares from `clients` time deltas (ruling 2026-09-24, W6b).
+    public var deviceUtilization: Double?
+    /// AGX `In use system memory` (bytes).
+    public var inUseSystemMemory: UInt64?
 
     public init(clients: [GPUClientCounter] = [], deviceUtilization: Double? = nil, inUseSystemMemory: UInt64? = nil) {
         self.clients = clients
