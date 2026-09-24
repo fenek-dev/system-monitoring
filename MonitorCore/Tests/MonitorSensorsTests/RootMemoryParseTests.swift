@@ -4,7 +4,10 @@ import Testing
 @testable import MonitorModel
 @testable import MonitorSensors
 
-@Suite struct RootMemoryParseTests {
+/// `.serialized`: the box tests block their thread by design (`sample(firstWait:)`, `waitIdle`). Run in parallel they
+/// park up to 7 cooperative-pool threads; once all ncpu cooperative threads are blocked, the kernel admits no
+/// non-overcommit GCD threads, so the box's `.utility` concurrent run queue stalls until a waiter times out.
+@Suite(.serialized) struct RootMemoryParseTests {
     @Test func parsesPidAndRSSKilobytesToBytes() {
         let out = "    1  12640\n  418 6086432\n99999      0\n"
         #expect(RootMemoryParser.parse(out) == [1: 12_640 * 1024, 418: 6_086_432 * 1024, 99_999: 0])

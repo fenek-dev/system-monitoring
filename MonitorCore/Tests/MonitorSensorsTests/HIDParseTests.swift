@@ -27,7 +27,7 @@ struct HIDParseTests {
     }
 
     /// `sample()` must never wait for the (68–94 ms, up to 250 ms) read: it kicks it off and returns at once.
-    @Test func sampleNeverBlocksOnTheRead() throws {
+    @Test func sampleNeverBlocksOnTheRead() async throws {
         let calls = OSAllocatedUnfairLock(initialState: 0)
         let sensor = HIDTemperatureSensor(reader: {
             let n = calls.withLock { $0 += 1; return $0 }
@@ -43,23 +43,23 @@ struct HIDParseTests {
         #expect(firstMs < 20, "first sample blocked \(firstMs) ms")
         if case .failure(let e) = first { #expect(e == .transient("warming up")) } else { Issue.record("expected warming up") }
         // 2. after the read lands → that reading; a new read is kicked but not awaited
-        #expect(sensor.waitForRead(after: 0))
+        #expect(await sensor.waitForRead(after: 0))
         let (second, secondMs) = try timed { try sensor.sample(SampleContext()) }
         #expect(secondMs < 20)
         #expect(second.reading.sensors.first?.celsius == 31)
         // 3. stale reading while the next read is in flight → the stale one, immediately (same capturedNs)
         let (third, thirdMs) = try timed { try sensor.sample(SampleContext()) }
         #expect(thirdMs < 20 && third.capturedNs == second.capturedNs)
-        #expect(sensor.waitForRead(after: second.capturedNs))
+        #expect(await sensor.waitForRead(after: second.capturedNs))
         #expect(try sensor.sample(SampleContext()).reading.sensors.first?.celsius == 32)
         #expect(calls.withLock { $0 } <= 3)                                  // no read stacking
     }
 
-    @Test func readErrorBeforeFirstReadingIsThrown() throws {
+    @Test func readErrorBeforeFirstReadingIsThrown() async throws {
         let sensor = HIDTemperatureSensor(reader: { .failure(.unavailable("no HID temperature services")) })
         try sensor.prepare()
         _ = try? sensor.sample(SampleContext())
-        W6bFixture.sleep(0.1)
+        try await Task.sleep(for: .milliseconds(100))
         #expect(throws: SensorError.unavailable("no HID temperature services")) { try sensor.sample(SampleContext()) }
     }
 
