@@ -29,6 +29,8 @@ import os
     private var state = State.idle
     /// Frames already in flight when sampling pauses must not flip the model back to live.
     private(set) var paused = false
+    /// Actual tick periods per mode, logged every `IntervalStats.window` frames (App Nap check, W7 T5; perf.sh).
+    private var intervals = IntervalStats()
 
     private enum State { case idle, running, shutDown }
     enum Command: Sendable { case start, visibility(UIVisibility), paused(Bool), willSleep, didWake }
@@ -84,6 +86,7 @@ import os
             for await frame in engine.liveFrames {
                 guard let self else { return }
                 if !self.paused { self.live.apply(frame) }
+                self.intervals.add(frame)
             }
         }
         commands.yield(.start)
@@ -130,6 +133,32 @@ import os
         shutdownTask = task
         await task.value
         frameTask?.cancel()
+    }
+
+    /// Per-mode tick period (the process table's capture interval, `frame.interval`): one notice per `window` frames
+    /// of a mode, `frame intervals mode=background n=60 median=5.01 p95=5.12 max=5.40 s`.
+    struct IntervalStats {
+        static let window = 60
+        private var samples: [SamplingMode: [Double]] = [:]
+        private(set) var lastSummary: (mode: SamplingMode, median: Double, p95: Double, max: Double)?
+
+        mutating func add(_ f: SystemFrame) {
+            guard let d = f.interval else { return }
+            let s = Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+            samples[f.mode, default: []].append(s)
+            guard let v = samples[f.mode], v.count >= Self.window else { return }
+            let sorted = v.sorted()
+            let median = sorted[sorted.count / 2]
+            let p95 = sorted[min(sorted.count - 1, Int((Double(sorted.count) * 0.95).rounded(.up)) - 1)]
+            let mx = sorted.last ?? 0
+            lastSummary = (f.mode, median, p95, mx)
+            LivePipeline.log.notice("""
+                frame intervals mode=\(String(describing: f.mode), privacy: .public) n=\(v.count) \
+                median=\(String(format: "%.2f", median), privacy: .public) p95=\(String(format: "%.2f", p95), privacy: .public) \
+                max=\(String(format: "%.2f", mx), privacy: .public) s
+                """)
+            samples[f.mode] = []
+        }
     }
 
     // MARK: Off-MainActor work (nonisolated async runs on the global executor)
