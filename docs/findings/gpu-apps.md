@@ -30,6 +30,27 @@ Verified:
 
 No Activity Monitor GUI cross-check was possible in this headless agent environment (no screen/GUI access, same limitation noted in `docs/findings/procs.md`), and `sudo powermetrics` is unavailable here too (`sudo: a password is required`, no interactive TTY). The Device-Utilization-%-tracks-the-load-toggle result above is used as the corroborating signal instead.
 
+### Production requirements
+
+These apply to any real (long-running, tick-based) implementation of per-app GPU%, not just this one-shot spike:
+
+1. **Counter reset / recreated client.** `accumulatedGPUTime` is a per-client monotonic counter, but the client itself can be torn down and recreated (context reset, app relaunch, GPU driver recovery) between two ticks. If the new reading is *lower* than the previous baseline for that pid, do **not** compute `new &- old` (wrapping subtraction on an unsigned type turns a small negative delta into a huge near-`UInt64.max` value — a real bug in the original spike code). **A decreasing counter means the baseline is stale: reset the baseline to the new value and report 0 for that tick, never wrap.** Fixed in the spike: `main.swift`'s per-tick row computation now has `guard v.1 >= old.1 else { return (name, 0) }` before the subtraction, and the comment marks it as the fix for this finding.
+2. **Appearing clients.** A client (pid) that has no entry in the previous tick's baseline map is *new this tick* — it must be added to the baseline map with its current counter value and reported as **0** for this tick (not skipped from the baseline, not compared against a synthetic zero — that would produce one huge false spike from "startup" as if the app had been running since forever). It becomes eligible for a real delta starting the *next* tick. The spike's two-sample model already does this (`guard let old = a[pid] else { return nil }` — no row is emitted for a client absent from the older sample), but a continuous sensor must carry the same rule forward: keep one persistent `[pid: (name, ns)]` baseline dict across ticks, insert-without-reporting on first sight, delta-and-report from the second sighting on.
+   - **Identity is `pid` + creator name, not `pid` alone**, because pids are reused by the OS. If the same pid shows a *different* creator-name string than the stored baseline, that pid was recycled to a new process — treat it exactly like an appearing client (reset the baseline, report 0, do not diff against the old process's accumulated time). Fixed in the spike: `guard old.0 == v.0 else { return nil }` before the subtraction.
+3. **Sum-vs-Device-Utilization-% cross-check (measured).** Added a print of the sum of *all* per-client deltas (not just the printed top 10) alongside `Device Utilization %` sampled at the same instant (right after the second `gpuTimes()` walk). Three runs on this machine:
+
+   | condition | sum of all per-client % | Device Utilization % (same instant) |
+   |---|---|---|
+   | idle | 25.1 % | 21 % |
+   | `--load` running | 100.5 % | 100 % |
+   | `--load` running (2nd run) | 101.0 % | 100 % |
+
+   The sum tracks `Device Utilization %` closely (within ~1-4 points) in all three runs, including saturating together near 100. **`Device Utilization %` is a 0–100 measure of the whole GPU (one accelerator, not per-client-independent), and the per-client percentages are shares of that same 0–100 whole** — they are not each independently capable of reaching 100%. The sum can slightly *exceed* 100% (100.5%, 101.0%) rather than exactly match; this is sampling skew, not double counting or a modeling error: the per-client sum is an integral of `accumulatedGPUTime` deltas over the exact ~1s window between the two `gpuTimes()` calls, while `Device Utilization %` is a separately-maintained driver counter read once, at essentially (but not exactly) the same instant, with its own internal windowing/smoothing. Production code should treat `Device Utilization %` as authoritative for the *total* and either normalize the per-client shares to sum to it, or accept the small (~1-4%) discrepancy and just clamp the display to 100%.
+
+### Long-running sensor: IOKit object lifetime
+
+This spike calls `IOObjectRelease(accel)` once at the very end, right before the process exits — added for correctness even though the OS would reclaim the send right on exit anyway. **A real sensor must acquire `accel` via `IOServiceGetMatchingService` exactly once at startup and release it exactly once at shutdown** — never re-fetch it per tick (leaks a mach port each time) and never skip the final release in a long-lived daemon/agent process. The per-tick `IORegistryEntryGetChildIterator` iterator (`it`) and each child (`child`) are already released per-iteration via `defer` inside `gpuTimes()` — only the top-level `accel` service handle itself was previously left unreleased.
+
 ### Files
 
 - `Spikes/Sources/spike-gpu-apps/main.swift` — the spike + `--load` GPU-load generator.

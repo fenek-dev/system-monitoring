@@ -107,12 +107,23 @@ var a: [Int32: (String, UInt64)] = [:]
 let cost = clock.measure { a = gpuTimes(dumpFirst: true) }
 Thread.sleep(forTimeInterval: 1)
 let b = gpuTimes(dumpFirst: false)
+// Read Device Utilization % at essentially the same instant as sample b, so it can be
+// compared against the sum of per-client deltas below (fix-round-1 finding #3).
+let utilAtB = (props(accel)["PerformanceStatistics"] as? [String: Any])?["Device Utilization %"]
 print("clients(pids)=\(a.count) walkCost=\(cost)")
 let rows = b.compactMap { pid, v -> (String, Double)? in
-    guard let old = a[pid] else { return nil }
-    return ("\(v.0) [\(pid)]", Double(v.1 &- old.1) / 1e9 * 100)   // % of one GPU over 1 s
+    guard let old = a[pid] else { return nil }              // client is new this tick: baseline only, no row (see docs/findings/gpu-apps.md "appearing clients")
+    guard old.0 == v.0 else { return nil }                   // same pid, different creator name => PID reuse; treat as a new baseline, no row this tick
+    guard v.1 >= old.1 else { return ("\(v.0) [\(pid)]", 0) } // counter went backwards (client reset/recreated): new baseline, report 0, never wrap (fix-round-1 finding #1)
+    return ("\(v.0) [\(pid)]", Double(v.1 - old.1) / 1e9 * 100)   // % of one GPU over 1 s
 }.sorted { $0.1 > $1.1 }
 for (n, pct) in rows.prefix(10) { print(n.padding(toLength: 40, withPad: " ", startingAt: 0) + String(format: "%6.1f %%", pct)) }
+
+// Fix-round-1 finding #3: sum ALL per-client %s (not just the top 10 printed above) and
+// compare to Device Utilization % sampled at the same instant.
+let sumAllPct = rows.reduce(0.0) { $0 + $1.1 }
+print(String(format: "\nsum of all per-client %% (%d clients) = %.1f %%   |   Device Utilization %% (same instant) = %@",
+             rows.count, sumAllPct, "\(utilAtB ?? "–")"))
 
 // Responsible-PID grouping check: does the AGX client creator PID equal the pid macOS
 // attributes resource use to, or is it a helper process (e.g. a browser renderer/GPU
@@ -123,3 +134,8 @@ for (pid, v) in b.sorted(by: { $0.value.1 > $1.value.1 }).prefix(10) {
     let mark = (resp > 0 && resp != pid) ? "  <-- DIFFERS, needs grouping" : ""
     print("  \(v.0) [\(pid)] -> responsible pid \(resp)\(mark)")
 }
+
+// This one-shot spike is about to exit anyway (the kernel would reclaim the send right),
+// but a long-running sensor must not leak this: acquire `accel` once at startup and
+// release it once at shutdown -- never re-fetch/leak it per sample tick.
+IOObjectRelease(accel)
