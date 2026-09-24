@@ -107,7 +107,12 @@ import Testing
         #expect(abs(exited.cpuPercent! - 100) < 1e-9)
         #expect(exited.app == Self.a.key)                                        // counted in the leader's app
         #expect(abs(exited.energyWatts! - 2) < 1e-9 && exited.energyEstimated)   // 3 W coalition − 1 W v6
-        #expect(f.apps.first { $0.identity.key == Self.a.key }?.cpuPercent == 150)
+        let app = try #require(f.apps.first { $0.identity.key == Self.a.key })
+        #expect(app.cpuPercent == 150)
+        // The exited share is exposed separately (UI: "Exited processes", not hidden processes).
+        #expect(app.exitedResidual.map { abs(($0[.cpu] ?? 0) - 100) < 1e-9 } == true)
+        #expect(app.exitedResidual.map { abs(($0[.energy] ?? 0) - 2) < 1e-9 } == true)
+        #expect(app.coalitionResidual.map { abs(($0[.cpu] ?? 0) - 100) < 1e-9 } == true)
     }
 
     @Test func unlistedNewbornChildIsNotCountedTwice() throws {

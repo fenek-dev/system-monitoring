@@ -41,10 +41,13 @@ import Testing
 
     @Test func counterGoingBackwardsRebasesMonotonically() {
         var d = DiskSessionBaselines(sessionStartUs: Self.startUs)
-        _ = d.session(proc(10, start: 1, r: 5_000, w: 5_000))
-        #expect(d.session(proc(10, start: 1, r: 8_000, w: 5_000)) == (3_000, 0))
-        #expect(d.session(proc(10, start: 1, r: 100, w: 5_000)) == (3_000, 0))    // backwards: keeps 3 000, no wrap
-        #expect(d.session(proc(10, start: 1, r: 400, w: 5_100)) == (3_300, 100))
+        #expect(d.session(proc(10, start: 1, r: 5_000, w: 5_000)).firstSight)
+        let a = d.session(proc(10, start: 1, r: 8_000, w: 5_000))
+        #expect(a == (3_000, 0) && a.deltaRead == 3_000 && !a.firstSight)
+        let b = d.session(proc(10, start: 1, r: 100, w: 5_000))
+        #expect(b == (3_000, 0) && b.deltaRead == 0)                          // backwards: keeps 3 000, no wrap
+        let c = d.session(proc(10, start: 1, r: 400, w: 5_100))
+        #expect(c == (3_300, 100) && c.deltaRead == 300 && c.deltaWrite == 100)
     }
 
     @Test func missingCounterIsNil() {
@@ -92,9 +95,26 @@ import Testing
         let after = try #require(fa.assemble(tick(4, helper: false), inspectedApp: nil).apps.first { $0.identity.key == a.key })
         #expect(after.diskReadSession == 3_000 + 1_000)                         // helper gone; its 1 000 B stay
         #expect(after.diskWriteSession == 200)
+        fa.reset()                                                              // wake: the app session keeps growing
+        let woke = try #require(fa.assemble(tick(6, helper: false), inspectedApp: nil).apps.first { $0.identity.key == a.key })
+        #expect(woke.diskReadSession == 4_000 + 2_000)                          // Δ of pid 10's session over the gap
+    }
+
+    @Test func appWithoutDiskCountersHasNilDiskSession() throws {
+        let a = AppIdentity(key: AppKey(kind: .app, id: "a"), displayName: "a")
+        var fa = FrameAssembler(resolver: FixtureAppResolver([10: a]), currentUID: testUID, sessionStartUs: Self.startUs)
+        func tick(_ n: UInt64) -> RawTick {
+            RawTick(wallTime: Date(timeIntervalSince1970: 1_790_000_100 + Double(n)), uptimeNs: n * sec, mode: .interactive,
+                    processes: .fresh(ProcessTableReading(processes: [own(10, cpuNs: n * sec / 10, diskR: nil, diskW: nil)]),
+                                      capturedNs: n * sec))
+        }
+        _ = fa.assemble(tick(1), inspectedApp: nil)
+        let app = try #require(fa.assemble(tick(2), inspectedApp: nil).apps.first { $0.identity.key == a.key })
+        #expect(app.diskReadSession == nil && app.diskWriteSession == nil)      // unknown, not 0
+        #expect(app.cpuTimeNs == sec / 10)
     }
 }
 
-private func == (a: (read: UInt64?, write: UInt64?), b: (UInt64?, UInt64?)) -> Bool {
+private func == (a: DiskSessionBaselines.Result, b: (UInt64?, UInt64?)) -> Bool {
     a.read == b.0 && a.write == b.1
 }

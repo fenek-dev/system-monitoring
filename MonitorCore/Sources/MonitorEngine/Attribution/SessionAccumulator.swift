@@ -30,9 +30,10 @@ public struct SessionAccumulator: Sendable {
         return (t.cpuNs, t.gpuNs, t.rx, t.tx)
     }
 
-    /// ICR-14: disk bytes since Telltale started, per app (never drops when a member exits).
-    public func diskTotals(_ key: AppKey) -> (read: UInt64, write: UInt64) {
-        let t = totalsByKey[key] ?? ProcessDelta()
+    /// ICR-14: disk bytes since Telltale started, per app (never drops when a member exits); nil when no member ever
+    /// reported a disk counter.
+    public func diskTotals(_ key: AppKey) -> (read: UInt64, write: UInt64)? {
+        guard let t = totalsByKey[key], t.hasDisk else { return nil }
         return (t.diskR, t.diskW)
     }
 
@@ -48,5 +49,6 @@ extension ProcessDelta {
         tx = ProcessAssembler.saturatingAdd(tx, d.tx)
         diskR = ProcessAssembler.saturatingAdd(diskR, d.diskR)
         diskW = ProcessAssembler.saturatingAdd(diskW, d.diskW)
+        if d.hasDisk { hasDisk = true }
     }
 }

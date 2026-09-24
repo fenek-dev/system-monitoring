@@ -776,6 +776,7 @@ public struct AppSample: Sendable, Codable, Hashable, Identifiable {
     public var processIDs: [ProcessID]
     public var hiddenProcessCount: Int            // restricted members not individually attributed
     public var coalitionResidual: AppMetrics?     // share that came from synthetic coalition rows
+    public var exitedResidual: AppMetrics?        // ICR-13: the "Exited processes" part of it (not hidden processes)
     public var isCurrentUser: Bool
     public var cpuPercent: Double?, gpuPercent: Double?, memory: UInt64?
     public var netRxBps: Double?, netTxBps: Double?, diskReadBps: Double?, diskWriteBps: Double?
@@ -868,7 +869,8 @@ public struct SessionAccumulator: Sendable {       // per AppKey since launch: c
 public struct AppGrouper { public static func group(_ processes: [ProcessSample], identities: [AppKey: AppIdentity]) -> [AppSample] }
 
 public struct FrameAssembler {
-    public init(resolver: any AppResolving, energy: any EnergyAttributor = RulingEnergyAttributor(), currentUID: uid_t = getuid())
+    public init(resolver: any AppResolving, energy: any EnergyAttributor = RulingEnergyAttributor(), currentUID: uid_t = getuid(),
+                sessionStartUs: UInt64 = SessionStart.ownProcessStartUs)   // session totals count from Telltale's start
     public mutating func assemble(_ tick: RawTick, inspectedApp: AppKey?) -> SystemFrame   // alert/events filled by caller
     public mutating func reset()
 }
@@ -1433,7 +1435,7 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 | 11 | `BlockDriverCounter.isDiskImage: Bool` (default false); engine excludes disk-image drivers from disk totals. | W6d / W7 |
 | 12 | `HistoryMetric.memPressureLevel` (1/2/4); rollups keep time-weighted avg; consumers map > 2.5 critical, > 1.0 warning. | W7 / W5a |
 | 13 | "Exited processes" synthetic row (`ProcessID.exitedResidual`, pid −2) in the leader's app for all-visible coalitions when residual > 5% of a core AND > 10% of Δcoalition; CPU + disk, energy via EnergyAttributor step 2; estimated, provenance `.coalition`, no row actions. One-tick sticky pid→coalition membership. | W7 / W5c |
-| 14 | `ProcessSample`/`AppSample.diskReadSession`/`diskWriteSession: UInt64?` (bytes since Telltale start = Telltale's own `p_starttime`). Process: baseline per ProcessID (born at/after Telltale start → 0, else first-sample counter; a counter regress rebases with an accumulated offset, so the value never drops; pruned on exit). App: accumulated per `AppKey` like CPU/network session (per-tick deltas incl. synthetic rows' disk × seconds), never drops when a helper exits. | W7 / Wm / W5b |
+| 14 | `ProcessSample`/`AppSample.diskReadSession`/`diskWriteSession: UInt64?` (bytes since Telltale start = Telltale's own `p_starttime`). Process: baseline per ProcessID (born at/after Telltale start → 0, else first-sample counter; a counter regress rebases with an accumulated offset, so the value never drops; pruned on exit). App: Σ of each member's per-process session growth (session_now − session_prev per ProcessID) + residual rows' disk × seconds, accumulated per `AppKey`; survives wake, never drops when a helper exits, ≥ Σ rows; nil if no member ever had a disk counter. CPU/network app sessions keep delta accumulation and drop the sleep/reset gap. | W7 / Wm / W5b |
 | 15 | `BatteryReading.timeRemainingCalculating: Bool` (decodeIfPresent, default false) → `BatterySnapshot.timeRemainingCalculating` (same decoding); UI shows "Calculating…". | W6b / W7 / W5b |
 
 Grouping rule 3 (§5.1) changed 2026-09-24: all bundle-less processes (any uid) are their own `.process` group.

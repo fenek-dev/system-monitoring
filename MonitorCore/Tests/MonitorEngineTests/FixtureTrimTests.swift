@@ -27,6 +27,21 @@ import Testing
         #expect(r.processes == (kept: 3, total: 5))
     }
 
+    @Test func keepsANewbornWhoseNonZeroCountersNeverChangeAfterwards() {
+        // Appears at tick 2 with 0.3 s CPU already accrued (counted in full as a newborn), then stays constant.
+        let late = own(50, start: 9, cpuNs: 3 * sec / 10)
+        let ticks = [
+            Self.tick(1, [own(10, cpuNs: 0)]),
+            Self.tick(2, [own(10, cpuNs: sec / 2), late]),
+            Self.tick(3, [own(10, cpuNs: sec), late]),
+            Self.tick(4, [own(10, cpuNs: 3 * sec / 2), late]),
+        ]
+        let r = FixtureTrim.trimIdle(ticks)
+        #expect(r.ticks[1].processes.value?.processes.contains { $0.id.pid == 50 } == true)
+        let v = FixtureTrim.verify(full: ticks, trimmed: r.ticks)
+        #expect(v.sumCPU == 0)
+    }
+
     @Test func keepsRestrictedMembersAndLeaderOfChangingCoalitionsAndIsExact() {
         var root = own(418, cpuNs: 0)
         root.restricted = true

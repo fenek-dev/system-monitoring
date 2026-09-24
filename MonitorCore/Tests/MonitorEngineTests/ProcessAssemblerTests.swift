@@ -101,14 +101,18 @@ import Testing
         #expect(first.deltas[ProcessID(pid: 10, startTimeUs: startUs)]?.diskW == 2 * sec / 1_000)
         pa.reset()                                                             // wake: baselines gone
         let afterWake = run(3 * sec, at: 2 * sec)
-        #expect(afterWake.deltas[ProcessID(pid: 10, startTimeUs: startUs)] == nil)   // not counted again
+        let d = afterWake.deltas[ProcessID(pid: 10, startTimeUs: startUs)]
+        #expect((d?.cpuNs ?? 0) == 0)                                          // CPU not counted again (reset gap)
+        #expect(d?.diskW == sec / 1_000)                                       // disk: only its session growth
     }
 
     @Test func counterGoingBackwardsOnARecentProcessIsNotOvercounted() {
         // A newborn's counter regressing later is a rebaseline (nil), never "first sight" again.
         let w0 = Date(timeIntervalSince1970: 1_790_000_000)
         var pa = ProcessAssembler(currentUID: testUID, sessionStartUs: UInt64((w0.timeIntervalSince1970 - 10) * 1e6))
-        let born = UInt64((w0.timeIntervalSince1970 + 1.5) * 1e6)
+        // Born at tick 2's capture: at tick 3 startTimeUs ≥ bornAfterUs still holds, so only the explicit-first-sight
+        // rule keeps the regressed counter from being counted as a newborn again.
+        let born = UInt64((w0.timeIntervalSince1970 + 2) * 1e6)
         func run(_ ps: [RawProcess], _ n: Double) -> ProcessAssembly {
             pa.assemble(ProcessInputs(processes: table(ps, at: UInt64(n) * sec), uptimeNs: UInt64(n) * sec,
                                       wallTime: w0.addingTimeInterval(n)), resolver: resolver)
@@ -135,6 +139,14 @@ import Testing
         #expect(ProcessAssembler.coalition(of: child, in: map) == nil)
         #expect(ProcessAssembler.coalition(of: own(10), in: map) == 7)     // listed members use their own
         #expect(ProcessAssembler.coalition(of: own(40), in: map, sticky: [40: 9]) == 9)   // just exited: sticky
+        // Grandchild: its parent (50) is unlisted too, the grandparent (10) is listed → walk ancestors.
+        var parent = own(50)
+        parent.ppid = 10
+        var grandchild = own(51)
+        grandchild.ppid = 50
+        grandchild.responsiblePID = 20                                       // ancestors win over responsible
+        #expect(ProcessAssembler.coalition(of: grandchild, in: map, rawByPID: [50: parent]) == 7)
+        #expect(ProcessAssembler.coalition(of: grandchild, in: map) == 9)    // ancestry unknown → responsible
     }
 
     @Test func cachedReadingKeepsPreviousRates() throws {

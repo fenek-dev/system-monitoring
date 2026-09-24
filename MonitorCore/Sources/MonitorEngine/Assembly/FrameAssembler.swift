@@ -91,7 +91,8 @@ public struct FrameAssembler {
                 func bytes(_ bps: Double?) -> UInt64 { UInt64(max(0, ((bps ?? 0) * secs).rounded())) }
                 byApp[r.app, default: ProcessDelta()].accumulate(ProcessDelta(
                     cpuNs: UInt64(max(0, ((r.cpuPercent ?? 0) / 100 * secs * 1e9).rounded())),
-                    diskR: bytes(r.diskReadBps), diskW: bytes(r.diskWriteBps)))
+                    diskR: bytes(r.diskReadBps), diskW: bytes(r.diskWriteBps),
+                    hasDisk: r.diskReadBps != nil || r.diskWriteBps != nil))
             }
         }
         if pa.unattributedDelta != ProcessDelta() { byApp[.system, default: ProcessDelta()].accumulate(pa.unattributedDelta) }
@@ -105,8 +106,8 @@ public struct FrameAssembler {
             apps[i].netRxSession = t.rx
             apps[i].netTxSession = t.tx
             let disk = session.diskTotals(apps[i].identity.key)                     // ICR-14: accumulated, never drops
-            apps[i].diskReadSession = disk.read
-            apps[i].diskWriteSession = disk.write
+            apps[i].diskReadSession = disk?.read
+            apps[i].diskWriteSession = disk?.write
         }
 
         frame.connections = connections(tick.networkFlows, inspectedApp: inspectedApp, rows: rows,

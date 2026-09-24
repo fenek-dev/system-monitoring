@@ -10,6 +10,8 @@ struct ProcessDelta: Sendable, Equatable {
     /// Disk bytes read/written (ICR-14 app session).
     var diskR: UInt64 = 0
     var diskW: UInt64 = 0
+    /// Some member reported a disk counter (else the app's disk session stays nil, not 0).
+    var hasDisk = false
 }
 
 /// The sensor results `ProcessAssembler` consumes for one tick.
@@ -102,7 +104,7 @@ struct ProcessAssembler {
     private var diskSession: DiskSessionBaselines
     /// Processes/net keys seen since the session started — survives `reset()`, so a first sight after wake isn't
     /// mistaken for a newborn's (whose full counters count toward the session). Pruned on exit.
-    private var sessionSeen = Set<ProcessID>()
+    private var prevLive = Set<ProcessID>()
     private var sessionSeenNet = Set<ProcessID>()
     private var gpuClock = CaptureClock()
     private var netClock = CaptureClock()
@@ -133,24 +135,28 @@ struct ProcessAssembler {
     /// (launchd-spawned services get their own, but those are long-lived and listed) — else its responsible
     /// process's. Without this, a short-lived build child counts twice: its own delta, and again inside the
     /// coalition's residual (ICR-13 "Exited processes").
-    static func coalition(of r: RawProcess, in map: [Int32: UInt64], sticky: [Int32: UInt64] = [:]) -> UInt64? {
+    static func coalition(of r: RawProcess, in map: [Int32: UInt64], sticky: [Int32: UInt64] = [:],
+                          rawByPID: [Int32: RawProcess] = [:]) -> UInt64? {
         if let c = map[r.id.pid] ?? sticky[r.id.pid] { return c }
-        if r.ppid > 1, let c = map[r.ppid] { return c }
+        // Ancestors (a build: driver → frontend → …), at most 4 hops, stopping at launchd.
+        var ppid = r.ppid
+        for _ in 0..<4 {
+            guard ppid > 1 else { break }
+            if let c = map[ppid] ?? sticky[ppid] { return c }
+            guard let parent = rawByPID[ppid], parent.ppid != ppid else { break }
+            ppid = parent.ppid
+        }
         if let resp = r.responsiblePID, resp != r.id.pid, let c = map[resp] { return c }
         return nil
     }
 
-    /// Disk rate (B/s) and session delta for one counter: the calculator's delta when it has a baseline (delta only
-    /// when the reading advanced); on explicit first sight the newborn rate and, for a session newborn, the full count.
-    private static func disk(_ calc: inout RateCalculator<ProcessID>, _ id: ProcessID, _ counter: UInt64,
-                             _ capturedNs: UInt64, advanced: Bool, newbornSec: Double?, sessionNewborn: Bool)
-        -> (bps: Double?, delta: UInt64) {
+    /// Disk rate (B/s) for one counter: the calculator's rate when it has a baseline; on explicit first sight the
+    /// newborn rate (counter / interval); nil after a counter reset.
+    private static func diskRate(_ calc: inout RateCalculator<ProcessID>, _ id: ProcessID, _ counter: UInt64,
+                                 _ capturedNs: UInt64, newbornSec: Double?) -> Double? {
         let tracked = calc.isTracking(id)
-        if let d = calc.delta(for: id, counter: counter, capturedNs: capturedNs) {
-            return (d.seconds > 0 ? Double(d.delta) / d.seconds : nil, advanced ? d.delta : 0)
-        }
-        guard !tracked else { return (nil, 0) }                     // counter went backwards: rebaselined
-        return (newbornSec.map { Double(counter) / $0 }, sessionNewborn ? counter : 0)
+        if let r = calc.rate(for: id, counter: counter, capturedNs: capturedNs) { return r }
+        return tracked ? nil : newbornSec.map { Double(counter) / $0 }
     }
 
     mutating func assemble(_ input: ProcessInputs, resolver: any AppResolving) -> ProcessAssembly {
@@ -197,7 +203,8 @@ struct ProcessAssembler {
                 id: r.id, name: Self.displayName(r), path: r.path, user: userName(r.uid), uid: r.uid,
                 isCurrentUser: r.uid == currentUID, app: identity.key,
                 provenance: r.restricted ? .restricted : .measured,
-                coalitionID: Self.coalition(of: r, in: input.coalitionOf, sticky: input.stickyCoalitionOf),
+                coalitionID: Self.coalition(of: r, in: input.coalitionOf, sticky: input.stickyCoalitionOf,
+                                            rawByPID: rawByPID),
                 cpuTimeNs: r.cpuTimeNs, threads: r.threads,
                 diskReadTotal: r.diskReadBytes, diskWriteTotal: r.diskWriteBytes,
                 preventsSleep: !(assertions?[r.id.pid]?.isEmpty ?? true))
@@ -208,8 +215,8 @@ struct ProcessAssembler {
             // its whole counters are this session's (CPU, disk; network in assembleNetwork).
             let bornInInterval = bornAfterUs.map { r.id.startTimeUs >= $0 } ?? false
             let newbornSec = bornInInterval ? newbornSeconds : nil
-            let sessionNewborn = !sessionSeen.contains(r.id) && r.id.startTimeUs >= sessionStartUs
-            sessionSeen.insert(r.id)
+            // prevLive survives reset(): a first sight after wake is not a session newborn.
+            let sessionNewborn = !prevLive.contains(r.id) && r.id.startTimeUs >= sessionStartUs
             if let ns = r.cpuTimeNs {
                 let tracked = cpu.isTracking(r.id)
                 if let d = cpu.delta(for: r.id, counter: ns, capturedNs: capturedNs) {
@@ -231,18 +238,21 @@ struct ProcessAssembler {
                 }
             }
             if let b = r.diskReadBytes {
-                let (bps, delta) = Self.disk(&diskRead, r.id, b, capturedNs, advanced: clock.advanced,
-                                             newbornSec: newbornSec, sessionNewborn: sessionNewborn)
-                s.diskReadBps = bps
-                if delta > 0 { out.deltas[r.id, default: ProcessDelta()].diskR = delta }
+                s.diskReadBps = Self.diskRate(&diskRead, r.id, b, capturedNs, newbornSec: newbornSec)
             }
             if let b = r.diskWriteBytes {
-                let (bps, delta) = Self.disk(&diskWrite, r.id, b, capturedNs, advanced: clock.advanced,
-                                             newbornSec: newbornSec, sessionNewborn: sessionNewborn)
-                s.diskWriteBps = bps
-                if delta > 0 { out.deltas[r.id, default: ProcessDelta()].diskW = delta }
+                s.diskWriteBps = Self.diskRate(&diskWrite, r.id, b, capturedNs, newbornSec: newbornSec)
             }
-            (s.diskReadSession, s.diskWriteSession) = diskSession.session(r)
+            // ICR-14 (ruling): the app's disk session sums the growth of each member's session value — survives
+            // wake, and the app total stays ≥ the sum of its rows.
+            let disk = diskSession.session(r)
+            s.diskReadSession = disk.read
+            s.diskWriteSession = disk.write
+            if disk.deltaRead > 0 || disk.deltaWrite > 0 || disk.firstSight {
+                out.deltas[r.id, default: ProcessDelta()].diskR = disk.deltaRead
+                out.deltas[r.id, default: ProcessDelta()].diskW = disk.deltaWrite
+                if disk.firstSight { out.deltas[r.id, default: ProcessDelta()].hasDisk = true }
+            }
 
             if let fp = r.footprint {
                 s.memory = fp
@@ -266,7 +276,7 @@ struct ProcessAssembler {
         diskRead.prune(keeping: live)
         diskWrite.prune(keeping: live)
         diskSession.prune(keeping: live)
-        for id in sessionSeen.filter({ !live.contains($0) }) { sessionSeen.remove(id) }
+        prevLive = live
         resolver.prune(keeping: live)
         return out
     }
@@ -388,6 +398,7 @@ struct ProcessAssembler {
 
         netRx.prune(keeping: keys)
         netTx.prune(keeping: keys)
+        sessionSeenNet = Set(cumulative.keys)                   // bounded to the reported ids (all seen by now)
     }
 
     /// Exact `ProcessID` when live; `ProcessID(pid, 0)` → the live process it was first matched to (pinned, so pid
