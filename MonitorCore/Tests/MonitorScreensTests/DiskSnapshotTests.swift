@@ -144,6 +144,34 @@ struct DiskPageLogicTests {
         #expect(DiskSessionBaselines.ownStartUs != nil)
     }
 
+    /// A counter that goes backwards rebases (delta 0), and its recovery doesn't spike.
+    @Test func sessionCounterRegressionRebases() {
+        let store = DiskSessionBaselines(launchUs: 1_000_000)
+        var p = ProcessSample(id: ProcessID(pid: 7, startTimeUs: 10), name: "backupd",
+                              diskReadTotal: 1_000, diskWriteTotal: 5_000)
+        #expect(store.session(p) == .init(read: 0, write: 0, partial: true))
+        p.diskReadTotal = 1_600
+        p.diskWriteTotal = 5_100
+        #expect(store.session(p) == .init(read: 600, write: 100, partial: true))
+        p.diskReadTotal = 200                                           // regress
+        #expect(store.session(p) == .init(read: 0, write: 100, partial: true))
+        p.diskReadTotal = 300                                           // recover: counts from the rebase, no spike
+        #expect(store.session(p) == .init(read: 100, write: 100, partial: true))
+    }
+
+    /// Exited processes lose their baseline even when the process count stays the same.
+    @Test func observePrunesExitedProcesses() {
+        let store = DiskSessionBaselines(launchUs: 1_000_000)
+        let a = ProcessSample(id: ProcessID(pid: 1, startTimeUs: 10), name: "a", diskReadTotal: 1, diskWriteTotal: 1)
+        let b = ProcessSample(id: ProcessID(pid: 2, startTimeUs: 10), name: "b", diskReadTotal: 1, diskWriteTotal: 1)
+        let c = ProcessSample(id: ProcessID(pid: 3, startTimeUs: 10), name: "c", diskReadTotal: 1, diskWriteTotal: 1)
+        store.observe([a, b])
+        #expect(store.hasBaseline(a.id) && store.hasBaseline(b.id))
+        store.observe([a, c])                                           // b exited, c spawned: same count
+        #expect(!store.hasBaseline(b.id))
+        #expect(store.hasBaseline(a.id) && store.hasBaseline(c.id))
+    }
+
     /// CP2 ruling: free = available capacity (container free); purgeable shown separately.
     @Test func freeSpaceExcludesPurgeable() {
         #expect(DiskCopy.freeBytes(boot) == 382_000_000_000)

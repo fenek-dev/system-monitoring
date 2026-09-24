@@ -137,6 +137,10 @@ struct PowerPageLogicTests {
         #expect(PowerCopy.adapter(PowerSnapshot(battery: battery(), lowPowerMode: false)) == "Not connected")
         #expect(PowerCopy.adapter(PowerSnapshot(battery: battery(onAC: true), adapterWatts: 96, adapterName: "USB-C",
                                                 lowPowerMode: false)) == "96 W USB-C")
+        // Battery sensor down: adapter details still show; unknown state is "—" (never the battery's reason).
+        #expect(PowerCopy.adapter(PowerSnapshot(adapterWatts: 140, lowPowerMode: false)) == "140 W")
+        #expect(PowerCopy.adapter(PowerSnapshot(lowPowerMode: false)) == nil)
+        #expect(PowerCopy.adapter(PowerSnapshot(battery: battery(onAC: true), lowPowerMode: false)) == "Connected")
         #expect(PowerCopy.fillColor(percent: 82) == TTColor.battery)
         #expect(PowerCopy.fillColor(percent: 20) == TTColor.statusElevated)
         #expect(PowerCopy.fillColor(percent: 10) == TTColor.statusCritical)

@@ -86,11 +86,14 @@ enum PowerCopy {
         return b.timeRemaining.map { "On battery · about \(TTFormat.duration($0)) left" } ?? "On battery"
     }
 
-    static func adapter(_ p: PowerSnapshot) -> String {
-        guard p.battery?.onAC ?? true else { return "Not connected" }
+    /// "Not connected" / "96 W USB-C" / "Connected". Without a battery reading and without adapter details the
+    /// connection state is unknown → nil ("—").
+    static func adapter(_ p: PowerSnapshot) -> String? {
+        if let b = p.battery, !b.onAC { return "Not connected" }
         let watts = p.adapterWatts.map { "\(TTFormat.number($0, digits: 0)) W" }
         let parts = [watts, p.adapterName].compactMap { $0 }
-        return parts.isEmpty ? "Connected" : parts.joined(separator: " ")
+        if !parts.isEmpty { return parts.joined(separator: " ") }
+        return p.battery == nil ? nil : "Connected"
     }
 
     /// Why battery values are "—": no battery (desktop), else the battery sensor's reason.
@@ -235,9 +238,8 @@ private struct BatteryCard: View {
                         .init("Capacity", b.flatMap(Self.capacity), unavailableReason: notReported),
                         .init("Temperature", b?.temperatureC.map { TTFormat.temperature($0, units: units) },
                               unavailableReason: notReported),
-                        .init("Power adapter", b == nil ? p.adapterWatts.map { "\(TTFormat.number($0, digits: 0)) W" }
-                                                        : PowerCopy.adapter(p),
-                              unavailableReason: notReported),
+                        // Adapter state doesn't come from the battery sensor.
+                        .init("Power adapter", PowerCopy.adapter(p)),
                     ])
                     Spacer(minLength: 0)
                 }

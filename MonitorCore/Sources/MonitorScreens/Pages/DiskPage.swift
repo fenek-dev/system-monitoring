@@ -403,24 +403,30 @@ enum DiskRows {
             return Session(read: p.diskReadTotal, write: p.diskWriteTotal, partial: false)
         }
         guard p.diskReadTotal != nil || p.diskWriteTotal != nil else { return Session(read: nil, write: nil, partial: false) }
-        let base = baselines[p.id] ?? (p.diskReadTotal ?? 0, p.diskWriteTotal ?? 0)
-        if baselines[p.id] == nil { baselines[p.id] = base }
-        func delta(_ now: UInt64?, _ b: UInt64) -> UInt64? { now.map { $0 >= b ? $0 - b : $0 } }   // pid reuse → restart
-        return Session(read: delta(p.diskReadTotal, base.read), write: delta(p.diskWriteTotal, base.write), partial: true)
+        let now = (read: p.diskReadTotal ?? 0, write: p.diskWriteTotal ?? 0)
+        var base = baselines[p.id] ?? now
+        // A counter that went backwards (a sensor glitch; ProcessID already includes the start time, so this is not
+        // pid reuse) rebases to the current value: the delta is clamped to 0, with no spike when it recovers.
+        if now.read < base.read { base.read = now.read }
+        if now.write < base.write { base.write = now.write }
+        baselines[p.id] = base
+        return Session(read: p.diskReadTotal.map { $0 - base.read }, write: p.diskWriteTotal.map { $0 - base.write },
+                       partial: true)
     }
 
-    /// Records a baseline for every process seen for the first time (so later I/O counts from here), and drops
-    /// baselines of processes that exited.
+    /// Records a baseline for every process seen for the first time (so later I/O counts from here), and drops the
+    /// baselines of every process not in `processes` (exited).
     func observe(_ processes: [ProcessSample]) {
+        let live = Set(processes.map(\.id))
+        baselines = baselines.filter { live.contains($0.key) }
         for p in processes where baselines[p.id] == nil && (p.diskReadTotal != nil || p.diskWriteTotal != nil) {
             if let launchUs, p.id.startTimeUs >= launchUs { continue }
             baselines[p.id] = (p.diskReadTotal ?? 0, p.diskWriteTotal ?? 0)
         }
-        if baselines.count > processes.count {
-            let live = Set(processes.map(\.id))
-            baselines = baselines.filter { live.contains($0.key) }
-        }
     }
+
+    /// Test hook: whether a baseline is held for `id`.
+    func hasBaseline(_ id: ProcessID) -> Bool { baselines[id] != nil }
 }
 
 private struct DiskActivityCard: View {
