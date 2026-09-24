@@ -116,13 +116,6 @@ struct PopoverTests {
         #expect(!PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false), hasBattery: nil).contains("adapter"))
     }
 
-    @Test func expansionShowsTopThree() {
-        let live = ScreenFixture.live(.calm)
-        let apps = PopoverModel.expansionApps(.cpu, live: live)
-        #expect(apps.count == 3)
-        #expect(zip(apps, apps.dropFirst()).allSatisfy { ($0.cpuPercent ?? 0) >= ($1.cpuPercent ?? 0) })
-    }
-
     // MARK: Behaviour (recording AppCommands + mock ActionLog)
 
     /// Lock-protected command recorder (Sendable without an unchecked escape hatch).
@@ -165,16 +158,7 @@ struct PopoverTests {
         ops.toggleOverlay()
         #expect(log.withLock { $0 } == ["open overview", "open history", "quitTelltale",
                                          "inspect com.apple.dt.Xcode", "paused true", "settings", "toggleOverlay"])
-        // Row double-click / expansion-line clicks are TTPopoverRow's (W3), via the same `appCommands`.
-    }
-
-    @Test func rowExpansionToggles() {
-        var open: Set<MonitorModel.Category> = []
-        open = PopoverModel.toggled(open, .cpu)
-        open = PopoverModel.toggled(open, .memory)
-        #expect(open == [.cpu, .memory])            // several rows may be open at once
-        open = PopoverModel.toggled(open, .cpu)
-        #expect(open == [.memory])
+        // Row clicks are TTPopoverRow's (`TTPopoverRow.click`), flyout app clicks FlyoutView's, via `appCommands`.
     }
 
     @Test func topConsumerQuitAndFeedback() async throws {
@@ -236,13 +220,17 @@ struct PopoverTests {
                        size: size, named: "popover-footer-overlay-on")
     }
 
-    @Test func expandedSnapshot() {
+    /// Replaces the old inline expansion golden: the popover with the CPU flyout beside it on the left, top-aligned
+    /// with the CPU row as `FlyoutPlacement` puts it (the CPU row's top is 53.5 below the popover's, measured).
+    @Test func flyoutBesidePopoverSnapshot() {
         let view = ZStack(alignment: .topLeading) {
             Color.black
-            PopoverContainer { PopoverRoot(expanded: [.cpu, .thermals]) }.offset(x: 68, y: 34)
+            FlyoutView(category: .cpu).offset(x: 20, y: 34 + 53.5)
+            PopoverContainer { PopoverRoot() }.offset(x: 20 + FlyoutView.width + 6, y: 34)
         }
-        .frame(width: 440, height: 900, alignment: .topLeading)
+        .environment(FlyoutState(shown: .cpu))          // the source row keeps its hover fill
+        .frame(width: 740, height: 580, alignment: .topLeading)
         .screenEnvironment(.calm)
-        assertSnapshot(view, size: CGSize(width: 440, height: 900), named: "popover-expanded-calm")
+        assertSnapshot(view, size: CGSize(width: 740, height: 580), named: "popover-flyout-calm")
     }
 }

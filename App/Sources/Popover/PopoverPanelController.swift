@@ -1,6 +1,7 @@
 import AppKit
 import os
 import MonitorScreens
+import MonitorUIKit
 import SwiftUI
 
 /// Borderless panel that can take key status (Esc, ⌘ shortcuts) without activating the app.
@@ -26,6 +27,11 @@ final class PopoverPanelController: NSObject {
     private var monitors: [Any] = []
     private var resignObserver: NSObjectProtocol?
     private var lastClose: ContinuousClock.Instant?
+    /// Top-apps flyout beside the panel (DESIGN §2.22), fed by the rows' hover events; dismissed on close.
+    private lazy var flyout = FlyoutPanelController(env: env) { [weak self] in
+        guard let self, let panel, let view = host?.view else { return nil }
+        return FlyoutPanelController.Popover(window: panel, hostView: view, screen: panel.screen ?? anchorScreen())
+    }
 
     /// `shortcuts` handles ⌘Q/⌘,/⌘D while the panel is key (the app is not active, so the main menu does not
     /// see them); return true when consumed.
@@ -54,8 +60,11 @@ final class PopoverPanelController: NSObject {
         guard panel == nil else { return }
         // Visibility first: `live.presentation` must apply the latest frame before the view tree reads it.
         onVisibilityChange(true)
-        let root = PopoverContainer(drawsShadow: false) { PopoverRoot() }
-            .telltaleEnvironment(env.context())
+        let root = PopoverContainer(drawsShadow: false) {
+            PopoverRoot(onRowHover: { [weak self] event in self?.flyout.rowHover(event) })
+        }
+        .environment(flyout.state)                      // source row keeps its hover fill while its flyout shows
+        .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: AnyView(root))
         host.sizingOptions = [.preferredContentSize]
 
@@ -72,9 +81,11 @@ final class PopoverPanelController: NSObject {
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentViewController = host
         panel.setAccessibilityLabel("Warden")
+        panel.acceptsMouseMovedEvents = true            // flyout safe-triangle aim samples the pointer
 
         self.panel = panel
         self.host = host
+        flyout.activate()
         place()
         sizeObservation = host.observe(\.preferredContentSize, options: [.new]) { [weak self] _, _ in
             Task { @MainActor in self?.place() }
@@ -105,6 +116,7 @@ final class PopoverPanelController: NSObject {
 
     func close() {
         guard let panel else { return }
+        flyout.dismiss()
         removeMonitors()
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
         resignObserver = nil
@@ -136,6 +148,7 @@ final class PopoverPanelController: NSObject {
         panel.setFrame(f, display: true)
         placing = false
         reclamp()
+        flyout.reposition()
         Self.log.debug("""
             place anchor=\(String(describing: a), privacy: .public) visible=\(String(describing: screen.visibleFrame), privacy: .public) \
             size=\(String(describing: size), privacy: .public) → \(String(describing: panel.frame), privacy: .public)
@@ -151,6 +164,7 @@ final class PopoverPanelController: NSObject {
             placing = true
             panel.setFrame(c, display: true)
             placing = false
+            flyout.reposition()
         }
         panel.invalidateShadow()
     }
@@ -200,6 +214,8 @@ final class PopoverPanelController: NSObject {
             return event.modifierFlags.contains(.command) && shortcuts(event)
         default:
             if event.window === panel { return false }
+            if let f = flyout.window, event.window === f { return false }   // flyout app clicks
+
             if event.window?.className.contains("StatusBar") == true { return false }   // status button toggles
             close()
             return false

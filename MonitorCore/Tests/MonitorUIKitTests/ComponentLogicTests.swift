@@ -1,5 +1,6 @@
 import AppKit
 import MonitorModel
+import os
 import SwiftUI
 import UniformTypeIdentifiers
 import Testing
@@ -54,19 +55,16 @@ import Testing
         #expect([16, 20, 26, 44].map { TTAppTile.radius(CGFloat($0)) } == [4, 5, 7, 10])
     }
 
-    @Test(.enUS) func popoverExpansionLines() {
-        func app(_ n: String, cpu: Double? = nil, rx: Double? = nil, tx: Double? = nil, w: Double? = nil) -> AppSample {
-            AppSample(identity: AppIdentity(key: AppKey(kind: .app, id: n), displayName: n), cpuPercent: cpu,
-                      netRxBps: rx, netTxBps: tx, energyWatts: w)
-        }
-        let apps = [app("A", cpu: 5, rx: 1_000_000, w: 0.004), app("B", cpu: 212.4, tx: 2_000_000, w: 7.15),
-                    app("C", cpu: 0), app("D", cpu: 18.7, rx: 100_000, tx: 50_000, w: 12.4), app("E", cpu: 9)]
+    @Test(.enUS) func popoverAppMetricFormats() {
+        let app = AppSample(identity: AppIdentity(key: AppKey(kind: .app, id: "N"), displayName: "N"),
+                            netRxBps: 100_000, netTxBps: 50_000, diskWriteBps: 2_000_000)
         let u = UnitPreferences()
-        #expect(TTPopoverRow.lines(apps, .cpu, units: u).map(\.name) == ["B", "D", "E"])
-        #expect(TTPopoverRow.lines(apps, .cpu, units: u).map(\.value) == ["212.4%", "18.7%", "9.0%"])
-        #expect(TTPopoverRow.lines(apps, .network, units: u).map(\.value) == ["2.0 MB/s", "1.0 MB/s", "150 KB/s"])
-        #expect(TTPopoverRow.lines(apps, .thermals, units: u).map(\.value) == ["12.4 W", "7.15 W", "<0.01 W"])
-        #expect(TTPopoverRow.lines([app("Z", cpu: 0)], .cpu, units: u).isEmpty)
+        #expect(TTPopoverRow.metricValue(app, .network) == 150_000)
+        #expect(TTPopoverRow.metricValue(app, .disk) == 2_000_000)
+        #expect(TTPopoverRow.metricValue(app, .cpu) == nil)
+        #expect(TTPopoverRow.format(212.4, .cpu, units: u) == "212.4%")
+        #expect(TTPopoverRow.format(150_000, .network, units: u) == "150 KB/s")
+        #expect(TTPopoverRow.format(0.004, .thermals, units: u) == "<0.01 W")
         #expect(TTPopoverRow.page(.power) == .power)
     }
 
@@ -77,36 +75,22 @@ import Testing
         #expect(TTPopoverRow.metricValue(a, .memory) == 4_294_967_296)
     }
 
-    @Test func popoverRowTapLogic() {
-        var t = RowTapTracker()
-        // Single click toggles immediately.
-        var expanded = t.singleTap(expanded: false, at: 10, interval: 0.5)
-        #expect(expanded)
-        // Later single click (outside the interval) toggles back.
-        expanded = t.singleTap(expanded: expanded, at: 12, interval: 0.5)
-        #expect(!expanded)
+    /// A single click on a popover row opens that category's dashboard page (no inline expansion).
+    @MainActor @Test func popoverRowClickOpensPage() {
+        let log = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let commands = AppCommands(openDashboard: { p in log.withLock { $0.append("open \(p?.rawValue ?? "nil")") } },
+                                   inspectApp: { k in log.withLock { $0.append("inspect \(k.id)") } })
+        TTPopoverRow.click(.memory, commands: commands)
+        TTPopoverRow.click(.thermals, commands: commands)
+        #expect(log.withLock { $0 } == ["open memory", "open thermals"])
+    }
 
-        // Double-click where the count-1 recognizer fires on both clicks: net unchanged.
-        var d = RowTapTracker()
-        var s = false
-        s = d.singleTap(expanded: s, at: 20, interval: 0.5)
-        s = d.singleTap(expanded: s, at: 20.2, interval: 0.5)
-        var opened = 0
-        s = d.doubleTap(current: s) { opened += 1 }
-        #expect(s == false && opened == 1)
-
-        // Double-click where it fires only once: still restored to the pre-click state.
-        var e = RowTapTracker()
-        var x = true
-        x = e.singleTap(expanded: x, at: 30, interval: 0.5)
-        #expect(!x)
-        x = e.doubleTap(current: x) { opened += 1 }
-        #expect(x && opened == 2)
-        // After a double-click, the next single click starts a new sequence.
-        x = e.singleTap(expanded: x, at: 30.3, interval: 0.5)
-        #expect(!x)
-        let restored = e.doubleTap(current: x) { opened += 1 }
-        #expect(restored && opened == 3)
+    /// "Show top apps" (keyboard/VoiceOver) asks for the flyout at once, with the row's frame.
+    @MainActor @Test func popoverRowShowTopAppsAction() {
+        let events = OSAllocatedUnfairLock<[PopoverRowHover]>(initialState: [])
+        let frame = CGRect(x: 7, y: 60, width: 346, height: 44)
+        TTPopoverRow.showTopApps(.gpu, frame: frame) { e in events.withLock { $0.append(e) } }
+        #expect(events.withLock { $0 } == [PopoverRowHover(category: .gpu, phase: .show, frame: frame)])
     }
 
     @Test func sidebarValues() {

@@ -474,16 +474,9 @@ States (ADDED, the design shows only rest):
 - States:
   - rest: transparent
   - hover (ADDED): `fillHover`
-  - expanded (ADDED): white @ 0.06, covering the row and its expansion
   - stressed: `statusElevatedRowFill` (or the critical variant), with the value colored in the status color
-- **Expansion** (ADDED, per ruling):
-  - Click toggles; several rows may be open at once.
-  - The expansion sits under the row, inside the same rounded background, with padding top 0, right 10, bottom 8, left 36. The left inset aligns it with the title text (10 + 16 + 10).
-  - It holds 3 lines, each 24 tall, HStack gap 8: tile 16, name `body12` tail-truncated (flex), value right-aligned in the same 74-wide column as the row value, `body12` in `textSecondary`.
-  - Metric per row: CPU % CPU; GPU % GPU; Memory resident memory; Network ↓+↑ rate; Thermals top apps by power in W (caption above the list: "by power", `caption` `textTertiary`); Power avg W; Disk read+write rate.
-  - Clicking an app line opens the dashboard on Processes with that app selected and its detail expanded.
-  - No activity: a single line "No app activity" in `caption` `textTertiary`.
-  - Animation: height change `.easeInOut(0.18)`.
+- **Click** (ADDED): opens the dashboard on that category's page.
+- **Top-apps flyout** (ADDED, replaces the former click-to-expand top 3): hovering a row 250 ms opens a panel beside the popover (left; right when the left has no room), its top aligned with the row and clamped 8 inside the visible frame; moving to another row switches it at once, except while the pointer heads for the flyout (safe triangle from its last position to the flyout's near corners: the switch waits 100 ms); the pointer may cross into the flyout (hover bridge); leaving both closes it after 200 ms; closing the popover closes it. The source row keeps `fillHover` while its flyout shows. While the pointer is in the flyout the line order is frozen (values and shares still update; new apps are appended). Keyboard/VoiceOver: row action "Show top apps"; showing announces the header and the top 3 lines. Chrome as the popover (`bgPopover`, 1-pt `borderPopover`, radius 12, padding 6), 320 wide. Header (padding 8/10/6, gap 8): icon 16, "Top CPU" `body12Strong` + detail `textSecondary`: CPU/GPU " · 37% of system", Disk " · 205 MB/s I/O" (read+write), Thermals " · 61°C", others " · 15.1 GB total" (Network ↓+↑); caption under it (`caption` `textTertiary`): CPU "% of one core", Thermals "by power". Line accessibility value: "{value}, {share}% of all apps". Up to 10 lines of 26, radius 6, hover `fillHover`, padding 10, gap 8: tile 16, name `body12` middle-truncated (flex), share bar 48×4 (`fillTrack` track, category-color fill = app value / Σ of all apps' values), value 64 wide right-aligned `body12` tabular `textSecondary`. Metric per row: CPU % CPU; GPU % GPU; Memory resident memory; Network ↓+↑ rate; Thermals and Power energy W; Disk read+write rate. Clicking a line opens the dashboard on Processes with that app selected and its detail expanded. No apps: "No app activity" `caption` `textTertiary`. Updates live every tick.
 
 ### 2.23 Alert banner (`TTAlertBanner`)
 - Margin 2 top, 6 horizontal, 6 bottom. Padding 10×12, radius 8, bg `statusElevatedBannerFill` with 1-pt `statusElevatedBannerBorder`. Critical uses the red variants.
@@ -627,8 +620,8 @@ Elements, top to bottom:
 | 13 | Footer | HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: `popoverPrimary` "Open Dashboard" (flex); `popoverSecondary` "History"; ADDED `iconButton` 30×30 radius 7 bg `fillButton` with the `overlay` glyph, tooltip "Overlay (⌥Z)" (current shortcut), tinted `accent` when on (§3.16); ADDED `iconButton` 30×30 radius 7 bg `fillButton` with the `quit` glyph, tooltip "Quit Warden" | Open Dashboard opens the window on Overview; History opens it on History; Overlay toggles the stats overlay (§3.16); Quit calls `NSApp.terminate` |
 
 Interactions:
-- Rows 2–9 expand (§2.22).
-- Row double-click (ADDED): opens the dashboard on that category page.
+- Row hover shows the top-apps flyout (§2.22).
+- Row click (ADDED): opens the dashboard on that category page.
 - Keyboard: ⌘Q quits Telltale. ⌘, opens Settings. ⌘D opens the Dashboard.
 
 Popover row order and visibility come from Settings (§3.14). Hidden rows are removed entirely, and a divider is suppressed when either side of it is empty.
@@ -1322,7 +1315,7 @@ Exceptions:
 | Context | Rule | Example |
 |---|---|---|
 | System (package, components, battery drain) | 1 decimal W | `18.6 W`, `0.2 W`, `−18.9 W` |
-| Per-app average power (tables, inspector, treemap, popover expansion) | ≥ 10 W: 1 decimal; 0.01–9.99 W: 2 decimals; > 0 and < 0.01 W: `<0.01 W`; 0 → `—`. Source: `ri_energy_nj` deltas (rusage v6) plus the coalition residual for root processes; estimated values carry an "Estimated" tooltip | `12.4 W`, `7.15 W`, `4.82 W`, `0.35 W`, `<0.01 W` |
+| Per-app average power (tables, inspector, treemap, popover flyout) | ≥ 10 W: 1 decimal; 0.01–9.99 W: 2 decimals; > 0 and < 0.01 W: `<0.01 W`; 0 → `—`. Source: `ri_energy_nj` deltas (rusage v6) plus the coalition residual for root processes; estimated values carry an "Estimated" tooltip | `12.4 W`, `7.15 W`, `4.82 W`, `0.35 W`, `<0.01 W` |
 | Battery capacity | 1 decimal Wh | `68.1 of 72.4 Wh` |
 | Adapter | integer W | `96 W` |
 

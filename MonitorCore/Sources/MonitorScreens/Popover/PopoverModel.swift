@@ -4,7 +4,7 @@ import MonitorModel
 import MonitorUIKit
 import SwiftUI
 
-/// Pure bindings of the popover (DESIGN §3.1–3.2): row sections, row texts, expansion lines, banners.
+/// Pure bindings of the popover (DESIGN §3.1–3.2): row sections, row texts, banners (flyout: `FlyoutModel`).
 /// Views only lay these out, so the copy/format rules are unit-tested (`PopoverTests`).
 @MainActor
 enum PopoverModel {
@@ -118,14 +118,6 @@ enum PopoverModel {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    // MARK: Expansion
-
-    /// Top 3 app groups for the category's key (ARCHITECTURE §5.5, cached per apply by `LiveModel`); `TTPopoverRow`
-    /// formats the DESIGN §2.22 metric per line.
-    static func expansionApps(_ c: MonitorModel.Category, live: LiveModel) -> [AppSample] {
-        live.topApps(c, count: 3)
-    }
-
     // MARK: Top consumer
 
     struct Consumer: Equatable {
@@ -196,13 +188,6 @@ enum PopoverModel {
             }
             return Banner(id: alert.id, level: alert.level, message: message, buttons: buttons)
         }
-    }
-
-    /// Row expansion toggle (several rows may be open at once).
-    static func toggled(_ open: Set<MonitorModel.Category>, _ c: MonitorModel.Category) -> Set<MonitorModel.Category> {
-        var s = open
-        if s.contains(c) { s.remove(c) } else { s.insert(c) }
-        return s
     }
 
     /// Feedback line for a failed Quit (ARCHITECTURE §6.7: failures → toast); nil on success/cancel.
