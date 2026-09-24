@@ -42,10 +42,15 @@ public struct CrashCanary: Sendable {
         }
     }
 
+    /// The marker must reach cfprefsd before the guarded call can crash the process: `synchronize()` pushes the
+    /// write out of process synchronously (verified by `CrashCanaryPersistenceTests` via `/usr/bin/defaults`).
     func arm(_ id: SensorID) {
         switch storage {
         case .none: break
-        case .defaults(let suite): Self.defaults(suite)?.set(true, forKey: Self.keyPrefix + id.rawValue)
+        case .defaults(let suite):
+            guard let d = Self.defaults(suite) else { return }
+            d.set(true, forKey: Self.keyPrefix + id.rawValue)
+            d.synchronize()
         case .memory(let m): m.insert(id)
         }
     }

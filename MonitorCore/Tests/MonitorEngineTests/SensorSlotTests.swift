@@ -11,6 +11,7 @@ final class ScriptSensor: Sensor {
     var outcomes: [Result<Int, SensorError>]
     var prepareOutcomes: [SensorError?] = []
     var onSample: (() -> Void)?
+    var onPrepare: (() -> Void)?
     private(set) var prepareCount = 0, sampleCount = 0, invalidateCount = 0
 
     init(_ id: SensorID, cadence: SensorCadence = .everyTick, _ outcomes: [Result<Int, SensorError>]) {
@@ -24,6 +25,7 @@ final class ScriptSensor: Sensor {
     }
 
     func prepare() throws(SensorError) {
+        onPrepare?()
         defer { prepareCount += 1 }
         if prepareCount < prepareOutcomes.count, let e = prepareOutcomes[prepareCount] { throw e }
     }
@@ -194,13 +196,100 @@ private func isNotRequested<R>(_ r: SensorResult<R>) -> Bool { if case .notReque
     @Test func canaryArmedDuringFirstCallsOnly() {
         let canary = CrashCanary.inMemory()
         let s = ScriptSensor(.smc, [.success(1)])
-        var seen: [Bool] = []
-        s.onSample = { seen.append(canary.isTripped(.smc)) }
+        var seen: [String] = []
+        s.onPrepare = { seen.append("prepare:\(canary.isTripped(.smc))") }
+        s.onSample = { seen.append("sample:\(canary.isTripped(.smc))") }
         let slot = SensorSlot(s, canary: canary)
         _ = slot.sample(ctx(0))
         _ = slot.sample(ctx(1))
-        #expect(seen == [true, false])
+        #expect(seen == ["prepare:true", "sample:true", "sample:false"])
         #expect(!canary.isTripped(.smc))
+    }
+
+    @Test func canaryStaysArmedUntilSampleHasRunOnce() {
+        let canary = CrashCanary.inMemory()
+        let s = ScriptSensor(.smc, [.success(1)])
+        s.prepareOutcomes = [.unavailable("not yet")]                   // first prepare fails, no sample
+        var seen: [String] = []
+        s.onPrepare = { seen.append("prepare:\(canary.isTripped(.smc))") }
+        s.onSample = { seen.append("sample:\(canary.isTripped(.smc))") }
+        let slot = SensorSlot(s, canary: canary)
+        _ = slot.sample(ctx(0))
+        #expect(!canary.isTripped(.smc))                                // a thrown error is not a crash
+        _ = slot.sample(ctx(300))                                       // retry: prepare ok, first sample
+        _ = slot.sample(ctx(301))
+        #expect(seen == ["prepare:true", "prepare:true", "sample:true", "sample:false"])
+    }
+
+    /// The marker must be visible to another process right after `arm` (cfprefsd holds it even if we abort next).
+    @Test func armedMarkerIsVisibleOutOfProcess() throws {
+        let suite = "dev.telltale.tests.canary.\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let canary = CrashCanary.defaults(suite: suite)
+        canary.arm(.smc)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        p.arguments = ["read", suite, CrashCanary.keyPrefix + "smc"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        #expect(text.trimmingCharacters(in: .whitespacesAndNewlines) == "1")
+        canary.disarm(.smc)
+    }
+
+    // MARK: fix round (T14)
+
+    @Test func backgroundStaleWindowUsesTheTickInterval() {
+        let s = ScriptSensor([.success(5), .failure(.transient("x"))])     // .everyTick
+        let slot = SensorSlot(s, canary: .none)
+        _ = slot.sample(ctx(0, .background))
+        guard case .failed(_, let a, _) = slot.sample(ctx(5, .background)) else { Issue.record("failed"); return }
+        #expect(a == 5)                                                 // 1st failure: last reused (5 s tick)
+        guard case .failed(_, let b, _) = slot.sample(ctx(10, .background)) else { Issue.record("failed"); return }
+        #expect(b == 5)                                                 // 2 ticks
+        guard case .failed(_, let c, _) = slot.sample(ctx(15, .background)) else { Issue.record("failed"); return }
+        #expect(c == nil)                                               // 3 ticks → stale
+    }
+
+    @Test func onceStaysCachedAcrossPauseAndReRequest() {
+        let s = ScriptSensor(.device, cadence: .once, [.success(1)])
+        let slot = SensorSlot(s, canary: .none)
+        _ = slot.sample(ctx(0))
+        #expect(isNotRequested(slot.sample(ctx(1, .paused))))
+        #expect(isCached(slot.sample(ctx(2))))                          // resumed: not re-sampled
+        #expect(s.sampleCount == 1)
+    }
+
+    @Test func onceRetriesATransientFirstFailure() {
+        let s = ScriptSensor(.device, cadence: .once, [.failure(.transient("busy")), .success(9)])
+        let slot = SensorSlot(s, canary: .none)
+        _ = slot.sample(ctx(0))
+        #expect(isFresh(slot.sample(ctx(1))))                           // retried after one tick
+        #expect(isCached(slot.sample(ctx(2))))
+    }
+
+    @Test func transientFailureAfterUnavailableRetryUpdatesStatus() {
+        let s = ScriptSensor([.failure(.unavailable("gone")), .failure(.transient("flaky"))])
+        let slot = SensorSlot(s, canary: .none)
+        _ = slot.sample(ctx(0))
+        #expect(slot.status == .unavailable("gone"))
+        _ = slot.sample(ctx(300))
+        #expect(slot.status == .ok)
+    }
+
+    @Test func p95UsesNearestRankOverVariedValues() {
+        var now: UInt64 = 0
+        var step: UInt64 = 0
+        let s = ScriptSensor([.success(1)])
+        s.onSample = { step += 1; now += step * 100 }                   // costs 100, 200, …, 2000
+        let slot = SensorSlot(s, canary: .none, clock: { now })
+        for i in 0..<20 { _ = slot.sample(ctx(Double(i))) }
+        #expect(slot.costNs.p95 == 1_900)                               // rank ⌈0.95 × 20⌉ = 19
+        #expect(slot.costNs.mean == 1_050)
+        #expect(slot.costNs.last == 2_000)
     }
 
     @Test func userDefaultsCanaryRoundTrip() {

@@ -7,7 +7,7 @@ import MonitorModel
 /// direction ≥ `netBps`, each disk direction ≥ `diskBps`); gaps up to `mergeGap` merge. Episodes shorter than
 /// `minDuration` are dropped. An episode emits an open event (`end == nil`) when it reaches `minDuration` and a
 /// closing event with the same id (end = last sample above the threshold) — the store upserts by id.
-/// Swap growth: swap used grows by ≥ 1 GiB within 10 min → one `.swapGrowth` event (re-armed after swap shrinks
+/// Swap growth: swap used grows by ≥ 1 GiB within 30 min → one `.swapGrowth` event (re-armed after swap shrinks
 /// by 256 MiB from its peak).
 /// Durations and windows run on the frame's monotonic `uptimeNs`; `wallTime` only stamps events. A sample gap longer
 /// than max(merge gap, 2× nominal interval), on either clock (sleep/wake), closes every episode.

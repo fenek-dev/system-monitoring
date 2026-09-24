@@ -40,6 +40,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
     private var lastError: SensorError?
     private var last: (reading: R, capturedNs: UInt64, atNs: UInt64)?
     private var costs: [UInt64] = []
+    private var sortedCosts: [UInt64]?
     private var costIndex = 0
     private var costSum: UInt64 = 0
     private var costCount: UInt64 = 0
@@ -62,11 +63,13 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
 
     var sensorID: SensorID { sensor.id }
 
+    /// Mean over the whole launch; p95 (nearest rank) over the last 100 samples, sorted lazily once per change.
     var costNs: (last: UInt64, mean: UInt64, p95: UInt64) {
         guard costCount > 0 else { return (0, 0, 0) }
-        let sorted = costs.sorted()
-        let p95 = sorted[min(sorted.count - 1, Int((Double(sorted.count) * 0.95).rounded(.up)) - 1)]
-        return (lastCost, costSum / costCount, p95)
+        if sortedCosts == nil { sortedCosts = costs.sorted() }
+        let sorted = sortedCosts!
+        let rank = Int((Double(sorted.count) * 0.95).rounded(.up))
+        return (lastCost, costSum / costCount, sorted[max(0, min(sorted.count, rank) - 1)])
     }
 
     func invalidate() {
@@ -83,6 +86,12 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         let now = ctx.uptimeNs
         let newlyRequested = !wasRequested
         wasRequested = true
+        let isOnce = sensor.cadence == .once
+        // `.once`: after one success it is served from cache forever (pause/resume and re-requests included).
+        if isOnce, let last { return .cached(last.reading, capturedNs: last.capturedNs) }
+        // Staleness and `.once` retries are measured in real ticks: never shorter than the mode's own interval.
+        let tick = Self.ns(ctx.mode.interval) ?? 1_000_000_000
+        let effective = isOnce ? tick : max(interval, tick)
 
         // Unavailable: wait for the next prepare() retry.
         if case .unavailable = status, now < nextAttemptNs {
@@ -90,17 +99,22 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         }
         // Backoff after repeated failures.
         if consecutiveFailures > 0, now < nextAttemptNs, !newlyRequested || consecutiveFailures >= 3 {
-            return failedResult(lastError ?? .timeout, now: now, interval: interval)
+            return failedResult(lastError ?? .timeout, now: now, window: effective)
         }
         // Not due: serve the last reading.
-        if !newlyRequested, let lastAttempt = lastAttemptNs, consecutiveFailures == 0 {
-            let due = sensor.cadence == .once ? last == nil : now >= lastAttempt &+ interval
-            if !due {
-                if let last { return .cached(last.reading, capturedNs: last.capturedNs) }
-                return .notRequested
-            }
+        if !isOnce, !newlyRequested, let lastAttempt = lastAttemptNs, consecutiveFailures == 0,
+           now < lastAttempt &+ interval {
+            if let last { return .cached(last.reading, capturedNs: last.capturedNs) }
+            return .notRequested
         }
-        return attempt(now: now, interval: interval, ctx: ctx)
+        return attempt(now: now, retry: isOnce ? tick : interval, window: effective, ctx: ctx)
+    }
+
+    static func ns(_ d: Duration?) -> UInt64? {
+        guard let parts = d?.components else { return nil }
+        guard parts.seconds >= 0 else { return 0 }
+        let (ns, overflow) = UInt64(parts.seconds).multipliedReportingOverflow(by: 1_000_000_000)
+        return overflow ? .max : ns + UInt64(parts.attoseconds / 1_000_000_000)
     }
 
     // MARK: - Private
@@ -121,17 +135,13 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         case .background: c.background
         case .paused: nil
         }
-        guard let d else { return nil }
-        let parts = d.components
-        guard parts.seconds >= 0 else { return 0 }
-        let (ns, overflow) = UInt64(parts.seconds).multipliedReportingOverflow(by: 1_000_000_000)
-        return overflow ? .max : ns + UInt64(parts.attoseconds / 1_000_000_000)
+        return Self.ns(d)
     }
 
-    private func attempt(now: UInt64, interval: UInt64, ctx: SampleContext) -> SensorResult<R> {
+    private func attempt(now: UInt64, retry: UInt64, window: UInt64, ctx: SampleContext) -> SensorResult<R> {
         lastAttemptNs = now
-        if !canaryDone {                              // first prepare()/sample() of this launch
-            canaryDone = true
+        // Canary armed around every call until sample() has returned once (a failed prepare() doesn't count).
+        if !canaryDone {
             armed = true
             canary.arm(sensor.id)
         }
@@ -146,7 +156,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
                 try sensor.prepare()
                 prepared = true
             } catch {
-                return fail(error, now: now, interval: interval)
+                return fail(error, now: now, retry: retry, window: window)
             }
         }
         let start = clock()
@@ -154,9 +164,11 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         do throws(SensorError) {
             result = try sensor.sample(ctx)
         } catch {
+            canaryDone = true
             recordCost(since: start)
-            return fail(error, now: now, interval: interval)
+            return fail(error, now: now, retry: retry, window: window)
         }
+        canaryDone = true
         recordCost(since: start)
         last = (result.reading, result.capturedNs, now)
         consecutiveFailures = 0
@@ -166,7 +178,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         return .fresh(result.reading, capturedNs: result.capturedNs)
     }
 
-    private func fail(_ error: SensorError, now: UInt64, interval: UInt64) -> SensorResult<R> {
+    private func fail(_ error: SensorError, now: UInt64, retry: UInt64, window: UInt64) -> SensorResult<R> {
         lastError = error
         switch error {
         case .unavailable(let reason), .permissionDenied(let reason):
@@ -183,16 +195,18 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
                 backoffNs = backoffNs == 0 ? Self.backoffStartNs : min(backoffNs * 2, Self.backoffMaxNs)
                 nextAttemptNs = now &+ backoffNs
             } else {
-                nextAttemptNs = now &+ interval
+                nextAttemptNs = now &+ retry
+                if case .unavailable = status { status = .ok }       // prepare() worked on the retry
             }
-            return failedResult(error, now: now, interval: interval)
+            return failedResult(error, now: now, window: window)
         }
     }
 
-    /// Last reading reused for ≤ 2 intervals after it was taken, then nil.
-    private func failedResult(_ error: SensorError, now: UInt64, interval: UInt64) -> SensorResult<R> {
-        let window = 2 * max(interval, 1_000_000_000)
-        if let last, now >= last.atNs, now - last.atNs <= window {
+    /// Last reading reused for ≤ 2 intervals (`window` = one interval, never shorter than the tick) after it was
+    /// taken, then nil.
+    private func failedResult(_ error: SensorError, now: UInt64, window: UInt64) -> SensorResult<R> {
+        let (twice, overflow) = window.multipliedReportingOverflow(by: 2)
+        if let last, now >= last.atNs, overflow || now - last.atNs <= twice {
             return .failed(error, last: last.reading, capturedNs: last.capturedNs)
         }
         return .failed(error, last: nil, capturedNs: nil)
@@ -202,6 +216,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         let end = clock()
         let ns = end >= start ? end - start : 0
         lastCost = ns
+        sortedCosts = nil
         costSum = costSum &+ ns
         costCount += 1
         if costs.count < 100 {
