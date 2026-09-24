@@ -59,6 +59,9 @@ public struct AppIdentity: Hashable, Sendable, Codable {
 public enum Category: String, CaseIterable, Sendable, Codable { case cpu, gpu, memory, network, thermals, power, disk }
 public enum IconArc: String, CaseIterable, Sendable, Codable { case cpu, gpu, memory, network, thermals }
 
+/// `[IconArc: …]` (`AlertState.arcs`) encodes as a JSON object keyed by rawValue.
+extension IconArc: CodingKeyRepresentable {}
+
 public enum Provenance: String, Sendable, Codable {
     /// Per-pid counters readable (own uid, or rusage permitted).
     case measured

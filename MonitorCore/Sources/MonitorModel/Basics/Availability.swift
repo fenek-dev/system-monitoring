@@ -11,17 +11,21 @@ public func unavailableReason(_ metric: HistoryMetric, health: [SensorID: Sensor
 /// Reason a process row shows "—" for `metric`, or nil when the row has a value.
 public func unavailableReason(_ metric: AppMetric, _ process: ProcessSample, health: [SensorID: SensorStatus]) -> String? {
     guard process.value(for: metric) == nil else { return nil }
-    if let reason = sensorReason(metric.sources, health: health) { return reason }
     if process.provenance == .restricted {
+        // Restricted rows depend on one specific sensor; its failure is the real reason.
         switch metric {
         case .cpu, .diskRead, .diskWrite, .energy:
-            return "Owned by another user; counted in its coalition row"
+            if let reason = sensorReason([.coalitions], health: health) { return reason }
+            let row = process.coalitionLeaderName.map { "the \($0) coalition row" } ?? "its coalition row"
+            return "Owned by another user; counted in \(row)"
         case .memory:
+            if let reason = sensorReason([.rootMemory], health: health) { return reason }
             return "Appears when the process table is open"
         case .gpu, .netRx, .netTx:
             break
         }
     }
+    if let reason = sensorReason(metric.sources, health: health) { return reason }
     return "Not available for this process"
 }
 

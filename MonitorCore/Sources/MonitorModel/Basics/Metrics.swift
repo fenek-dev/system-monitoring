@@ -95,6 +95,7 @@ public struct MetricVector<Key: MetricKey>: Sendable, Codable, Hashable {
     }
 
     // MARK: Equatable / Hashable (NaN slots equal each other)
+    // Value compare, so ±0 are equal (accepted deviation from §5.2's "bit-pattern compare" wording).
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.storage.elementsEqual(rhs.storage) { a, b in (a.isNaN && b.isNaN) || a == b }
