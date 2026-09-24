@@ -28,7 +28,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—",
             build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—",
             historySize: { [dir = env.dataDirectory] in await Self.historySize(dir) })
-        let root = SettingsView(loginItem: LaunchAtLogin.control, about: about)
+        // Cap at the screen's visible height − 40: above it the sections scroll instead of clipping (13" screens).
+        let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame.height
+        let root = SettingsView(loginItem: LaunchAtLogin.control, about: about,
+                                maxHeight: visible.map { $0 - 40 })
             .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: root)
         host.safeAreaRegions = []                                // header strip sits under the traffic lights

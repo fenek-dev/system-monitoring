@@ -118,25 +118,36 @@ struct PopoverConsumerSection: View {
     }
 }
 
-/// HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: Open Dashboard (flex), History, Quit Telltale (ADDED).
+/// HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: Open Dashboard (flex), History, Overlay toggle (spec
+/// 2026-09-25 overlay; accent tint while on), Quit Telltale (ADDED).
 struct PopoverFooter: View {
     @Environment(LiveModel.self) private var live
+    @Environment(SettingsStore.self) private var settings: SettingsStore?
     @Environment(\.appCommands) private var commands
     @Environment(\.processActions) private var actions
 
     var body: some View {
         let ops = PopoverActions(commands: commands, actions: actions, live: live)
+        let hotKey = settings?.overlayHotKey ?? .defaultOverlay
         HStack(spacing: 8) {
             Button("Open Dashboard") { ops.openDashboard() }
                 .buttonStyle(TTButtonStyle(.popoverPrimary))
                 .keyboardShortcut("d", modifiers: .command)
             Button("History") { ops.openHistory() }
                 .buttonStyle(TTButtonStyle(.popoverSecondary))
+            let overlayOn = settings?.overlayEnabled == true
+            TTIconButton(.overlay, label: "Overlay (\(hotKey.display))", variant: .footer,
+                         tint: overlayOn ? TTColor.accent : nil) { ops.toggleOverlay() }
+                .accessibilityValue(Self.overlayAccessibilityValue(enabled: overlayOn))
+                .accessibilityAddTraits(.isToggle)
             TTIconButton(.quit, label: "Quit Telltale", variant: .footer) { ops.quitTelltale() }
                 .keyboardShortcut("q", modifiers: .command)
         }
         .padding(EdgeInsets(top: 6, leading: 4, bottom: 4, trailing: 4))
     }
+
+    /// VoiceOver state of the overlay toggle (the tint alone is visual only).
+    static func overlayAccessibilityValue(enabled: Bool) -> String { enabled ? "On" : "Off" }
 }
 
 /// DESIGN §3.1 #1: HStack gap 10, padding 8 top / 10 horizontal / 10 bottom: glyph 20; "Telltale"

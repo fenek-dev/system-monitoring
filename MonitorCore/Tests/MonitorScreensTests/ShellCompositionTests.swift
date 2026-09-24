@@ -121,6 +121,57 @@ struct ShellSettingsStoreTests {
         #expect(SettingsStore(defaults: d).disabledSensors.isEmpty)
     }
 
+    @Test func overlayDefaults() {
+        let (s, _) = ScreenFixture.settings()
+        #expect(!s.overlayEnabled)
+        #expect(s.overlayCorner == .topRight)
+        #expect(s.overlayOpacity == 0.85)
+        #expect(s.overlayHotKey == .defaultOverlay)
+    }
+
+    @Test func overlayPersistsAcrossInstances() {
+        let (s, d) = ScreenFixture.settings()
+        s.overlayEnabled = true
+        s.overlayCorner = .bottomLeft
+        s.overlayOpacity = 0.55
+        s.overlayHotKey = HotKeySpec(keyCode: 0, modifiers: 256 | 4096)
+        #expect(d.bool(forKey: SettingsStore.Key.overlayEnabled))
+        #expect(d.string(forKey: SettingsStore.Key.overlayCorner) == "bottomLeft")
+        #expect(d.dictionary(forKey: SettingsStore.Key.overlayHotKey)?["keyCode"] as? Int == 0)
+        #expect(d.dictionary(forKey: SettingsStore.Key.overlayHotKey)?["modifiers"] as? Int == 4352)
+        let s2 = SettingsStore(defaults: d)
+        #expect(s2.overlayEnabled)
+        #expect(s2.overlayCorner == .bottomLeft)
+        #expect(s2.overlayOpacity == 0.55)
+        #expect(s2.overlayHotKey == HotKeySpec(keyCode: 0, modifiers: 4352))
+    }
+
+    @Test func overlayGarbageFallsBackToDefaults() {
+        let (_, d) = ScreenFixture.settings()
+        d.set("sideways", forKey: SettingsStore.Key.overlayCorner)
+        d.set("opaque", forKey: SettingsStore.Key.overlayOpacity)
+        d.set(["keyCode": 6, "modifiers": 512], forKey: SettingsStore.Key.overlayHotKey)   // shift only → invalid
+        let s = SettingsStore(defaults: d)
+        #expect(s.overlayCorner == .topRight)
+        #expect(s.overlayOpacity == 0.85)
+        #expect(s.overlayHotKey == .defaultOverlay)
+        for junk: Any in ["⌥Z", ["keyCode": "6"], ["modifiers": 2048], ["keyCode": -1, "modifiers": 2048]] {
+            d.set(junk, forKey: SettingsStore.Key.overlayHotKey)
+            #expect(SettingsStore(defaults: d).overlayHotKey == .defaultOverlay)
+        }
+    }
+
+    @Test func overlayOpacityIsClamped() {
+        let (s, d) = ScreenFixture.settings()
+        d.set(7.0, forKey: SettingsStore.Key.overlayOpacity)
+        #expect(SettingsStore(defaults: d).overlayOpacity == 1.0)
+        d.set(0.1, forKey: SettingsStore.Key.overlayOpacity)
+        #expect(SettingsStore(defaults: d).overlayOpacity == 0.4)
+        s.overlayOpacity = 7.0
+        #expect(s.overlayOpacity == 1.0)
+        #expect(d.double(forKey: SettingsStore.Key.overlayOpacity) == 1.0)
+    }
+
     @Test func legacyCommaStringDisabledSensors() {
         let (_, d) = ScreenFixture.settings()
         d.set("soc,smc", forKey: SettingsStore.Key.disabledSensors)

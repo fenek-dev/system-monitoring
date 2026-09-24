@@ -9,7 +9,9 @@ import Observation
 /// - `units.temperature`, `units.networkRate`: raw-value strings;
 /// - `popover.rows`: ordered array of `{id, visible}` dictionaries (DESIGN §3.14); unknown ids are dropped,
 ///   missing categories are appended visible, and at least one row stays visible;
-/// - `DisabledSensors`: array of `SensorID` raw values (ARCHITECTURE §6 kill switch).
+/// - `DisabledSensors`: array of `SensorID` raw values (ARCHITECTURE §6 kill switch);
+/// - `overlay.enabled` (Bool), `overlay.corner` (`OverlayCorner` raw value), `overlay.opacity` (Double, clamped
+///   to `overlayOpacityRange`), `overlay.hotkey` (`{keyCode, modifiers}` Carbon ints; invalid → default).
 @MainActor @Observable
 public final class SettingsStore {
     public enum Key {
@@ -17,7 +19,14 @@ public final class SettingsStore {
         public static let networkRate = "units.networkRate"
         public static let popoverRows = "popover.rows"
         public static let disabledSensors = "DisabledSensors"
+        public static let overlayEnabled = "overlay.enabled"
+        public static let overlayCorner = "overlay.corner"
+        public static let overlayOpacity = "overlay.opacity"
+        public static let overlayHotKey = "overlay.hotkey"
     }
+
+    public static let overlayOpacityDefault = 0.85
+    public static let overlayOpacityRange: ClosedRange<Double> = 0.4...1
 
     @ObservationIgnored public let defaults: UserDefaults
 
@@ -35,11 +44,42 @@ public final class SettingsStore {
 
     public private(set) var disabledSensors: Set<SensorID>
 
+    // MARK: Overlay (spec 2026-09-25 overlay, "State and settings")
+
+    public var overlayEnabled: Bool {
+        didSet { if overlayEnabled != oldValue { defaults.set(overlayEnabled, forKey: Key.overlayEnabled) } }
+    }
+
+    public var overlayCorner: OverlayCorner {
+        didSet { if overlayCorner != oldValue { defaults.set(overlayCorner.rawValue, forKey: Key.overlayCorner) } }
+    }
+
+    /// Always within `overlayOpacityRange`: assignments are clamped before they are stored.
+    public var overlayOpacity: Double {
+        get { storedOverlayOpacity }
+        set {
+            let v = Self.clampOpacity(newValue)
+            guard v != storedOverlayOpacity else { return }
+            storedOverlayOpacity = v
+            defaults.set(v, forKey: Key.overlayOpacity)
+        }
+    }
+
+    private var storedOverlayOpacity: Double
+
+    public var overlayHotKey: HotKeySpec {
+        didSet { if overlayHotKey != oldValue { saveHotKey() } }
+    }
+
     public init(defaults: UserDefaults) {
         self.defaults = defaults
         units = Self.loadUnits(defaults)
         popoverLayout = Self.loadPopover(defaults)
         disabledSensors = Self.loadDisabled(defaults)
+        overlayEnabled = defaults.object(forKey: Key.overlayEnabled) as? Bool ?? false
+        overlayCorner = defaults.string(forKey: Key.overlayCorner).flatMap(OverlayCorner.init(rawValue:)) ?? .topRight
+        storedOverlayOpacity = Self.clampOpacity((defaults.object(forKey: Key.overlayOpacity) as? NSNumber)?.doubleValue)
+        overlayHotKey = Self.loadHotKey(defaults)
     }
 
     /// `nil` → `.standard`; otherwise a suite named after the directory, so every worktree
@@ -151,6 +191,26 @@ public final class SettingsStore {
         }
         if let s = d.string(forKey: Key.disabledSensors) { return LaunchOptions.parseSensorList(s) }
         return []
+    }
+
+    /// Nil or NaN → default; otherwise clamped into `overlayOpacityRange`.
+    static func clampOpacity(_ value: Double?) -> Double {
+        guard let value, !value.isNaN else { return overlayOpacityDefault }
+        return min(max(value, overlayOpacityRange.lowerBound), overlayOpacityRange.upperBound)
+    }
+
+    static func loadHotKey(_ d: UserDefaults) -> HotKeySpec {
+        guard let dict = d.dictionary(forKey: Key.overlayHotKey),
+              let code = (dict["keyCode"] as? Int).flatMap(UInt32.init(exactly:)),
+              let mods = (dict["modifiers"] as? Int).flatMap(UInt32.init(exactly:))
+        else { return .defaultOverlay }
+        let spec = HotKeySpec(keyCode: code, modifiers: mods)
+        return spec.isValid ? spec : .defaultOverlay
+    }
+
+    private func saveHotKey() {
+        defaults.set(["keyCode": Int(overlayHotKey.keyCode), "modifiers": Int(overlayHotKey.modifiers)],
+                     forKey: Key.overlayHotKey)
     }
 
     private func saveDisabled() {

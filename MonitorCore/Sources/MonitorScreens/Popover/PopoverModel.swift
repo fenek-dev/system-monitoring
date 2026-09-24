@@ -229,6 +229,7 @@ struct PopoverActions {
     func openSettings() { commands.openSettings() }
     func quitTelltale() { commands.quitTelltale() }
     func setPaused(_ paused: Bool) { commands.setPaused(paused) }
+    func toggleOverlay() { commands.toggleOverlay() }
 
     /// Quits an app group; returns the feedback text for a failure.
     func quit(_ app: AppSample) async -> String? {

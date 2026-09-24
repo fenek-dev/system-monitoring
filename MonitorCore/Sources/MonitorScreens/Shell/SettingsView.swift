@@ -41,10 +41,12 @@ public struct AboutInfo: Sendable {
     public static let preview = AboutInfo(version: "0.1.0", build: "1", historySize: { "12.4 MB" })
 }
 
-/// Settings window content (DESIGN §3.14): General, Units, Popover, Sensors (ADDED: re-enable), About.
+/// Settings window content (DESIGN §3.14): General, Overlay (spec 2026-09-25), Units, Popover,
+/// Sensors (ADDED: re-enable), About.
 public struct SettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(LiveModel.self) private var live
+    @Environment(\.overlayHotKeyStatus) private var hotKeyStatus
     private let loginItem: LoginItemControl
     private let about: AboutInfo
 
@@ -53,27 +55,41 @@ public struct SettingsView: View {
     @State private var sensorsReenabled = false
     @State private var historySize: String?
 
-    public init(loginItem: LoginItemControl, about: AboutInfo) {
+    private let maxHeight: CGFloat?
+
+    /// `maxHeight`: the window's height cap (screen's visible height − 40 in the app). Above it the sections
+    /// scroll under the fixed header instead of being clipped (13" screens); nil → always intrinsic height.
+    public init(loginItem: LoginItemControl, about: AboutInfo, maxHeight: CGFloat? = nil) {
         self.loginItem = loginItem
         self.about = about
+        self.maxHeight = maxHeight
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             header
-            VStack(alignment: .leading, spacing: 16) {
-                section("General") { launchAtLoginRow }
-                section("Units") { unitRows }
-                section("Popover") { popoverRows }
-                if !disabledSensorRows.isEmpty { section("Sensors") { sensorRows } }
-                section("About") { aboutRows }
+            ViewThatFits(in: .vertical) {
+                sections
+                ScrollView { sections }
             }
-            .padding(20)
         }
         .frame(width: ShellStyle.settingsWidth, alignment: .top)
+        .frame(maxHeight: maxHeight ?? .infinity, alignment: .top)
         .background(ShellStyle.bgWindow)
         .onAppear { loginStatus = loginItem.status() }
         .task { historySize = await about.historySize() }
+    }
+
+    private var sections: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            section("General") { launchAtLoginRow }
+            section("Overlay") { overlayRows }
+            section("Units") { unitRows }
+            section("Popover") { popoverRows }
+            if !disabledSensorRows.isEmpty { section("Sensors") { sensorRows } }
+            section("About") { aboutRows }
+        }
+        .padding(20)
     }
 
     // MARK: Header
@@ -153,6 +169,65 @@ public struct SettingsView: View {
                 .accessibilityLabel("Launch at login")
         }
         .padding(.vertical, 4)
+    }
+
+    // Overlay (spec 2026-09-25 overlay, "Hotkey"; plan R5: opacity is 4 segments, not a slider)
+
+    static let opacitySteps: [Double] = [0.55, 0.7, 0.85, 1.0]
+
+    /// The segment shown for a stored opacity (any value in 0.4…1 is valid; the nearest step is highlighted).
+    static func opacityStep(_ value: Double) -> Double {
+        opacitySteps.min { abs($0 - value) < abs($1 - value) } ?? SettingsStore.overlayOpacityDefault
+    }
+
+    /// Sub-text under the recorder when the App could not register the shortcut.
+    public static func shortcutStatusText(_ status: HotKeyStatus) -> String? {
+        status == .unavailable ? "Shortcut unavailable — in use by another app" : nil
+    }
+
+    /// Note under the recorder; it describes ⌥Z only, so another shortcut shows none.
+    public static func shortcutNote(_ spec: HotKeySpec) -> String? {
+        spec == .defaultOverlay ? "⌥Z blocks typing Ω." : nil
+    }
+
+    @ViewBuilder private var overlayRows: some View {
+        @Bindable var settings = settings
+        row(divider: false) {
+            label("Show overlay")
+            Spacer()
+            Toggle("", isOn: $settings.overlayEnabled)
+                .toggleStyle(.switch).controlSize(.small).tint(ShellStyle.accent).labelsHidden()
+                .accessibilityLabel("Show overlay")
+        }
+        row {
+            VStack(alignment: .leading, spacing: 2) {
+                label("Shortcut")
+                if let note = Self.shortcutNote(settings.overlayHotKey) {
+                    Text(note).font(ShellStyle.caption).foregroundStyle(ShellStyle.textTertiary)
+                }
+                if let status = Self.shortcutStatusText(hotKeyStatus) {
+                    Text(status).font(ShellStyle.caption).foregroundStyle(TTColor.statusElevated).lineLimit(2)
+                }
+            }
+            Spacer()
+            HotKeyRecorder(spec: $settings.overlayHotKey)
+        }
+        .padding(.vertical, 4)
+        row {
+            label("Corner")
+            Spacer()
+            TTSegmented(selection: $settings.overlayCorner,
+                        options: [(.topLeft, "↖"), (.topRight, "↗"), (.bottomLeft, "↙"), (.bottomRight, "↘")])
+                .accessibilityLabel("Overlay corner")
+        }
+        row {
+            label("Opacity")
+            Spacer()
+            TTSegmented(selection: Binding(get: { Self.opacityStep(settings.overlayOpacity) },
+                                           set: { settings.overlayOpacity = $0 }),
+                        options: Self.opacitySteps.map { ($0, TTFormat.percent($0)) })
+                .accessibilityLabel("Overlay opacity")
+        }
     }
 
     // Units

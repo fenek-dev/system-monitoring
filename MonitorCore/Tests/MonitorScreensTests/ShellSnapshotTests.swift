@@ -3,6 +3,7 @@ import MonitorMocks
 import MonitorModel
 @testable import MonitorScreens
 import MonitorSnapshotTesting
+import SwiftUI
 import Testing
 
 /// Shell chrome goldens, all named `shell-*` (W4's snapshot namespace). Chrome only: sidebar and page header are
@@ -37,6 +38,17 @@ struct ShellSnapshotTests {
 
     @Test func settings() {
         assertSnapshot(ScreenCatalog.entry("settings")!.make(.calm), size: ScreenSize.settings, named: "shell-settings")
+    }
+
+    /// Overlay section when the App could not register the shortcut ("Shortcut unavailable — …" in elevated).
+    @Test func settingsHotKeyUnavailable() {
+        let size = CGSize(width: ScreenSize.settings.width, height: ScreenSize.settings.height + 40)
+        assertSnapshot(SettingsView(loginItem: .preview, about: .preview)
+                        .environment(\.overlayHotKeyStatus, .unavailable)
+                        .frame(width: size.width, height: size.height, alignment: .top)
+                        .background(ShellStyle.bgWindow)
+                        .telltaleEnvironment(ScreenFixture.context(.calm)),
+                       size: size, named: "shell-settings-hotkey-unavailable")
     }
 }
 

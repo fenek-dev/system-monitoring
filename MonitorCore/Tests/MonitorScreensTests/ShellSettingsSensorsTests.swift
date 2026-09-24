@@ -30,7 +30,7 @@ struct ShellSettingsSensorsTests {
     @Test func crashDisabledSensorRendersWithReenable() {
         let (settings, _) = ScreenFixture.settings()
         let ctx = ShellContext(live: crashedLive(), settings: settings, isSnapshot: true)
-        let size = CGSize(width: ScreenSize.settings.width, height: 720)
+        let size = CGSize(width: ScreenSize.settings.width, height: ScreenSize.settings.height + 80)
         assertSnapshot(SettingsView(loginItem: .preview, about: .preview)
                         .frame(width: size.width, height: size.height, alignment: .top)
                         .background(ShellStyle.bgWindow)

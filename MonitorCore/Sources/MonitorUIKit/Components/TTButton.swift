@@ -118,20 +118,24 @@ public extension ButtonStyle where Self == TTButtonStyle {
 /// DESIGN §2.14 icon buttons: `iconButton` 26 (popover) / 28 (header), transparent, glyph 16 `textSecondary`,
 /// hover `fillIconButton`; `filled` (26, glyph 14, `fillIconButton`); `rowAction` (24, radius 5, ellipsis 16);
 /// `footer` (30, radius 7, `fillButton`). Always has a tooltip + accessibility label.
+/// `tint` (ADDED, overlay toggle): an "on" state — glyph in `tint`, fill `tint` at 18 %.
 public struct TTIconButton: View {
     public enum Variant: Sendable { case popover, header, filled, rowAction, footer }
 
     let icon: TTIconName
     let label: String
     let variant: Variant
+    let tint: Color?
     let action: () -> Void
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
 
-    public init(_ icon: TTIconName, label: String, variant: Variant = .header, action: @escaping () -> Void) {
+    public init(_ icon: TTIconName, label: String, variant: Variant = .header, tint: Color? = nil,
+                action: @escaping () -> Void) {
         self.icon = icon
         self.label = label
         self.variant = variant
+        self.tint = tint
         self.action = action
     }
 
@@ -153,7 +157,8 @@ public struct TTIconButton: View {
     }
 
     var fill: Color {
-        switch variant {
+        if let tint { return tint.opacity(0.18) }
+        return switch variant {
         case .filled: TTColor.fillIconButton
         case .footer: hovering && isEnabled ? TTColor.fillButtonHover : TTColor.fillButton
         default: hovering && isEnabled ? TTColor.fillIconButton : .clear
@@ -162,7 +167,7 @@ public struct TTIconButton: View {
 
     public var body: some View {
         Button(action: action) {
-            TTIcon(icon, size: variant == .filled ? 14 : 16, color: TTColor.textSecondary)
+            TTIcon(icon, size: variant == .filled ? 14 : 16, color: tint ?? TTColor.textSecondary)
                 .frame(width: side, height: side)
                 .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(fill))
                 .contentShape(Rectangle())
