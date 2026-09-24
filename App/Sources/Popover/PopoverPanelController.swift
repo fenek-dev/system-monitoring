@@ -1,6 +1,7 @@
 import AppKit
 import os
 import MonitorScreens
+import MonitorUIKit
 import SwiftUI
 
 /// Borderless panel that can take key status (Esc, ⌘ shortcuts) without activating the app.
@@ -26,6 +27,11 @@ final class PopoverPanelController: NSObject {
     private var monitors: [Any] = []
     private var resignObserver: NSObjectProtocol?
     private var lastClose: ContinuousClock.Instant?
+    /// Top-apps flyout beside the panel (DESIGN §2.22), fed by the rows' hover events; dismissed on close.
+    private lazy var flyout = FlyoutPanelController(env: env) { [weak self] in
+        guard let panel = self?.panel else { return nil }
+        return (panel.frame, panel.screen ?? self?.anchorScreen())
+    }
 
     /// `shortcuts` handles ⌘Q/⌘,/⌘D while the panel is key (the app is not active, so the main menu does not
     /// see them); return true when consumed.
@@ -54,8 +60,10 @@ final class PopoverPanelController: NSObject {
         guard panel == nil else { return }
         // Visibility first: `live.presentation` must apply the latest frame before the view tree reads it.
         onVisibilityChange(true)
-        let root = PopoverContainer(drawsShadow: false) { PopoverRoot() }
-            .telltaleEnvironment(env.context())
+        let root = PopoverContainer(drawsShadow: false) {
+            PopoverRoot(onRowHover: { [weak self] event in self?.rowHover(event) })
+        }
+        .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: AnyView(root))
         host.sizingOptions = [.preferredContentSize]
 
@@ -105,6 +113,7 @@ final class PopoverPanelController: NSObject {
 
     func close() {
         guard let panel else { return }
+        flyout.dismiss()
         removeMonitors()
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
         resignObserver = nil
@@ -164,6 +173,14 @@ final class PopoverPanelController: NSObject {
     private var placing = false
     private static let log = Logger(subsystem: "dev.telltale", category: "Popover")
 
+    /// Row hover → flyout, with the row's frame converted from the hosting view (SwiftUI `.global`, flipped) to
+    /// screen coordinates.
+    private func rowHover(_ event: PopoverRowHover) {
+        guard let panel, let view = host?.view else { return }
+        let screenRect = panel.convertToScreen(view.convert(event.frame, to: nil))
+        flyout.rowHover(event.category, phase: event.phase, screenRect: screenRect)
+    }
+
     // MARK: Dismissal
 
     private func installMonitors() {
@@ -200,6 +217,8 @@ final class PopoverPanelController: NSObject {
             return event.modifierFlags.contains(.command) && shortcuts(event)
         default:
             if event.window === panel { return false }
+            if let f = flyout.window, event.window === f { return false }   // flyout app clicks
+
             if event.window?.className.contains("StatusBar") == true { return false }   // status button toggles
             close()
             return false

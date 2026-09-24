@@ -66,8 +66,6 @@ public enum TTColor {
     public static let fillRest = Color.white.opacity(0.14)
     public static let fillFree = Color.white.opacity(0.08)
     public static let rowSelected = Color(hex: 0x0A84FF, opacity: 0.28)
-    /// ADDED: popover row expanded background (§2.22).
-    public static let fillExpanded = Color.white.opacity(0.06)
     /// Mirrored-chart center divider (§2.8).
     public static let chartDivider = Color.white.opacity(0.18)
 
