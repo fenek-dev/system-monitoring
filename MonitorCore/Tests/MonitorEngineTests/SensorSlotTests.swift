@@ -256,6 +256,55 @@ private func isNotRequested<R>(_ r: SensorResult<R>) -> Bool { if case .notReque
         #expect(!canary.isTripped(.soc))
     }
 
+    // N1: the between-calls window is bounded; afterwards the canary covers each call only.
+
+    /// (a) degraded after 3 transient failures (e.g. "No default route" offline) ends the window.
+    @Test func canaryDisarmsWhenDegraded() {
+        let canary = CrashCanary.inMemory()
+        let s = ScriptSensor(.latency, [.failure(.transient("No default route"))])
+        let slot = SensorSlot(s, canary: canary)
+        _ = slot.sample(ctx(0))
+        _ = slot.sample(ctx(1))
+        #expect(canary.isTripped(.latency))                            // still warming (2 failures)
+        _ = slot.sample(ctx(2))
+        #expect(slot.status == .degraded("No default route"))
+        #expect(!canary.isTripped(.latency))
+        var seen: [Bool] = []
+        s.onSample = { seen.append(canary.isTripped(.latency)) }
+        _ = slot.sample(ctx(10))                                       // backoff retry
+        #expect(seen == [true])                                        // armed around the call…
+        #expect(!canary.isTripped(.latency))                           // …and cleared after it
+    }
+
+    /// (b) no longer requested (page left before the first read, or paused) ends the window.
+    @Test func canaryDisarmsWhenNoLongerRequested() {
+        let canary = CrashCanary.inMemory()
+        let s = ScriptSensor(.temperatures, cadence: .every(.seconds(2), requires: .rawTemperatures),
+                             [.failure(.transient("warming up")), .success(1)])
+        let slot = SensorSlot(s, canary: canary)
+        _ = slot.sample(ctx(0, demand: .rawTemperatures))
+        #expect(canary.isTripped(.temperatures))
+        #expect(isNotRequested(slot.sample(ctx(1))))                   // Thermals closed
+        #expect(!canary.isTripped(.temperatures))
+        var seen: [Bool] = []
+        s.onSample = { seen.append(canary.isTripped(.temperatures)) }
+        #expect(isFresh(slot.sample(ctx(60, demand: .rawTemperatures))))
+        #expect(seen == [true] && !canary.isTripped(.temperatures))    // covered per call until the first reading
+    }
+
+    /// (c) 30 s armed without a real reading ends the window.
+    @Test func canaryDisarmsAfterThirtySecondsWithoutReading() {
+        let canary = CrashCanary.inMemory()
+        let s = ScriptSensor(.smc, cadence: .every(.seconds(60)), [.failure(.transient("warming up"))])
+        let slot = SensorSlot(s, canary: canary)
+        _ = slot.sample(ctx(0))
+        _ = slot.sample(ctx(20))
+        #expect(canary.isTripped(.smc))
+        _ = slot.sample(ctx(31))
+        #expect(!canary.isTripped(.smc))
+        #expect(s.sampleCount == 1)                                    // no call needed to end it
+    }
+
     /// S-M7: `disarm` is flushed too — a crash right after it must not leave a stale marker behind.
     @Test func disarmedMarkerIsGoneOutOfProcess() async throws {
         let suite = "dev.telltale.tests.canary.\(UUID().uuidString)"
