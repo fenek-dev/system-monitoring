@@ -32,7 +32,7 @@ public enum ScreenCatalog {
     public static let dashboardSize = CGSize(width: 1280, height: 860)
     public static let popoverArtboardSize = CGSize(width: 440, height: 720)
     public static let statusIconsSize = CGSize(width: 640, height: 330)
-    public static let settingsSize = CGSize(width: 520, height: 600)
+    public static let settingsSize = CGSize(width: 520, height: 640)       // intrinsic height of the real window
 
     @MainActor public static let entries: [Entry] = {
         var e: [Entry] = [

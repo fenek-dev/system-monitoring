@@ -1,4 +1,5 @@
 import AppKit
+import os
 import MonitorScreens
 import SwiftUI
 
@@ -83,13 +84,29 @@ final class PopoverPanelController: NSObject {
             forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.close() }
         }
+        let nc = NotificationCenter.default
+        placementObservers = [
+            nc.addObserver(forName: NSWindow.didResizeNotification, object: panel, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reclamp() }
+            },
+            nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil,
+                           queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.place() }
+            },
+        ]
+        // First layout pass can finish after this run-loop turn: place once more with the final size.
+        DispatchQueue.main.async { [weak self] in self?.place() }
     }
+
+    private var placementObservers: [NSObjectProtocol] = []
 
     func close() {
         guard let panel else { return }
         removeMonitors()
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
         resignObserver = nil
+        placementObservers.forEach(NotificationCenter.default.removeObserver)
+        placementObservers.removeAll()
         sizeObservation = nil
         panel.close()
         panel.contentViewController = nil
@@ -99,21 +116,54 @@ final class PopoverPanelController: NSObject {
         onVisibilityChange(false)
     }
 
+    /// Size from the laid-out SwiftUI content (never an assumed 360), then `PopoverPlacement` against the visible
+    /// frame of the status item's own screen.
     private func place() {
         guard let panel, let host else { return }
-        var size = host.preferredContentSize
-        if size.height < 10 { size = host.view.fittingSize }
-        size.width = 360
-        let a = anchor()
-        let hit = a.flatMap { a in NSScreen.screens.first { $0.frame.contains(NSPoint(x: a.midX, y: a.midY)) } }
-        guard let screen = hit ?? NSScreen.main else { return }
+        host.view.layoutSubtreeIfNeeded()
+        var size = host.view.fittingSize
+        if size.width < 1 || size.height < 1 { size = host.preferredContentSize }
+        if size.width < 1 { size.width = 360 }
+        let (a, screen) = anchorAndScreen()
+        guard let screen else { return }
         // No usable anchor (item hidden behind the notch, or not yet placed at launch): center on the screen.
-        let anchorRect = hit != nil ? a! : NSRect(x: screen.frame.midX, y: screen.visibleFrame.maxY, width: 0, height: 0)
-        let f = PopoverPlacement.frame(anchor: anchorRect, content: size, visibleFrame: screen.visibleFrame,
-                                       screenFrame: screen.frame)
+        let anchorRect = a ?? NSRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.maxY, width: 0, height: 0)
+        let f = PopoverPlacement.frame(anchor: anchorRect, content: size, visibleFrame: screen.visibleFrame)
+        placing = true
         panel.setFrame(f, display: true)
+        placing = false
+        reclamp()
+        Self.log.debug("""
+            place anchor=\(String(describing: a), privacy: .public) visible=\(String(describing: screen.visibleFrame), privacy: .public) \
+            size=\(String(describing: size), privacy: .public) → \(String(describing: panel.frame), privacy: .public)
+            """)
+    }
+
+    /// AppKit may resize the panel to the hosting controller's preferred size after we placed it (origin kept):
+    /// pull it back inside the visible frame (8 pt) without re-running layout.
+    private func reclamp() {
+        guard let panel, !placing else { return }
+        let visible = (anchorAndScreen().1 ?? panel.screen ?? NSScreen.main)?.visibleFrame
+        guard let visible else { return }
+        let c = PopoverPlacement.clamp(panel.frame, visibleFrame: visible)
+        if c != panel.frame {
+            placing = true
+            panel.setFrame(c, display: true)
+            placing = false
+        }
         panel.invalidateShadow()
     }
+
+    /// The status button's rect and the screen its window is on (nil rect when the item is hidden).
+    private func anchorAndScreen() -> (NSRect?, NSScreen?) {
+        let a = anchor()
+        let byPoint = a.flatMap { a in NSScreen.screens.first { $0.frame.contains(NSPoint(x: a.midX, y: a.midY)) } }
+        let screen = byPoint ?? NSScreen.main
+        return (byPoint == nil ? nil : a, screen)
+    }
+
+    private var placing = false
+    private static let log = Logger(subsystem: "dev.telltale", category: "Popover")
 
     // MARK: Dismissal
 

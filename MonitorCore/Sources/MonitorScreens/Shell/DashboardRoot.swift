@@ -9,6 +9,8 @@ import SwiftUI
 public struct DashboardRoot: View {
     @Environment(NavigationModel.self) private var nav
     @State private var headerConfig = PageHeaderConfig()
+    /// Window-level confirm dialog (DESIGN §2.26), offered to pages as `\.presentConfirmDialog`.
+    @State private var dialogs = ConfirmDialogHost()
 
     public init() {}
 
@@ -23,10 +25,17 @@ public struct DashboardRoot: View {
                     .onPreferenceChange(PageHeaderPreferenceKey.self) { headerConfig = $0 }
             }
         }
+        .environment(\.presentConfirmDialog, dialogs.presenter)
+        // Scrim over the whole window content (sidebar + header + page), content underneath disabled.
+        .ttConfirmDialog(dialogs.current.map { r in
+            TTConfirmDialog(title: r.title, message: r.message, confirmTitle: r.confirmTitle,
+                            onConfirm: { dialogs.confirm() }, onCancel: { dialogs.cancel() })
+        })
         .frame(minWidth: ShellStyle.dashboardMinSize.width, minHeight: ShellStyle.dashboardMinSize.height)
         .background(ShellStyle.bgWindow)
         .ignoresSafeArea()
         .onChange(of: nav.page) { headerConfig = PageHeaderConfig() }
+        .onDisappear { dialogs.cancelAll() }                     // window closed: pending confirm → false
     }
 
     /// Page registry (one place; W5 pages are built from their public `init()`).

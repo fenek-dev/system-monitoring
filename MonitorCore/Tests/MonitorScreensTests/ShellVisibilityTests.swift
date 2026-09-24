@@ -73,51 +73,68 @@ struct ShellVisibilityTests {
     }
 
     @Test func popoverPlacementCentersAndClamps() {
-        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
         let visible = CGRect(x: 0, y: 0, width: 1512, height: 945)          // 37-pt menu bar
         let anchor = CGRect(x: 1000, y: 945, width: 30, height: 37)
-        let f = PopoverPlacement.frame(anchor: anchor, content: CGSize(width: 360, height: 478),
-                                       visibleFrame: visible, screenFrame: screen)
+        let f = PopoverPlacement.frame(anchor: anchor, content: CGSize(width: 360, height: 478), visibleFrame: visible)
         #expect(f == CGRect(x: 835, y: 945 - 8 - 478, width: 360, height: 478))
-        let right = PopoverPlacement.frame(anchor: CGRect(x: 1490, y: 945, width: 20, height: 37),
-                                           content: CGSize(width: 360, height: 478), visibleFrame: visible,
-                                           screenFrame: screen)
-        #expect(right.maxX == CGFloat(1504))
-        let tall = PopoverPlacement.frame(anchor: anchor, content: CGSize(width: 360, height: 2000),
-                                          visibleFrame: visible, screenFrame: screen)
+        let tall = PopoverPlacement.frame(anchor: anchor, content: CGSize(width: 360, height: 2000), visibleFrame: visible)
         #expect(tall.height == CGFloat(905))
         #expect(tall.maxY == CGFloat(937))                                 // still 8 below the menu bar
     }
 
+    /// CP2 bug: item at x≈1405 on a 1512-pt screen put the panel at x 1225 (maxX 1585, clipped).
+    @Test(arguments: [CGFloat(1512), 1800])
+    func popoverPlacementRightEdgeOnRealScreenWidths(_ width: CGFloat) {
+        let visible = CGRect(x: 0, y: 0, width: width, height: 945)
+        for itemX in stride(from: width - 400, through: width - 20, by: 15) {
+            let f = PopoverPlacement.frame(anchor: CGRect(x: itemX, y: 945, width: 22, height: 22),
+                                           content: CGSize(width: 360, height: 478), visibleFrame: visible)
+            #expect(f.maxX <= width - 8 && f.minX >= 8, "item x \(itemX)")
+        }
+        let cp2 = PopoverPlacement.frame(anchor: CGRect(x: 1394, y: 945, width: 22, height: 22),
+                                         content: CGSize(width: 360, height: 478),
+                                         visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 945))
+        #expect(cp2.maxX == CGFloat(1504))
+    }
+
+    @Test func popoverPlacementUsesActualWidthAndVisibleFrame() {
+        let visible = CGRect(x: 0, y: 0, width: 1440, height: 875)          // Dock on the right: 72 pt
+        let f = PopoverPlacement.frame(anchor: CGRect(x: 1420, y: 875, width: 20, height: 25),
+                                       content: CGSize(width: 372, height: 478), visibleFrame: visible)
+        #expect(f.maxX == CGFloat(1432) && f.width == 372)
+        // AppKit grew the panel after placement (origin kept, top above the menu bar): re-clamp.
+        let grown = CGRect(x: f.minX, y: f.minY, width: 400, height: 600)
+        let c = PopoverPlacement.clamp(grown, visibleFrame: visible)
+        #expect(c.maxX == CGFloat(1432) && c.maxY == CGFloat(867))
+        // wider than the screen → pinned left
+        let huge = PopoverPlacement.frame(anchor: CGRect(x: 100, y: 875, width: 20, height: 25),
+                                          content: CGSize(width: 2000, height: 478), visibleFrame: visible)
+        #expect(huge.minX == CGFloat(8))
+    }
+
     @Test func popoverPlacementLeftEdge() {
-        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
         let visible = CGRect(x: 0, y: 0, width: 1512, height: 945)
         let f = PopoverPlacement.frame(anchor: CGRect(x: 30, y: 945, width: 24, height: 37),
-                                       content: CGSize(width: 360, height: 478), visibleFrame: visible,
-                                       screenFrame: screen)
+                                       content: CGSize(width: 360, height: 478), visibleFrame: visible)
         #expect(f.minX == CGFloat(8))
     }
 
     @Test func popoverPlacementSecondaryScreenWithOffsetOrigin() {
-        // Screen left of and above the main one: AppKit origin (−1920, 200), menu bar 24 pt, Dock on the left.
-        let screen = CGRect(x: -1920, y: 200, width: 1920, height: 1080)
+        // Screen left of and above the main one: AppKit origin (−1920, 200), menu bar 24 pt, Dock on the left (70).
         let visible = CGRect(x: -1850, y: 200, width: 1850, height: 1056)
         let anchor = CGRect(x: -400, y: 1256, width: 30, height: 24)
-        let f = PopoverPlacement.frame(anchor: anchor, content: CGSize(width: 360, height: 478),
-                                       visibleFrame: visible, screenFrame: screen)
+        let f = PopoverPlacement.frame(anchor: anchor, content: CGSize(width: 360, height: 478), visibleFrame: visible)
         #expect(f.midX == anchor.midX)
         #expect(f.maxY == visible.maxY - 8)
         #expect(f.minY == visible.maxY - 8 - 478)
         let right = PopoverPlacement.frame(anchor: CGRect(x: -20, y: 1256, width: 20, height: 24),
-                                           content: CGSize(width: 360, height: 478), visibleFrame: visible,
-                                           screenFrame: screen)
+                                           content: CGSize(width: 360, height: 478), visibleFrame: visible)
         #expect(right.maxX == CGFloat(-8))
         let left = PopoverPlacement.frame(anchor: CGRect(x: -1915, y: 1256, width: 20, height: 24),
-                                          content: CGSize(width: 360, height: 478), visibleFrame: visible,
-                                          screenFrame: screen)
-        #expect(left.minX == CGFloat(-1912))
+                                          content: CGSize(width: 360, height: 478), visibleFrame: visible)
+        #expect(left.minX == CGFloat(-1842))                              // clear of the Dock
         let capped = PopoverPlacement.frame(anchor: anchor, content: CGSize(width: 360, height: 5000),
-                                            visibleFrame: visible, screenFrame: screen)
+                                            visibleFrame: visible)
         #expect(capped.height == visible.height - 40 && capped.minY >= visible.minY)
     }
 }

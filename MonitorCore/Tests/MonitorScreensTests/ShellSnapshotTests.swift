@@ -5,15 +5,37 @@ import MonitorModel
 import MonitorSnapshotTesting
 import Testing
 
-/// Shell chrome goldens (`__Snapshots__/shell-*`). Skipped until W3's `SnapshotRenderer` renders; record with
-/// `TELLTALE_RECORD=1 scripts/test.sh ShellSnapshotTests` after the visual check against Main/MenuBar/StatusIcon.
+/// Shell chrome goldens, all named `shell-*` (W4's snapshot namespace). Chrome only: sidebar and page header are
+/// rendered without a page, so W5 page changes never touch these; full screens (`overview`, `popover`…) are the
+/// page owners' goldens. Skipped until W3's `SnapshotRenderer` renders. Record with
+/// `TELLTALE_RECORD=1 scripts/test.sh ShellSnapshotTests` after the visual check against Main/StatusIcon.
 @Suite("Shell snapshots (ShellSnapshotTests)", .enabled { await ScreenFixture.snapshotsAvailable }) @MainActor
 struct ShellSnapshotTests {
-    @Test func overviewChromeCalm() { assertScreen("overview", scenario: .calm) }
-    @Test func overviewChromePaused() { assertScreen("overview", scenario: .paused) }
-    @Test func statusIcons() { assertScreen("status-icons") }
-    @Test func settings() { assertScreen("settings") }
-    @Test func popoverStageCalm() { assertScreen("popover", scenario: .calm) }
+    @Test(arguments: [MockScenario.calm, .paused])
+    func sidebar(_ s: MockScenario) {
+        assertSnapshot(Sidebar().frame(height: ScreenSize.sidebar.height).screenEnvironment(s),
+                       size: ScreenSize.sidebar, named: "shell-sidebar-\(s.rawValue)")
+    }
+
+    @Test(arguments: [DashboardPage.overview, .processes, .history])
+    func pageHeader(_ page: DashboardPage) {
+        assertSnapshot(PageHeader().frame(width: ScreenSize.pageHeader.width).screenEnvironment(.calm, page: page),
+                       size: ScreenSize.pageHeader, named: "shell-header-\(page.rawValue)-calm")
+    }
+
+    @Test func pageHeaderPaused() {
+        assertSnapshot(PageHeader().frame(width: ScreenSize.pageHeader.width).screenEnvironment(.paused),
+                       size: ScreenSize.pageHeader, named: "shell-header-overview-paused")
+    }
+
+    @Test func statusIcons() {
+        assertSnapshot(ScreenCatalog.entry("status-icons")!.make(.calm), size: ScreenSize.statusIcons,
+                       named: "shell-status-icons")
+    }
+
+    @Test func settings() {
+        assertSnapshot(ScreenCatalog.entry("settings")!.make(.calm), size: ScreenSize.settings, named: "shell-settings")
+    }
 }
 
 /// `TELLTALE_SHELL_RENDER=1 scripts/test.sh ShellRenderTests` writes `.build/renders/shell-<id>-<scenario>.png`
