@@ -45,7 +45,8 @@ struct DiskSnapshotTests {
                        size: ScreenSize.pageContent, named: "disk-firsttick-collecting")
     }
 
-    /// Two volumes (external one ejectable) and SMART status only (no NVMe log without root).
+    /// Two volumes (external one ejectable), SMART status only (no NVMe log without root), and an "Exited
+    /// processes" row.
     @Test func externalVolumeStatusOnlySMART() {
         let provider = MockDataProvider(scenario: .calm)
         let live = LiveModel(device: provider.device)
@@ -55,6 +56,10 @@ struct DiskSnapshotTests {
         for tick in 0...60 {
             var f = provider.frame(at: tick)
             f.disk.volumes.append(archive)
+            // ICR-13 "Exited processes" residual row (no actions).
+            f.processes.append(ProcessSample(id: .exitedResidual(7), name: "Exited processes", uid: 0,
+                                             diskReadBps: 400_000, diskWriteBps: 150_000,
+                                             diskReadSession: 12_000_000, diskWriteSession: 4_000_000))
             f.disk.smart = SMARTInfo(model: "APPLE SSD AP1024Z", capacityBytes: 1_000_000_000_000, status: .healthy)
             live.apply(f)
         }
@@ -117,68 +122,35 @@ struct DiskPageLogicTests {
         #expect(feedback.toast == "Archive ejected.")
     }
 
-    /// CP2: session totals are deltas since Telltale started, not lifetime counters.
-    @Test func sessionTotals() {
-        let launch: UInt64 = 1_000_000
-        let store = DiskSessionBaselines(launchUs: launch)
-        // Started before Telltale: baseline at first sight, then deltas (partial).
-        var old = ProcessSample(id: ProcessID(pid: 1, startTimeUs: 10), name: "kernel_task",
-                                diskReadTotal: 171_400_000_000, diskWriteTotal: 5_000_000_000)
-        #expect(store.session(old) == .init(read: 0, write: 0, partial: true))
-        old.diskReadTotal = 171_400_000_000 + 2_500_000
-        old.diskWriteTotal = 5_000_000_000 + 1_200_000_000
-        #expect(store.session(old) == .init(read: 2_500_000, write: 1_200_000_000, partial: true))
-        // Started after Telltale: its lifetime counters are session totals.
-        let new = ProcessSample(id: ProcessID(pid: 2, startTimeUs: launch + 5), name: "mds_stores",
-                                diskReadTotal: 18_400_000_000, diskWriteTotal: 600_000_000)
-        #expect(store.session(new) == .init(read: 18_400_000_000, write: 600_000_000, partial: false))
-        // observe() baselines idle processes too and drops exited ones.
-        let idle = ProcessSample(id: ProcessID(pid: 3, startTimeUs: 20), name: "idle", diskReadTotal: 7, diskWriteTotal: 9)
-        store.observe([idle])
-        #expect(store.session(idle) == .init(read: 0, write: 0, partial: true))
-        // Formatting: storage headline (§5.3), 0 → "—".
-        #expect(DiskRows.sessionText(18_400_000_000) == "18.4 GB")
-        #expect(DiskRows.sessionText(578_000_000) == "578 MB")
+    /// ICR-14: session columns read the engine's `diskReadSession/diskWriteSession` (not the lifetime totals);
+    /// storage headline format (§5.3), 0 → "—", nil → "—".
+    @Test func sessionColumnsUseEngineSessionFields() {
+        let p = ProcessSample(id: ProcessID(pid: 1, startTimeUs: 10), name: "kernel_task", diskReadBps: 1e6,
+                              diskReadTotal: 171_400_000_000, diskWriteTotal: 5_000_000_000,
+                              diskReadSession: 18_400_000_000, diskWriteSession: 578_000_000)
+        let row = DiskRows.rows([p]) { _ in nil }[0]
+        #expect(row.readSession == 18_400_000_000 && row.writeSession == 578_000_000)
+        #expect(DiskRows.sessionText(row.readSession) == "18.4 GB")
+        #expect(DiskRows.sessionText(row.writeSession) == "578 MB")
         #expect(DiskRows.sessionText(0) == "—")
         #expect(DiskRows.sessionText(nil) == nil)
-        #expect(DiskSessionBaselines.ownStartUs != nil)
     }
 
-    /// A counter that goes backwards rebases (delta 0), and its recovery doesn't spike.
-    @Test func sessionCounterRegressionRebases() {
-        let store = DiskSessionBaselines(launchUs: 1_000_000)
-        var p = ProcessSample(id: ProcessID(pid: 7, startTimeUs: 10), name: "backupd",
-                              diskReadTotal: 1_000, diskWriteTotal: 5_000)
-        #expect(store.session(p) == .init(read: 0, write: 0, partial: true))
-        p.diskReadTotal = 1_600
-        p.diskWriteTotal = 5_100
-        #expect(store.session(p) == .init(read: 600, write: 100, partial: true))
-        p.diskReadTotal = 200                                           // regress
-        #expect(store.session(p) == .init(read: 0, write: 100, partial: true))
-        p.diskReadTotal = 300                                           // recover: counts from the rebase, no spike
-        #expect(store.session(p) == .init(read: 100, write: 100, partial: true))
+    /// ICR-13: the "Exited processes" residual row is labelled and has no actions.
+    @Test func exitedResidualRow() {
+        let exited = ProcessSample(id: .exitedResidual(42), name: "Exited processes", uid: 0,
+                                   diskReadBps: 2e6, diskReadSession: 9_000_000)
+        let row = DiskRows.rows([exited]) { _ in AppIdentity(key: .system, displayName: "System") }[0]
+        #expect(row.isExited && row.name == "Exited processes" && row.identity == nil)
     }
 
-    /// Exited processes lose their baseline even when the process count stays the same.
-    @Test func observePrunesExitedProcesses() {
-        let store = DiskSessionBaselines(launchUs: 1_000_000)
-        let a = ProcessSample(id: ProcessID(pid: 1, startTimeUs: 10), name: "a", diskReadTotal: 1, diskWriteTotal: 1)
-        let b = ProcessSample(id: ProcessID(pid: 2, startTimeUs: 10), name: "b", diskReadTotal: 1, diskWriteTotal: 1)
-        let c = ProcessSample(id: ProcessID(pid: 3, startTimeUs: 10), name: "c", diskReadTotal: 1, diskWriteTotal: 1)
-        store.observe([a, b])
-        #expect(store.hasBaseline(a.id) && store.hasBaseline(b.id))
-        store.observe([a, c])                                           // b exited, c spawned: same count
-        #expect(!store.hasBaseline(b.id))
-        #expect(store.hasBaseline(a.id) && store.hasBaseline(c.id))
-    }
-
-    /// CP2 ruling: free = available capacity (container free); purgeable shown separately.
+    /// CP2 ruling: free = available capacity (`ShellFormat.freeSpace`, container free); purgeable shown separately.
     @Test func freeSpaceExcludesPurgeable() {
-        #expect(DiskCopy.freeBytes(boot) == 382_000_000_000)
+        #expect(ShellFormat.freeSpace(boot) == "382 GB")
         #expect(DiskCopy.freeDetail(boot) == "on Macintosh HD · 18 GB purgeable")
         let tb = VolumeInfo(id: "/", name: "Macintosh HD", totalBytes: 2_000_000_000_000, availableBytes: 1_090_000_000_000,
                             availableImportantBytes: 1_090_000_000_000)
-        #expect(TTFormat.storage(DiskCopy.freeBytes(tb), style: .capacity) == "1.09 TB")
+        #expect(ShellFormat.freeSpace(tb) == "1.09 TB")
         #expect(DiskCopy.freeDetail(tb) == "on Macintosh HD")
     }
 
@@ -186,9 +158,9 @@ struct DiskPageLogicTests {
         let a = ProcessSample(id: ProcessID(pid: 10, startTimeUs: 1), name: "mds_stores", uid: 0,
                               diskReadBps: 96e6, diskWriteBps: 1.2e6)
         let b = ProcessSample(id: ProcessID(pid: 11, startTimeUs: 1), name: "idle", uid: 501)
-        let rows = DiskRows.rows([a, b], identity: { _ in nil }, session: DiskSessionBaselines(launchUs: 0).session)
+        let rows = DiskRows.rows([a, b]) { _ in nil }
         #expect(rows.map(\.name) == ["mds_stores"])
-        #expect(rows[0].rate == 97.2e6)
+        #expect(rows[0].rate == 97.2e6 && !rows[0].isExited)
         #expect(rows[0].target == .process(pid: 10, name: "mds_stores", path: nil, uid: 0))
     }
 }

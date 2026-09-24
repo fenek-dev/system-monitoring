@@ -78,11 +78,15 @@ enum PowerCopy {
     }
 
     /// Battery card caption (§5.8): "On battery · about 5 h 40 m left" / "Charging · full in 1 h 10 m" / "Charged".
+    /// ICR-15: while macOS is still estimating (`timeRemainingCalculating`) the time part reads "Calculating…".
     static func batteryPhrase(_ b: BatterySnapshot) -> String {
+        let calculating = b.timeRemainingCalculating && b.timeRemaining == nil
         if b.isCharging {
+            if calculating { return "Charging · Calculating…" }
             return b.timeRemaining.map { "Charging · full in \(TTFormat.duration($0))" } ?? "Charging"
         }
         if b.onAC { return (b.percent ?? 0) >= 99.5 ? "Charged" : "On power adapter" }
+        if calculating { return "On battery · Calculating…" }
         return b.timeRemaining.map { "On battery · about \(TTFormat.duration($0)) left" } ?? "On battery"
     }
 
