@@ -2,11 +2,14 @@ import Foundation
 import CPrivate
 import Darwin
 
-// All state is touched only on `q` (serial). Main thread only sleeps, shells out to `ps`, and q.sync-reads.
+// All state is touched only on `q` (serial); `dispatchPrecondition` below confirms every NStat
+// callback actually lands there. Main thread only sleeps, shells out to `ps`, and q.sync-reads.
 let q = DispatchQueue(label: "nstat")
+let quick = ProcessInfo.processInfo.environment["NSTAT_QUICK"] != nil // skip the ~3.5 min of long-running checks for fast iteration
 
 struct Src {
     var pid = 0
+    var uniquePid: Int64 = 0 // "uniqueProcessID" from the description dict: immune to pid reuse, unlike `pid`.
     var name = "?"
     var provider = "?"
     var rx: UInt64 = 0
@@ -16,12 +19,19 @@ struct Src {
     var state = "?"
 }
 var sources: [UnsafeMutableRawPointer: Src] = [:]
+// Bytes folded in from sources that have been removed (connection closed) since the manager
+// started, keyed the same way as `sources` grouping below (uniquePid, falling back to pid).
+// Without this, a closed connection's final rx/tx simply vanishes from any per-pid total taken
+// after it closes -- see "Fix round 1" in docs/findings/nstat.md.
+var retired: [Int64: (name: String, rx: UInt64, tx: UInt64)] = [:]
 var printedDescKeys = false, printedCountKeys = false, sampleDesc = ""
+var lastAddedAt = Date()
+var addedCount = 0
 
 func u64(_ d: NSDictionary, _ k: CFString) -> UInt64 { (d[k as String] as? NSNumber)?.uint64Value ?? 0 }
 
 // Description/counts dictionaries use key names we don't have extern symbols for (remote/local
-// address, TCP state). Discover them at runtime instead of guessing linker symbol names.
+// address, TCP state, unique pid). Discover them at runtime instead of guessing linker symbol names.
 func findKey(_ d: NSDictionary, contains needles: [String]) -> String? {
     for k in d.allKeys {
         guard let ks = k as? String else { continue }
@@ -83,12 +93,19 @@ func applyExtras(_ src: NStatSourceRef, _ d: NSDictionary) {
         sources[src]?.state = st
         if !printedStateKey { printedStateKey = true; print("state key found: \(sk) (provider=\(d[kNStatSrcKeyProvider as String] ?? "?"))") }
     }
+    if let uk = findKey(d, contains: ["uniqueprocessid"]), let upid = (d[uk] as? NSNumber)?.int64Value {
+        sources[src]?.uniquePid = upid
+    }
 }
 
 guard let mgr = NStatManagerCreate(kCFAllocatorDefault, q, { src, _ in
+    dispatchPrecondition(condition: .onQueue(q))
     guard let src else { return }
+    lastAddedAt = Date()
+    addedCount += 1
     sources[src] = Src()
     NStatSourceSetDescriptionBlock(src) { cf in
+        dispatchPrecondition(condition: .onQueue(q))
         guard let d = cf as NSDictionary? else { return }
         if !printedDescKeys { printedDescKeys = true; print("desc keys:", (d.allKeys as? [String] ?? []).sorted().joined(separator: ", ")); sampleDesc = "\(d)" }
         sources[src]?.pid = (d[kNStatSrcKeyPID as String] as? NSNumber)?.intValue ?? 0
@@ -99,24 +116,76 @@ guard let mgr = NStatManagerCreate(kCFAllocatorDefault, q, { src, _ in
         applyExtras(src, d)
     }
     NStatSourceSetCountsBlock(src) { cf in
+        dispatchPrecondition(condition: .onQueue(q))
         guard let d = cf as NSDictionary? else { return }
         if !printedCountKeys { printedCountKeys = true; print("count keys:", (d.allKeys as? [String] ?? []).sorted().joined(separator: ", ")) }
         sources[src]?.rx = u64(d, kNStatSrcKeyRxBytes)
         sources[src]?.tx = u64(d, kNStatSrcKeyTxBytes)
         applyExtras(src, d) // state can change/appear here too
     }
-    NStatSourceSetRemovedBlock(src) { sources[src] = nil }
+    NStatSourceSetRemovedBlock(src) {
+        dispatchPrecondition(condition: .onQueue(q))
+        // Fold this source's last known counters into the retired accumulator *before* dropping
+        // it, so its final bytes stay counted. Keyed by uniquePid (falls back to pid) so pid
+        // reuse across the run's lifetime can't merge two unrelated processes' totals.
+        if let s = sources[src] {
+            let key = s.uniquePid != 0 ? s.uniquePid : Int64(s.pid)
+            var r = retired[key, default: (name: s.name, rx: 0, tx: 0)]
+            r.rx &+= s.rx
+            r.tx &+= s.tx
+            if r.name == "?" && s.name != "?" { r.name = s.name }
+            retired[key] = r
+        }
+        sources[src] = nil
+    }
 }) else { print("NStatManagerCreate returned NULL"); exit(1) }
 
+let creationStart = Date()
 NStatManagerAddAllTCP(mgr)
 NStatManagerAddAllUDP(mgr)
 
-func perPid() -> [Int: (String, UInt64, UInt64)] {
+// Manager creation cost: time from creation until the initial "added" callback flood goes
+// quiet, i.e. no new source added for `quietWindow`, or `maxWait` elapses.
+let quietWindow: TimeInterval = 0.3
+let maxWait: TimeInterval = 5.0
+while true {
+    Thread.sleep(forTimeInterval: 0.05)
+    let quietFor = q.sync { Date().timeIntervalSince(lastAddedAt) }
+    if quietFor >= quietWindow || Date().timeIntervalSince(creationStart) >= maxWait { break }
+}
+let settleElapsed = Date().timeIntervalSince(creationStart)
+let settledCount = q.sync { addedCount }
+print(String(format: "manager creation + initial added-flood settle: %.3fs (%d sources added, quiet=%.1fs). Recommendation: create ONE manager and keep it long-lived for the app's whole run -- do not recreate it per poll.", settleElapsed, settledCount, quietWindow))
+
+// perPid = live (currently attached sources' cumulative counters) + retired (bytes folded in
+// when a source closed). Keyed by uniquePid (falls back to pid) -- see `retired` above. This is
+// what makes a pid's total monotonic across the run even as individual connections churn.
+func perPid() -> [Int64: (pid: Int, name: String, rx: UInt64, tx: UInt64)] {
     q.sync {
-        var m: [Int: (String, UInt64, UInt64)] = [:]
-        for s in sources.values { var e = m[s.pid, default: (s.name, 0, 0)]; e.1 += s.rx; e.2 += s.tx; m[s.pid] = e }
+        var m: [Int64: (Int, String, UInt64, UInt64)] = [:]
+        for s in sources.values {
+            let key = s.uniquePid != 0 ? s.uniquePid : Int64(s.pid)
+            var e = m[key, default: (s.pid, s.name, 0, 0)]
+            e.2 &+= s.rx; e.3 &+= s.tx
+            m[key] = e
+        }
+        for (key, r) in retired {
+            var e = m[key, default: (Int(truncatingIfNeeded: key), r.name, 0, 0)]
+            e.2 &+= r.rx; e.3 &+= r.tx
+            m[key] = e
+        }
         return m
     }
+}
+
+func perName() -> [String: (rx: UInt64, tx: UInt64)] {
+    var byName: [String: (UInt64, UInt64)] = [:]
+    for v in perPid().values {
+        var e = byName[v.name, default: (0, 0)]
+        e.0 &+= v.rx; e.1 &+= v.tx
+        byName[v.name] = e
+    }
+    return byName
 }
 
 func snapshotSources() -> [UnsafeMutableRawPointer: Src] { q.sync { sources } }
@@ -148,20 +217,21 @@ func ifaceTotals() -> (ibytes: UInt64, obytes: UInt64) {
     return total
 }
 
-func cpuPercentSelf() -> Double {
+func psField(_ field: String) -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/ps")
-    p.arguments = ["-o", "%cpu=", "-p", "\(getpid())"]
+    p.arguments = ["-o", "\(field)=", "-p", "\(getpid())"]
     let pipe = Pipe()
     p.standardOutput = pipe
     do {
         try p.run()
         p.waitUntilExit()
-        let str = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return Double(str) ?? -1
-    } catch { return -1 }
+    } catch { return "" }
 }
+func cpuPercentSelf() -> Double { Double(psField("%cpu")) ?? -1 }
+func rssKBSelf() -> Int { Int(psField("rss")) ?? -1 } // ps rss is in KB
 
 let clock = ContinuousClock()
 let firstCost = clock.measure { query() }
@@ -174,14 +244,14 @@ let b = perPid()
 let connB = snapshotSources()
 let ifB = ifaceTotals()
 
-print("sources=\(q.sync { sources.count }) pids=\(b.count) firstQuery=\(firstCost) query=\(queryCost)")
+print("sources=\(q.sync { sources.count }) retired=\(q.sync { retired.count }) pids=\(b.count) firstQuery=\(firstCost) query=\(queryCost)")
 print("sample desc:\n" + q.sync { sampleDesc }.split(separator: "\n").prefix(30).joined(separator: "\n"))
 
-let rates = b.map { pid, v -> (String, Double, Double) in
-    let o = a[pid] ?? (v.0, v.1, v.2)
-    return ("\(v.0) [\(pid)]", Double(v.1 &- o.1) / 2048, Double(v.2 &- o.2) / 2048)  // KB/s over 2 s
+let rates = b.map { key, v -> (String, Double, Double) in
+    let o = a[key] ?? (v.pid, v.name, v.rx, v.tx)
+    return ("\(v.name) [\(v.pid)]", Double(v.rx &- o.rx) / 2048, Double(v.tx &- o.tx) / 2048)  // KB/s over 2 s
 }.sorted { $0.1 + $0.2 > $1.1 + $1.2 }
-print("\ntop per-app rates:")
+print("\ntop per-app rates (live + retired):")
 for (n, rx, tx) in rates.prefix(10) {
     print(n.padding(toLength: 40, withPad: " ", startingAt: 0) + String(format: "↓%8.1f KB/s  ↑%8.1f KB/s", rx, tx))
 }
@@ -209,6 +279,12 @@ let ifTxKB = Double(ifB.obytes &- ifA.obytes) / 2048
 print("\ngetifaddrs (all AF_LINK interfaces) over same 2s window: ↓\(String(format: "%.1f", ifRxKB)) KB/s ↑\(String(format: "%.1f", ifTxKB)) KB/s")
 print("sum of per-app NStat rates over same window:            ↓\(String(format: "%.1f", appSumRxKB)) KB/s ↑\(String(format: "%.1f", appSumTxKB)) KB/s")
 
+if quick {
+    print("\nNSTAT_QUICK set: skipping the 10s idle-CPU and ~3min churn/memory checks.")
+    NStatManagerDestroy(mgr)
+    exit(0)
+}
+
 // Steady-state CPU of this process (manager still installed, no further queries issued) —
 // NStat may push added/removed/counts callbacks continuously even without QueryAllSources calls.
 print("\nsteady-state CPU (manager idle, no queries) over 10s, sampled via `ps -o %cpu`:")
@@ -221,5 +297,40 @@ for i in 1...5 {
 }
 let avgCPU = cpuSamples.filter { $0 >= 0 }.reduce(0, +) / Double(max(cpuSamples.filter { $0 >= 0 }.count, 1))
 print(String(format: "avg %%cpu over 10s idle window: %.2f", avgCPU))
+
+// --- Fix round 1 verification: churn + memory growth -----------------------------------------
+// Drive many short-lived connections (new pid each time, closing within ~2s) and confirm two
+// things over a long window: (1) removed-source accounting keeps the "curl" bucket's total
+// non-decreasing across repeated queries (bytes from closed connections aren't lost), and
+// (2) RSS doesn't grow unbounded as thousands of sources are added and retired.
+func spawnChurn(seconds: Int) -> Process {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+    p.arguments = ["-c", "end=$((SECONDS+\(seconds))); while [ $SECONDS -lt $end ]; do curl -sI --max-time 2 https://example.com -o /dev/null 2>/dev/null; done"]
+    try? p.run()
+    return p
+}
+
+let totalSeconds = 180
+let sampleEvery = 15
+print("\nchurn + memory growth: driving short-lived curl connections for ~\(totalSeconds)s, sampling every \(sampleEvery)s...")
+let churn = spawnChurn(seconds: totalSeconds)
+var lastCurlTotal: UInt64 = 0
+var everDecreased = false
+for i in 1...(totalSeconds / sampleEvery) {
+    Thread.sleep(forTimeInterval: TimeInterval(sampleEvery))
+    query()
+    let curl = perName()["curl"] ?? (0, 0)
+    let total = curl.rx &+ curl.tx
+    let decreased = total < lastCurlTotal
+    if decreased { everDecreased = true }
+    let rss = rssKBSelf()
+    let liveCount = q.sync { sources.count }
+    let retiredCount = q.sync { retired.count }
+    print("  t+\(i * sampleEvery)s: rss=\(rss)KB live=\(liveCount) retired=\(retiredCount) curlTotal=\(total)B (rx=\(curl.rx) tx=\(curl.tx))\(decreased ? " <-- DECREASED" : "")")
+    lastCurlTotal = total
+}
+churn.waitUntilExit()
+print(everDecreased ? "curl total DECREASED at least once -- removed-source accounting still losing bytes." : "curl total was monotonic (non-decreasing) across the whole run -- removed-source bytes are retained.")
 
 NStatManagerDestroy(mgr)
