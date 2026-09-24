@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import AppKit
 import CPrivate
 
 struct Sample { var cpuNs: UInt64; var footprint: UInt64; var diskR: UInt64; var diskW: UInt64; var energyNj: UInt64 }
@@ -58,6 +59,113 @@ func sweep() -> (ok: [pid_t: Sample], denied: [pid_t], otherErr: Int) {
         }
     }
     return (ok, denied, other)
+}
+
+// --energy-test: controlled RUSAGE_INFO_V6 vs V4 energy-field probe (fix round 2).
+// Not part of the normal sweep; run explicitly to answer "does any per-process
+// energy counter move under a known, fixed CPU load".
+func rusageV6(_ pid: pid_t) -> rusage_info_v6? {
+    var info = rusage_info_v6()
+    let rc = withUnsafeMutablePointer(to: &info) { p in
+        p.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V6, $0) }
+    }
+    return rc == 0 ? info : nil
+}
+
+func energyFields(_ i: rusage_info_v6) -> [(String, UInt64)] {
+    [
+        ("ri_user_time (ticks)", i.ri_user_time),
+        ("ri_system_time (ticks)", i.ri_system_time),
+        ("ri_user_ptime (P-core ticks)", i.ri_user_ptime),
+        ("ri_system_ptime (P-core ticks)", i.ri_system_ptime),
+        ("ri_instructions", i.ri_instructions),
+        ("ri_cycles", i.ri_cycles),
+        ("ri_pinstructions (P-core)", i.ri_pinstructions),
+        ("ri_pcycles (P-core)", i.ri_pcycles),
+        ("ri_billed_energy (nJ)", i.ri_billed_energy),
+        ("ri_serviced_energy (nJ)", i.ri_serviced_energy),
+        ("ri_energy_nj", i.ri_energy_nj),
+        ("ri_penergy_nj (P-core)", i.ri_penergy_nj),
+        ("ri_pkg_idle_wkups", i.ri_pkg_idle_wkups),
+    ]
+}
+
+func reportDelta(_ label: String, _ a: rusage_info_v6, _ b: rusage_info_v6, dt: Double) {
+    print("== \(label) (dt=\(String(format: "%.1f", dt))s) ==")
+    for (af, bf) in zip(energyFields(a), energyFields(b)) {
+        let delta = bf.1 &- af.1
+        print("  \(af.0.padding(toLength: 30, withPad: " ", startingAt: 0)) \(delta)")
+    }
+}
+
+func firstRunningGUIApp() -> (pid_t, String)? {
+    let apps = NSWorkspace.shared.runningApplications.filter {
+        $0.activationPolicy == .regular && $0.processIdentifier != getpid()
+    }
+    guard let app = apps.first else { return nil }
+    return (app.processIdentifier, app.localizedName ?? "pid \(app.processIdentifier)")
+}
+
+func runEnergyTest() {
+    // 1. Spin child: `yes >/dev/null &`, sampled over 10s of ~100% CPU on one core.
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+    proc.arguments = ["-c", "exec yes > /dev/null"]
+    do { try proc.run() } catch { print("spin child failed to launch: \(error)"); return }
+    Thread.sleep(forTimeInterval: 0.2) // let it ramp up
+    if let a = rusageV6(proc.processIdentifier) {
+        Thread.sleep(forTimeInterval: 10)
+        if let b = rusageV6(proc.processIdentifier) {
+            reportDelta("spin child (yes, pid \(proc.processIdentifier))", a, b, dt: 10)
+        } else {
+            print("spin child: rusage_info_v6 FAILED at t1 (errno=\(errno))")
+        }
+    } else {
+        print("spin child: rusage_info_v6 FAILED at t0 (errno=\(errno))")
+    }
+    proc.terminate()
+
+    // 2. Self, busy-looping ~10s to pin a core near 100% (own process, so never EPERM).
+    let selfPid = getpid()
+    if let a = rusageV6(selfPid) {
+        let c = ContinuousClock()
+        let t0 = c.now
+        var sink: UInt64 = 0
+        var iters: UInt64 = 0
+        while true {
+            sink = sink &+ (iters &* 2_654_435_761)
+            iters &+= 1
+            if iters & 0xFFFFF == 0, c.now - t0 >= .seconds(10) { break }
+        }
+        if let b = rusageV6(selfPid) {
+            reportDelta("self busy-loop (pid \(selfPid), sink=\(sink))", a, b, dt: 10)
+        } else {
+            print("self: rusage_info_v6 FAILED at t1 (errno=\(errno))")
+        }
+    } else {
+        print("self: rusage_info_v6 FAILED at t0 (errno=\(errno))")
+    }
+
+    // 3. A running GUI app (bundled .app), sampled idle over the same window.
+    if let (guiPid, guiName) = firstRunningGUIApp() {
+        if let a = rusageV6(guiPid) {
+            Thread.sleep(forTimeInterval: 10)
+            if let b = rusageV6(guiPid) {
+                reportDelta("GUI app \(guiName) (pid \(guiPid), idle)", a, b, dt: 10)
+            } else {
+                print("\(guiName): rusage_info_v6 FAILED at t1 (errno=\(errno))")
+            }
+        } else {
+            print("\(guiName): rusage_info_v6 FAILED at t0 (errno=\(errno))")
+        }
+    } else {
+        print("no running regular (NSWorkspace .activationPolicy == .regular) GUI app found")
+    }
+}
+
+if CommandLine.arguments.contains("--energy-test") {
+    runEnergyTest()
+    exit(0)
 }
 
 let clock = ContinuousClock()
