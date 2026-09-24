@@ -29,8 +29,9 @@ func ttEnumerateBlockStorageDrivers() -> [io_service_t] {
 /// with no media child (a real, if rare, case — findings §1) yields `bsdName == nil`.
 struct TTDriverMediaInfo {
     var bsdName: String?
-    /// Heuristic: the child `IOMedia`'s `Ejectable` property, inverted. True for the internal SSD's
-    /// whole-disk media; true (isInternal=false) for mounted disk images and external volumes.
+    /// Heuristic: the child `IOMedia`'s `Ejectable` property, inverted. The internal SSD's whole-disk
+    /// media is not ejectable (`isInternal == true`); a mounted disk image's or external volume's
+    /// media is ejectable (`isInternal == false`).
     var isInternal: Bool
     var sizeBytes: UInt64?
 }
@@ -61,6 +62,28 @@ func ttMediaInfo(ofFirstChildOf driver: io_service_t) -> TTDriverMediaInfo {
         child = IOIteratorNext(iter)
     }
     return result
+}
+
+/// True if `driver`'s backing device (its parent in the IOService plane — e.g. `AppleDiskImageDevice`,
+/// `IODiskImageBlockStorageDeviceInKernel`) is a mounted disk image rather than real hardware.
+/// Verified live: this machine's mounted `.dmg`s all report a parent class containing "DiskImage";
+/// the internal NVMe SSD and an SD card reader both report an unrelated class.
+///
+/// **Not yet wired into `DiskIOReading`** — `BlockDriverCounter` has no `isDiskImage` field (it's a
+/// locked `MonitorModel` interface, ARCHITECTURE §9); see `docs/icr/001-w6d-diskio-isdiskimage.md`
+/// for the proposed additive field. This is the "local extension" the plan's change-control process
+/// asks for meanwhile: the detection logic, tested against real hardware, ready to wire in as soon
+/// as the field lands.
+func ttIsDiskImageDriver(_ driver: io_service_t) -> Bool {
+    var parent: io_registry_entry_t = 0
+    guard IORegistryEntryGetParentEntry(driver, kIOServicePlane, &parent) == KERN_SUCCESS, parent != 0 else {
+        return false
+    }
+    defer { IOObjectRelease(parent) }
+    var buf = [CChar](repeating: 0, count: 128)
+    guard IOObjectGetClass(parent, &buf) == KERN_SUCCESS else { return false }
+    let className = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+    return className.contains("DiskImage")
 }
 
 /// The `Statistics` property of an `IOBlockStorageDriver`, as the plain dictionary the parse layer

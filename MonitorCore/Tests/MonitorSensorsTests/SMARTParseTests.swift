@@ -49,6 +49,26 @@ import MonitorModel
         #expect(info.temperatureC == 314 - 273.15)
     }
 
+    @Test func zeroKelvinReadsAsUnreportedNotAbsoluteZeroCelsius() {
+        // 0 K is never a real drive temperature - it means the field wasn't actually filled in.
+        let raw = RawSMARTValues(criticalWarning: 0, temperatureKelvin: 0, percentageUsed: 0,
+                                  dataUnitsRead: 0, dataUnitsWritten: 0, powerOnHours: 0, unsafeShutdowns: 0)
+        let info = SMARTParser.map(raw)
+        #expect(info.temperatureC == nil)
+    }
+
+    @Test func overflowingDataUnitsClampsToUInt64MaxInsteadOfCrashing() {
+        // dataUnitsRead × 512,000 overflows UInt64 once dataUnitsRead exceeds ~3.6×10^13 - garbage
+        // hardware data must clamp, never trap.
+        let raw = RawSMARTValues(criticalWarning: 0, temperatureKelvin: 300, percentageUsed: 0,
+                                  dataUnitsRead: .max, dataUnitsWritten: .max, powerOnHours: .max, unsafeShutdowns: .max)
+        let info = SMARTParser.map(raw)
+        #expect(info.dataReadBytes == .max)
+        #expect(info.dataWrittenBytes == .max)
+        #expect(info.powerOnHours == Int.max)
+        #expect(info.unsafeShutdowns == Int.max)
+    }
+
     @Test func criticalWarningBitSetMeansFailing() {
         #expect(SMARTParser.status(criticalWarning: 0x01, percentageUsed: 0) == .failing)
         #expect(SMARTParser.status(criticalWarning: 0x80, percentageUsed: 0) == .failing)
@@ -80,6 +100,80 @@ import MonitorModel
         // "(ipc/send) invalid destination port" - a read-time IPC failure, not a capability gap.
         guard case .transient = SMARTParser.error(forStage: 3, ioReturn: Int32(bitPattern: 0x1000_0003)) else {
             Issue.record("expected .transient for stage 3")
+            return
+        }
+    }
+
+    // MARK: - Legacy ATA/AHCI "SMART Status" fallback (review fix: brief "else status only";
+    // ARCHITECTURE §6's SMART status-only panel)
+
+    @Test func legacyVerifiedMapsToHealthy() {
+        #expect(SMARTParser.status(fromLegacyStatusString: "Verified") == .healthy)
+    }
+
+    @Test func legacyFailingMapsToFailing() {
+        #expect(SMARTParser.status(fromLegacyStatusString: "Failing") == .failing)
+    }
+
+    @Test func legacyUnrecognizedStringMapsToUnknown() {
+        #expect(SMARTParser.status(fromLegacyStatusString: "") == .unknown)
+        #expect(SMARTParser.status(fromLegacyStatusString: "garbage") == .unknown)
+    }
+
+    // MARK: - resolve() - the full NVMe-then-legacy-then-unavailable decision policy
+
+    private static let raw = RawSMARTValues(criticalWarning: 0, temperatureKelvin: 314, percentageUsed: 4,
+                                             dataUnitsRead: 1, dataUnitsWritten: 1, powerOnHours: 4694, unsafeShutdowns: 25)
+
+    @Test func resolveWithSuccessfulNVMeReadIgnoresLegacyStatus() {
+        // Even if a legacyStatus happens to be supplied, a successful NVMe read wins - SMARTSensor
+        // itself never bothers computing legacyStatus in this case, but resolve() must not either.
+        let outcome = SMARTParser.resolve(nvme: .success(Self.raw, model: "M", capacityBytes: 1), legacyStatus: "Failing")
+        guard case .reading(let info) = outcome else {
+            Issue.record("expected a full reading")
+            return
+        }
+        #expect(info.model == "M")
+        #expect(info.percentageUsed == 4)
+    }
+
+    @Test func resolveStage3FailureNeverFallsBackToLegacyStatus() {
+        // A read-time glitch on a controller that DOES support the interface is worth retrying, not
+        // masking behind a stale/unrelated legacy status string.
+        let outcome = SMARTParser.resolve(nvme: .failed(stage: 3, ioReturn: 0), legacyStatus: "Verified")
+        guard case .failure(let error) = outcome, case .transient = error else {
+            Issue.record("expected .failure(.transient), got \(outcome)")
+            return
+        }
+    }
+
+    @Test func resolveStage1FailureFallsBackToStatusOnlyReading() {
+        // The brief: "NVMe SMART plugin per findings, else status only." Stage 1/2 means the
+        // controller doesn't actually support the interface even though something upstream claimed
+        // NVMe SMART capability - the legacy status is the right fallback, not .unavailable.
+        let outcome = SMARTParser.resolve(nvme: .failed(stage: 1, ioReturn: 0), legacyStatus: "Verified")
+        guard case .reading(let info) = outcome else {
+            Issue.record("expected a status-only reading, got \(outcome)")
+            return
+        }
+        #expect(info.status == .healthy)
+        #expect(info.percentageUsed == nil)
+        #expect(info.model == nil)
+    }
+
+    @Test func resolveNotFoundFallsBackToStatusOnlyReading() {
+        let outcome = SMARTParser.resolve(nvme: .notFound, legacyStatus: "Failing")
+        guard case .reading(let info) = outcome else {
+            Issue.record("expected a status-only reading, got \(outcome)")
+            return
+        }
+        #expect(info.status == .failing)
+    }
+
+    @Test func resolveNotFoundWithNoLegacyStatusIsUnavailable() {
+        let outcome = SMARTParser.resolve(nvme: .notFound, legacyStatus: nil)
+        guard case .failure(let error) = outcome, case .unavailable = error else {
+            Issue.record("expected .failure(.unavailable), got \(outcome)")
             return
         }
     }
