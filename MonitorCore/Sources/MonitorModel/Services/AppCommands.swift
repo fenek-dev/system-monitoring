@@ -10,6 +10,9 @@ public struct AppCommands: Sendable {
     public var quitTelltale: @MainActor @Sendable () -> Void
     /// Shows or hides the on-screen overlay and persists the new state (same as the global hotkey).
     public var toggleOverlay: @MainActor @Sendable () -> Void
+    /// Settings' shortcut recorder started (true) or stopped (false) capturing keys: the App unregisters the
+    /// global hotkey meanwhile, so pressing the current shortcut records it instead of toggling the overlay.
+    public var setHotKeyRecording: @MainActor @Sendable (Bool) -> Void
 
     public init(
         openDashboard: @escaping @MainActor @Sendable (DashboardPage?) -> Void = { _ in },
@@ -18,8 +21,10 @@ public struct AppCommands: Sendable {
         setPaused: @escaping @MainActor @Sendable (Bool) -> Void = { _ in },
         closePopover: @escaping @MainActor @Sendable () -> Void = {},
         quitTelltale: @escaping @MainActor @Sendable () -> Void = {},
-        toggleOverlay: @escaping @MainActor @Sendable () -> Void = {}
+        toggleOverlay: @escaping @MainActor @Sendable () -> Void = {},
+        setHotKeyRecording: @escaping @MainActor @Sendable (Bool) -> Void = { _ in }
     ) {
+        self.setHotKeyRecording = setHotKeyRecording
         self.openDashboard = openDashboard
         self.inspectApp = inspectApp
         self.openSettings = openSettings

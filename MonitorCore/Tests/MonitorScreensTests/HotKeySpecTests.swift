@@ -31,7 +31,29 @@ struct HotKeySpecTests {
 
     @Test func ignoresNonModifierFlagBits() {
         let flags: NSEvent.ModifierFlags = [.command, .capsLock, .numericPad, .function]
-        #expect(HotKeySpec.from(keyCode: 0, modifierFlags: flags.rawValue) == HotKeySpec(keyCode: 0, modifiers: 256))
+        #expect(HotKeySpec.from(keyCode: 11, modifierFlags: flags.rawValue) == HotKeySpec(keyCode: 11, modifiers: 256))
+    }
+
+    /// ⌘-only standard shortcuts (⌘C, ⌘Q, ⌘, …) belong to every app's menus: never valid as a global hotkey.
+    @Test func commandOnlyStandardShortcutsAreReserved() {
+        for code: UInt32 in [8, 9, 7, 6, 0, 12, 13, 1, 35, 45, 31, 17, 4, 46, 43] {
+            let spec = HotKeySpec(keyCode: code, modifiers: 256)
+            #expect(spec.isReserved, "\(spec.display)")
+            #expect(!spec.isValid, "\(spec.display)")
+        }
+        #expect(HotKeySpec.from(keyCode: 8, modifierFlags: NSEvent.ModifierFlags.command.rawValue) == nil)
+        #expect(!HotKeySpec(keyCode: 8, modifiers: 256 | 512).isReserved)       // ⌘⇧C is fine
+        #expect(!HotKeySpec(keyCode: 8, modifiers: 2048).isReserved)            // ⌥C is fine
+        #expect(!HotKeySpec(keyCode: 11, modifiers: 256).isReserved)            // ⌘B is fine
+    }
+
+    @Test func keypadSectionAndHelpNames() {
+        #expect(HotKeySpec(keyCode: 82, modifiers: 2048).display == "⌥Keypad 0")
+        #expect(HotKeySpec(keyCode: 92, modifiers: 2048).display == "⌥Keypad 9")
+        #expect(HotKeySpec(keyCode: 65, modifiers: 2048).display == "⌥Keypad .")
+        #expect(HotKeySpec(keyCode: 76, modifiers: 2048).display == "⌥Keypad ⌤")
+        #expect(HotKeySpec(keyCode: 10, modifiers: 2048).display == "⌥§")
+        #expect(HotKeySpec(keyCode: 114, modifiers: 2048).display == "⌥Help")
     }
 
     @Test func keyNames() {

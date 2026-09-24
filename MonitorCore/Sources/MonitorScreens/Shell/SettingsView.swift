@@ -55,28 +55,41 @@ public struct SettingsView: View {
     @State private var sensorsReenabled = false
     @State private var historySize: String?
 
-    public init(loginItem: LoginItemControl, about: AboutInfo) {
+    private let maxHeight: CGFloat?
+
+    /// `maxHeight`: the window's height cap (screen's visible height − 40 in the app). Above it the sections
+    /// scroll under the fixed header instead of being clipped (13" screens); nil → always intrinsic height.
+    public init(loginItem: LoginItemControl, about: AboutInfo, maxHeight: CGFloat? = nil) {
         self.loginItem = loginItem
         self.about = about
+        self.maxHeight = maxHeight
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             header
-            VStack(alignment: .leading, spacing: 16) {
-                section("General") { launchAtLoginRow }
-                section("Overlay") { overlayRows }
-                section("Units") { unitRows }
-                section("Popover") { popoverRows }
-                if !disabledSensorRows.isEmpty { section("Sensors") { sensorRows } }
-                section("About") { aboutRows }
+            ViewThatFits(in: .vertical) {
+                sections
+                ScrollView { sections }
             }
-            .padding(20)
         }
         .frame(width: ShellStyle.settingsWidth, alignment: .top)
+        .frame(maxHeight: maxHeight ?? .infinity, alignment: .top)
         .background(ShellStyle.bgWindow)
         .onAppear { loginStatus = loginItem.status() }
         .task { historySize = await about.historySize() }
+    }
+
+    private var sections: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            section("General") { launchAtLoginRow }
+            section("Overlay") { overlayRows }
+            section("Units") { unitRows }
+            section("Popover") { popoverRows }
+            if !disabledSensorRows.isEmpty { section("Sensors") { sensorRows } }
+            section("About") { aboutRows }
+        }
+        .padding(20)
     }
 
     // MARK: Header

@@ -18,15 +18,22 @@ enum ScreenFixture {
     /// `LiveModel.mock(scenario)` (frames 0…60, presenting).
     static func live(_ scenario: MockScenario, ticks: Int = 60) -> LiveModel { .mock(scenario, ticks: ticks) }
 
+    /// Shared test-process setup: AppKit reads font smoothing once, at the first text layout in the process, so it
+    /// must be configured before ANY `NSHostingView`/controller lays out (not only before snapshot renders);
+    /// otherwise goldens rendered later in the same process drift 1–2 % in antialiasing. Every fixture calls it.
+    static func prepareTextRendering() { SnapshotRenderer.configureTextRendering() }
+
     /// Full deterministic environment (ARCHITECTURE §8): mock live/history/actions, default settings on a scratch
     /// suite, `isSnapshot`, `now = MockDataProvider.referenceDate`, en_US, Europe/London, dark.
     static func context(_ scenario: MockScenario, page: DashboardPage = .overview, ticks: Int = 60) -> ShellContext {
-        ScreenCatalog.context(for: scenario, page: page, ticks: ticks)
+        prepareTextRendering()
+        return ScreenCatalog.context(for: scenario, page: page, ticks: ticks)
     }
 
     /// Fresh settings on in-memory defaults (tests that mutate settings; no plist, no cross-process races).
     /// A second `SettingsStore(defaults: d)` over the returned defaults models a relaunch.
     static func settings() -> (SettingsStore, UserDefaults) {
+        prepareTextRendering()
         let d = InMemoryDefaults()
         return (SettingsStore(defaults: d), d)
     }

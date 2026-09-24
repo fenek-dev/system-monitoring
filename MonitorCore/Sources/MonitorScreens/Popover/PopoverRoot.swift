@@ -135,13 +135,19 @@ struct PopoverFooter: View {
                 .keyboardShortcut("d", modifiers: .command)
             Button("History") { ops.openHistory() }
                 .buttonStyle(TTButtonStyle(.popoverSecondary))
+            let overlayOn = settings?.overlayEnabled == true
             TTIconButton(.overlay, label: "Overlay (\(hotKey.display))", variant: .footer,
-                         tint: settings?.overlayEnabled == true ? TTColor.accent : nil) { ops.toggleOverlay() }
+                         tint: overlayOn ? TTColor.accent : nil) { ops.toggleOverlay() }
+                .accessibilityValue(Self.overlayAccessibilityValue(enabled: overlayOn))
+                .accessibilityAddTraits(.isToggle)
             TTIconButton(.quit, label: "Quit Telltale", variant: .footer) { ops.quitTelltale() }
                 .keyboardShortcut("q", modifiers: .command)
         }
         .padding(EdgeInsets(top: 6, leading: 4, bottom: 4, trailing: 4))
     }
+
+    /// VoiceOver state of the overlay toggle (the tint alone is visual only).
+    static func overlayAccessibilityValue(enabled: Bool) -> String { enabled ? "On" : "Off" }
 }
 
 /// DESIGN §3.1 #1: HStack gap 10, padding 8 top / 10 horizontal / 10 bottom: glyph 20; "Telltale"

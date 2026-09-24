@@ -20,8 +20,13 @@ public struct HotKeySpec: Equatable, Codable, Sendable {
 
     public static let defaultOverlay = HotKeySpec(keyCode: 6, modifiers: 2048)   // ⌥Z
 
-    /// At least one of ⌘, ⌥, ⌃: a shift-only or bare key would swallow ordinary typing.
-    public var isValid: Bool { modifiers & (Self.cmdKey | Self.optionKey | Self.controlKey) != 0 }
+    /// At least one of ⌘, ⌥, ⌃ (a shift-only or bare key would swallow ordinary typing), and not reserved.
+    public var isValid: Bool { modifiers & (Self.cmdKey | Self.optionKey | Self.controlKey) != 0 && !isReserved }
+
+    /// ⌘-only standard shortcuts every app's menus use (⌘C/V/X/Z/A/Q/W/S/P/N/O/T/H/M/,).
+    public var isReserved: Bool { modifiers == Self.cmdKey && Self.reservedCommandKeys.contains(keyCode) }
+
+    private static let reservedCommandKeys: Set<UInt32> = [8, 9, 7, 6, 0, 12, 13, 1, 35, 45, 31, 17, 4, 46, 43]
 
     /// Modifier glyphs in the menu order ⌃⌥⇧⌘, then the key name ("⌥Z").
     public var display: String {
@@ -35,14 +40,19 @@ public struct HotKeySpec: Equatable, Codable, Sendable {
 
     /// From an `NSEvent` key code and `NSEvent.ModifierFlags` raw value; nil if the combination is invalid.
     public static func from(keyCode: UInt16, modifierFlags: UInt) -> HotKeySpec? {
+        let spec = unchecked(keyCode: keyCode, modifierFlags: modifierFlags)
+        return spec.isValid ? spec : nil
+    }
+
+    /// The spec for an `NSEvent` key code + flags, valid or not (the recorder explains why it is rejected).
+    static func unchecked(keyCode: UInt16, modifierFlags: UInt) -> HotKeySpec {
         let flags = NSEvent.ModifierFlags(rawValue: modifierFlags)
         var mask: UInt32 = 0
         if flags.contains(.command) { mask |= cmdKey }
         if flags.contains(.option) { mask |= optionKey }
         if flags.contains(.control) { mask |= controlKey }
         if flags.contains(.shift) { mask |= shiftKey }
-        let spec = HotKeySpec(keyCode: UInt32(keyCode), modifiers: mask)
-        return spec.isValid ? spec : nil
+        return HotKeySpec(keyCode: UInt32(keyCode), modifiers: mask)
     }
 
     /// US-ANSI names for Carbon virtual key codes (`Events.h`); anything else shows as "#code".
@@ -56,7 +66,10 @@ public struct HotKeySpec: Equatable, Codable, Sendable {
         13: "W", 14: "E", 15: "R", 16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5",
         24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[", 34: "I",
         35: "P", 36: "↩", 37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "N",
-        46: "M", 47: ".", 48: "⇥", 49: "Space", 50: "`", 51: "⌫", 53: "⎋",
+        46: "M", 47: ".", 48: "⇥", 49: "Space", 50: "`", 51: "⌫", 53: "⎋", 10: "§", 114: "Help",
+        65: "Keypad .", 67: "Keypad *", 69: "Keypad +", 71: "Keypad ⌧", 75: "Keypad /", 76: "Keypad ⌤",
+        78: "Keypad -", 81: "Keypad =", 82: "Keypad 0", 83: "Keypad 1", 84: "Keypad 2", 85: "Keypad 3",
+        86: "Keypad 4", 87: "Keypad 5", 88: "Keypad 6", 89: "Keypad 7", 91: "Keypad 8", 92: "Keypad 9",
         122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6", 98: "F7", 100: "F8", 101: "F9",
         109: "F10", 103: "F11", 111: "F12", 105: "F13", 107: "F14", 113: "F15", 106: "F16", 64: "F17",
         79: "F18", 80: "F19", 90: "F20",
