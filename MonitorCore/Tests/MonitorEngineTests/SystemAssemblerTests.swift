@@ -282,6 +282,20 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         #expect(s.power.adapterName == "96W USB-C")
     }
 
+    @Test func calculatingTimeRemainingIsAStateNotNil() throws {
+        var sa = SystemAssembler()
+        let bat = BatteryReading(present: true, percent: 60, isCharging: false, onAC: false, voltageV: 12, amperageA: -1,
+                                 timeRemainingCalculating: true)
+        let b = try #require(assemble(&sa, RawTick(battery: fresh(bat, sec))).power.battery)
+        #expect(b.timeRemaining == nil && b.timeRemainingCalculating)
+        let data = try JSONEncoder().encode(b)
+        #expect(try JSONDecoder().decode(BatterySnapshot.self, from: data) == b)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj["timeRemainingCalculating"] = nil                                  // older encoding
+        let old = try JSONDecoder().decode(BatterySnapshot.self, from: JSONSerialization.data(withJSONObject: obj))
+        #expect(!old.timeRemainingCalculating)
+    }
+
     @Test func batteryHealthIsClampedToDesign() {
         var sa = SystemAssembler()
         let fresh100 = BatteryReading(present: true, percent: 100, onAC: true, designCapacityWh: 70, maxCapacityWh: 72.4,

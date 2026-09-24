@@ -5,6 +5,9 @@ public struct BatterySnapshot: Sendable, Codable, Equatable {
     public var healthFraction: Double?, cycleCount: Int?, condition: String?
     public var maxCapacityWh: Double?, designCapacityWh: Double?, currentCapacityWh: Double?
     public var temperatureC: Double?, drainWatts: Double?
+    /// macOS is still estimating the time remaining (`timeRemaining` nil): UI shows "Calculating…", not "—".
+    /// Additive (battery ruling); absent in older encodings → false.
+    public var timeRemainingCalculating: Bool
 
     public init(
         percent: Double? = nil,
@@ -18,8 +21,10 @@ public struct BatterySnapshot: Sendable, Codable, Equatable {
         designCapacityWh: Double? = nil,
         currentCapacityWh: Double? = nil,
         temperatureC: Double? = nil,
-        drainWatts: Double? = nil
+        drainWatts: Double? = nil,
+        timeRemainingCalculating: Bool = false
     ) {
+        self.timeRemainingCalculating = timeRemainingCalculating
         self.percent = percent
         self.isCharging = isCharging
         self.onAC = onAC
@@ -32,6 +37,28 @@ public struct BatterySnapshot: Sendable, Codable, Equatable {
         self.currentCapacityWh = currentCapacityWh
         self.temperatureC = temperatureC
         self.drainWatts = drainWatts
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case percent, isCharging, onAC, timeRemaining, healthFraction, cycleCount, condition
+        case maxCapacityWh, designCapacityWh, currentCapacityWh, temperatureC, drainWatts, timeRemainingCalculating
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        percent = try c.decodeIfPresent(Double.self, forKey: .percent)
+        isCharging = try c.decode(Bool.self, forKey: .isCharging)
+        onAC = try c.decode(Bool.self, forKey: .onAC)
+        timeRemaining = try c.decodeIfPresent(Duration.self, forKey: .timeRemaining)
+        healthFraction = try c.decodeIfPresent(Double.self, forKey: .healthFraction)
+        cycleCount = try c.decodeIfPresent(Int.self, forKey: .cycleCount)
+        condition = try c.decodeIfPresent(String.self, forKey: .condition)
+        maxCapacityWh = try c.decodeIfPresent(Double.self, forKey: .maxCapacityWh)
+        designCapacityWh = try c.decodeIfPresent(Double.self, forKey: .designCapacityWh)
+        currentCapacityWh = try c.decodeIfPresent(Double.self, forKey: .currentCapacityWh)
+        temperatureC = try c.decodeIfPresent(Double.self, forKey: .temperatureC)
+        drainWatts = try c.decodeIfPresent(Double.self, forKey: .drainWatts)
+        timeRemainingCalculating = try c.decodeIfPresent(Bool.self, forKey: .timeRemainingCalculating) ?? false
     }
 }
 
