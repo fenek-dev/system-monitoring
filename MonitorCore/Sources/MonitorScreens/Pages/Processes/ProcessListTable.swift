@@ -169,25 +169,80 @@ struct ProcessTableRow: View, Equatable {
                     }
                 }
         )
+        // Tooltips only on the hovered row (perf: no per-cell `.help` on ~900 rows); same texts as `MetricValue`.
+        .overlay { if hovering { tooltips(widths) } }
         .onHover { hovering = $0 }
         .accessibilityElement(children: .combine)
     }
 
+    // MARK: Cells (plain Text; "—" in `textTertiary`, DESIGN §3.15)
+
     @ViewBuilder private func cells(_ widths: [CGFloat]) -> some View {
-        MetricValue(row.pid.map { String($0) },
-                    unavailableReason: row.pid == nil ? "Coalition row: no single leader process" : nil,
-                    font: TTFont.body12)
-            .frame(width: widths[0], alignment: .trailing)
+        plain(row.pid.map { String($0) }, width: widths[0])
         Text(row.user ?? "")
-            .font(TTFont.body12)
             .foregroundStyle(TTColor.textSecondary)
             .frame(width: widths[1], alignment: .leading)
-        metric(.cpu, TTFormat.cpuPercent(row.cpu, sign: false), estimated: row.cpuEstimated, width: widths[2])
-        metric(.gpu, TTFormat.cpuPercent(row.gpu, sign: false), width: widths[3])
-        metric(.memory, TTFormat.bytes(row.memory), width: widths[4])
-        metric(.network, TTFormat.rateCell(row.network, units: units), width: widths[5])
-        metric(.disk, TTFormat.diskRateCell(row.disk), width: widths[6])
-        metric(.energy, TTFormat.appWatts(row.energy), estimated: row.energyEstimated, width: widths[7])
+        plain(row.value(.cpu) == nil ? nil : TTFormat.cpuPercent(row.cpu, sign: false), width: widths[2])
+        plain(row.value(.gpu) == nil ? nil : TTFormat.cpuPercent(row.gpu, sign: false), width: widths[3])
+        plain(row.value(.memory) == nil ? nil : TTFormat.bytes(row.memory), width: widths[4])
+        plain(row.value(.network) == nil ? nil : TTFormat.rateCell(row.network, units: units), width: widths[5])
+        plain(row.value(.disk) == nil ? nil : TTFormat.diskRateCell(row.disk), width: widths[6])
+        plain(row.value(.energy) == nil ? nil : TTFormat.appWatts(row.energy), width: widths[7])
+    }
+
+    private func plain(_ text: String?, width: CGFloat) -> some View {
+        Group {
+            if let text, text != TTFormat.unavailable {
+                Text(text)
+            } else {
+                Text(TTFormat.unavailable).foregroundStyle(TTColor.textTertiary)
+            }
+        }
+        .frame(width: width, alignment: .trailing)
+    }
+
+    /// The hovered row's tooltips, laid out like the cells: name/kind, "—" reasons, "Estimated".
+    private func tooltips(_ widths: [CGFloat]) -> some View {
+        HStack(spacing: TTSpace.tableCellGap) {
+            HStack(spacing: 0) {
+                // Keep the disclosure chevron clickable: the name tip starts after its slot.
+                if showsDisclosure { tip(nil, width: 18) }
+                tip(nameTooltip, width: nameWidth - (showsDisclosure ? 18 : 0))
+            }
+            tip(row.rowKind == .process && row.pid == nil ? "Coalition row: no single leader process" : nil,
+                width: widths[0])
+            tip(nil, width: widths[1])
+            tip(cellTip(.cpu, estimated: row.cpuEstimated), width: widths[2])
+            tip(cellTip(.gpu), width: widths[3])
+            tip(cellTip(.memory), width: widths[4])
+            tip(cellTip(.network), width: widths[5])
+            tip(cellTip(.disk), width: widths[6])
+            tip(cellTip(.energy, estimated: row.energyEstimated), width: widths[7])
+        }
+        .padding(.horizontal, TTSpace.tableRowInset)
+    }
+
+    @ViewBuilder private func tip(_ text: String?, width: CGFloat) -> some View {
+        if let text {
+            Color.clear.contentShape(Rectangle()).frame(width: width).help(text)
+                .allowsHitTesting(true)
+        } else {
+            Color.clear.frame(width: width).allowsHitTesting(false)
+        }
+    }
+
+    private func cellTip(_ column: ProcessColumn, estimated: Bool = false) -> String? {
+        row.value(column) == nil ? row.reasons[column] : (estimated ? "Estimated" : nil)
+    }
+
+    private var nameTooltip: String? {
+        switch row.rowKind {
+        case .restrictedSummary: return "Owned by another user; counted in the coalition row"
+        case .app, .process:
+            if row.isExitedResidual { return "Processes that exited since the last sample (estimated)" }
+            if let kind = row.kindLabel, row.depth == 0 { return "\(row.name) · \(kind)" }
+            return row.name
+        }
     }
 
     @ViewBuilder private var nameCell: some View {
@@ -196,7 +251,6 @@ struct ProcessTableRow: View, Equatable {
                 // Aligned with child names: parent name + 28 (tile 20 + gap 8 + 28).
                 Color.clear.frame(width: (showsDisclosure ? 18 : 0) + 56)
                 Text(row.name).font(TTFont.caption).foregroundStyle(TTColor.textTertiary)
-                    .help("Owned by another user; counted in the coalition row")
             }
         } else {
             // DESIGN §2.20/§3.12 name cell (same metrics as `TTNameCell`): disclosure slot 12 + 6, tile 20 (child: 16,
@@ -222,13 +276,11 @@ struct ProcessTableRow: View, Equatable {
                                            short: Self.textWidth(Self.shortKind(kind), size: 11),
                                            available: available)
                     nameAndKind(fit.keepsCount ? kind : Self.shortKind(kind), truncating: fit.truncatesName)
-                        .help("\(row.name) · \(kind)")
                 } else if row.isExitedResidual {
-                    // ICR-13: italic secondary, estimated (values carry the estimated tooltip).
+                    // ICR-13: italic secondary, estimated (the hover tooltip explains).
                     Text(row.name).italic().foregroundStyle(TTColor.textSecondary).lineLimit(1)
-                        .help("Processes that exited since the last sample (estimated)")
                 } else {
-                    Text(row.name).lineLimit(1).truncationMode(.middle).help(row.name)
+                    Text(row.name).lineLimit(1).truncationMode(.middle)
                 }
             }
         }
@@ -258,10 +310,17 @@ struct ProcessTableRow: View, Equatable {
         return (false, name + gap + short > available)
     }
 
-    /// Text width in the system font (body12 names, caption kinds).
+    /// Text width in the system font (body12 names, caption kinds); memoized — names and kinds rarely change.
     static func textWidth(_ s: String, size: CGFloat) -> CGFloat {
-        ceil((s as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: size)]).width)
+        let key = "\(size)|\(s)"
+        if let w = widthCache[key] { return w }
+        if widthCache.count > 4_096 { widthCache.removeAll(keepingCapacity: true) }
+        let w = ceil((s as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: size)]).width)
+        widthCache[key] = w
+        return w
     }
+
+    private static var widthCache: [String: CGFloat] = [:]
 
     /// "App · 7 processes" → "App".
     nonisolated static func shortKind(_ kind: String) -> String {
@@ -270,23 +329,19 @@ struct ProcessTableRow: View, Equatable {
 
     @ViewBuilder private var disclosure: some View {
         if row.hasChildren && row.depth == 0 {
-            Button { onToggle(row.appKey) } label: {
-                TTIcon(.chevronRight, size: 10)
-                    .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
-                    .animation(.easeInOut(duration: 0.15), value: row.isExpanded)
-                    .frame(width: 12, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(row.isExpanded ? "Collapse" : "Expand")
+            // A tap target, not a Button (perf: no button style per row); still an accessible button.
+            TTIcon(.chevronRight, size: 10)
+                .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
+                .animation(.easeInOut(duration: 0.15), value: row.isExpanded)
+                .frame(width: 12, height: 20)
+                .contentShape(Rectangle())
+                .onTapGesture { onToggle(row.appKey) }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(row.isExpanded ? "Collapse" : "Expand")
+                .accessibilityAction { onToggle(row.appKey) }
         } else {
             Color.clear
         }
     }
 
-    private func metric(_ column: ProcessColumn, _ text: String, estimated: Bool = false, width: CGFloat) -> some View {
-        MetricValue(row.value(column) == nil ? nil : text, unavailableReason: row.reasons[column],
-                    estimated: estimated, font: TTFont.body12)
-            .frame(width: width, alignment: .trailing)
-    }
 }
