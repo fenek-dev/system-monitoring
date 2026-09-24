@@ -189,7 +189,7 @@ Swift: `extension Font { enum tt { static let stat = Font.system(size: 20, weigh
 
 Swift: `enum TT { enum Space { static let x2: CGFloat = 2 … } enum Radius { … } enum Stroke { … } }`
 
-**Spacing scale** (every gap and padding in the design falls on it): `x1 1`, `x2 2`, `x3 3`, `x4 4`, `x6 6`, `x7 7`, `x8 8`, `x9 9`, `x10 10`, `x12 12`, `x14 14`, `x16 16`, `x18 18`, `x20 20`, `x24 24`, `x32 32`.
+**Spacing scale** (every gap and padding in the design falls on it): `x1 1`, `x2 2`, `x3 3`, `x4 4`, `x5 5`, `x6 6`, `x7 7`, `x8 8`, `x9 9`, `x10 10`, `x12 12`, `x14 14`, `x16 16`, `x18 18`, `x20 20`, `x21 21`, `x24 24`, `x32 32`. (`x5` is the media-engine row gap; `x21` is the History lane value indent.)
 
 Semantic aliases:
 
@@ -223,7 +223,7 @@ Semantic aliases:
 
 Dots: 7×7 status dot radius 3.5 (the design says 4, which is the same thing: a circle).
 
-**Strokes**: `hairline 1` (all borders and dividers), `icon 1.5` (all 16-grid icons), `iconFan 1.4`, `sparkThin 1.25`, `spark 1.5`, `sparkHeavy 1.75`, `cursor 1.5` (History scrub line), `gauge 7` (fan gauge), `glyph 2.2` (status icon, viewBox units), `batteryOutline 2`.
+**Strokes**: `hairline 1` (all borders and dividers), `icon 1.5` (all 16-grid icons), `iconFan 1.4` (fan glyph inside the gauge only), `sparkThin 1.25`, `spark 1.5`, `sparkHeavy 1.75`, `cursor 1.5` (History scrub line), `gauge 7` (fan gauge), `glyph 2.2` (status icon, viewBox units), `batteryOutline 2`.
 
 **Shadows**
 
@@ -232,7 +232,7 @@ Dots: 7×7 status dot radius 3.5 (the design says 4, which is the same thing: a 
 | `shadowPopover` | y 18, blur 50, black @ 0.60 (SwiftUI `radius` = 25) |
 | `shadowDialog` | y 24, blur 60, black @ 0.55 (`radius` = 30) |
 
-**Opacity levels**: `0.025` zebra, `0.06` track, `0.07` card border and field, `0.08` separator, `0.10` button, `0.12` stressed row, `0.14` banner and band, `0.18` segment on, `0.22` sparkline fill, `0.28` inactive thermal segment and row selection, `0.35` banner border and purgeable, `0.40` disabled (ADDED), `0.45` scrim, `0.50` swatch, `0.85` cursor.
+**Opacity levels**: `0.025` zebra, `0.05` hover (ADDED), `0.06` track, `0.07` card border and field, `0.08` separator, `0.10` button, `0.12` stressed row, `0.14` banner and band, `0.18` segment on, `0.22` sparkline fill, `0.28` inactive thermal segment and row selection, `0.35` banner border and purgeable, `0.40` disabled (ADDED), `0.45` scrim, `0.50` swatch, `0.85` cursor.
 
 ### 1.4 Icons
 
@@ -258,7 +258,7 @@ All icons sit on a 16×16 grid with stroke 1.5, round caps, round joins and no f
 | `ellipsis` | circles r 0.9 at (3.5,8), (8,8), (12.5,8) | `textSecondary` |
 | `search` | circle (7,7) r4.5; `M10.5 10.5L14 14` | `textSecondary` |
 | `battery` | rect (1.5,4.5,11.5,7) rx 1.5; `M14.5 7v2` | `battery` |
-| `fan` | circle (8,8) r1.5; `M8 6.5C8 3 10.5 2 12 3.5M9.5 8c3.5 0 4.5 2.5 3 4M8 9.5c0 3.5-2.5 4.5-4 3M6.5 8C3 8 2 5.5 3.5 4`, stroke 1.4 | `textSecondary` (gauge) / `thermal` (card header) |
+| `fan` | circle (8,8) r1.5; `M8 6.5C8 3 10.5 2 12 3.5M9.5 8c3.5 0 4.5 2.5 3 4M8 9.5c0 3.5-2.5 4.5-4 3M6.5 8C3 8 2 5.5 3.5 4` | `thermal`, stroke 1.5 (Fans card header, 16 pt) / `textSecondary`, stroke 1.4 (inside the gauge, 18 pt) |
 | `eject` | `M8 3L3 9h10z`; `M3 12.5h10` | `textSecondary` |
 | `quit` (ADDED) | `M8 2v5.5`; `M4.4 4.2a5 5 0 1 0 7.2 0` | `textSecondary` |
 | `dragHandle` (ADDED) | `M4 5.5h8M4 8h8M4 10.5h8` | `textTertiary` |
@@ -333,7 +333,7 @@ The "Artboards" column refers to: MB = MenuBar, MBA = MenuBarAlert, SI = StatusI
 - Artboard: CPU.
 
 ### 2.7 Stacked area chart (`TTStackedArea`)
-- Draw cumulative areas from the largest sum down to the smallest: `pw4 = CPU+GPU+ANE+DRAM` (dram color), `pw3 = CPU+GPU+ANE` (ane), `pw2 = CPU+GPU` (gpu), `pw1 = CPU` (cpu). Each layer is filled over the full height from the baseline, so the layers overlap and are not banded.
+- Draw cumulative areas from the largest sum down to the smallest: `pw4 = CPU+GPU+ANE+DRAM` (dram color), `pw3 = CPU+GPU+ANE` (power), `pw2 = CPU+GPU` (gpu), `pw1 = CPU` (cpu). Each layer is filled over the full height from the baseline, so the layers overlap and are not banded.
 - The CPU Usage chart works the same way: `usr+sys` in `cpuAlt` @ 0.35, then `usr` in `cpu` @ 0.55, then an outline of `usr+sys` in `cpuLine` 1.25 @ 0.9.
 - A legend sits in the card header. There are no axes.
 - Artboards: CPU (988×110, meaning full width), PWR (fill×160, y-max 30 W, or auto; see §5.10).
@@ -376,8 +376,9 @@ The "Artboards" column refers to: MB = MenuBar, MBA = MenuBarAlert, SI = StatusI
   - off: transparent bg, `textSecondary`
   - hover (ADDED): off segments get `fillHover`
 - The segment switches instantly, with no slide animation.
-- The same component is used for Sort by, Apps/Processes (ADDED), the treemap metric (ADDED), and Settings units (ADDED).
-- Ranges (CHANGED per ruling): category pages and Overview show `Live 1H 24H 7D 30D`. History shows `1H 24H 7D 30D`, as designed, with 24H selected by default. On every page, Live is the default.
+- The same component is used for Sort by, Apps/Processes (ADDED), and Settings units (ADDED).
+- **Compact variant** (ADDED; used for the App detail range and the treemap metric): container padding 2, gap 2, radius 6, total height 24. Segment height 20, horizontal padding 8, radius 4, font `captionMedium` (11/500). Colors and states are the same as the regular variant.
+- Ranges (CHANGED per ruling): every page, History included, shows `Live 1H 24H 7D 30D`. The design omitted Live on History and 30D elsewhere. The default is Live on Overview and the category pages, and 24H on History.
 
 ### 2.14 Buttons
 
@@ -449,6 +450,7 @@ States (ADDED, the design shows only rest):
   - hover (ADDED): `fillHover` overlays the zebra.
   - selected: `rowSelected`.
   - In the CPU and Power tables, a selected user-owned row replaces `…` with an HStack gap 6 of [Quit (small secondary)] [Force Quit (small destructive)]. Force Quit always confirms (§3.12).
+  - Alignment in the 170-wide actions column: the inline [Quit][Force Quit] pair is **leading-aligned**; the `…` button on unselected rows is **trailing-aligned**.
 - Context menu (ADDED): right-click any row, or click `…`, to open the row actions menu (§2.25).
 - Sorting: on Processes, via the Sort-by control. Other tables are fixed-sorted by their headline metric, descending.
 - Empty state (ADDED): §3.15.
@@ -489,7 +491,7 @@ States (ADDED, the design shows only rest):
 - Artboard: MBA.
 
 ### 2.24 Status glyph (`TTStatusGlyph`)
-- See §4. It appears in the menu bar (18-pt template canvas) and in the popover header at 20 pt, where it uses the same state coloring as the menu bar.
+- See §4. It appears in the menu bar (18-pt canvas, glyph scaled 8/9) and in the popover header. The header glyph is the 18-unit viewBox drawn into a 20×20 frame (scale 20/18, **no** 8/9 factor: r 7.11, stroke 2.44), with the same state coloring as the menu bar.
 
 ### 2.25 Row actions menu (ADDED)
 - A native `NSMenu` (dark), opened by right-clicking a row, clicking `…`, or clicking `…` in the inspector. Items:
@@ -516,13 +518,27 @@ States (ADDED, the design shows only rest):
 - No focus ring; the caret is `accent`. Filtering is live and case-insensitive over name, bundle ID and PID.
 
 ### 2.28 Treemap (ADDED; see §3.13)
-- A squarified layout, sorted descending. Tile gap 2, radius 4.
-- Fill is the selected metric's category color @ 0.28. Hover raises it to @ 0.45. The app that matches "Top process" gets a 1.5-pt inner stroke in the category color.
-- Label, inset 8, top-left:
+- **Algorithm**: squarified treemap (Bruls, Huizing & van Wijk 2000). Sort the items descending by value, then lay out rows greedily along the shorter side of the remaining rectangle. Add an item to the current row while doing so moves the row's worst aspect ratio closer to 1; otherwise close the row. Values are normalized to the container area.
+- **"Other"** aggregates apps under 2% share. It is always laid out **last**, so it lands in the bottom-right corner: run the algorithm on the named apps over the container minus Other's area, then place Other as the final strip. It is omitted when empty.
+- **Gutter**: 2 pt between tiles. Implement it by insetting every computed tile rect by 1 pt on each side. The outer container edge therefore also has a 1-pt inset. Tile radius 4.
+- **Fill**: the category color of the selected metric at @ 0.28. Hover raises it to @ 0.45.
+
+| Metric | Color token |
+|---|---|
+| CPU | `cpu` |
+| GPU | `gpu` |
+| Memory | `mem` |
+| Network | `net` |
+| Disk | `disk` |
+| Energy | `power` |
+
+- The app that matches "Top process" gets a 1.5-pt inner stroke in the same color.
+- **Label**, inset 8, top-left:
   - name `body12Strong` in `textPrimary`, tail truncation
   - value `caption` in `textSecondary` (for example "38% CPU")
   - The name is hidden if the tile is smaller than 60×28; the value is hidden if the tile is under 40 tall.
-- An "Other" tile aggregates apps under 2% share: `fillTrack` bg, label "Other · {n} apps".
+- The "Other" tile uses `fillTrack` (no category color) and the label "Other · {n} apps" in `caption` `textSecondary`, with no value line. It is not clickable.
+- **Animation**: live updates (cursor at now, or the Live range) animate tile frames with `.easeInOut(duration: 0.25)`. The same applies to a metric change. While the user scrubs (slider or lane drag in progress), tiles update with **no animation**.
 - Tooltip: "{name} · {value} · {share}%".
 - Click: opens Processes with the app selected and its detail expanded.
 
@@ -560,7 +576,7 @@ States (ADDED, the design shows only rest):
 3. Flex spacer.
 4. Device footer: 1-pt top `separator`, padding 12 top, 10 horizontal, 4 bottom, VStack gap 3:
    - `body12Strong`: model name, e.g. "MacBook Pro 14″" (`sysctl hw.model` mapped through a static model-name table)
-   - `caption` `textSecondary`: "{chip} · {P}P + {E}E CPU · {n}-core GPU" (`machdep.cpu.brand_string`, `hw.perflevel0/1.physicalcpu`, and the GPU core count from IORegistry `AGXAccelerator` `gpu-core-count`)
+   - `caption` `textSecondary`: "{chip} · {P}P + {E}E CPU · {n}-core GPU", e.g. "M4 Pro · 8P + 4E CPU · 16-core GPU". `{chip}` is `machdep.cpu.brand_string` with the leading "Apple " stripped; page-header subtitles keep the full "Apple M4 Pro". Other sources: `hw.perflevel0/1.physicalcpu`, and the GPU core count from IORegistry `AGXAccelerator` `gpu-core-count`)
    - `caption` `textSecondary`: "{RAM} GB unified memory · up {uptime}" (`hw.memsize`, `kern.boottime`)
 
 **Page header**: height 52, bg `bgHeader`, 1-pt bottom `edgeHeader`, padding 0 16 0 20, HStack gap 10, center-aligned.
@@ -573,8 +589,12 @@ States (ADDED, the design shows only rest):
 - `grid3`: 3 columns of `1fr`, gap 12, which gives 332 per column; `span 2` is 676. Chart widths inside: span-2 card ≈ 642, one-column card ≈ 298.
 - `grid5`: 5 × `1fr`, gap 12, about 194 each.
 - A typical page is a stat strip (about 82), `grid3` row(s), and a bottom table card with flex height.
+- **Height rule**: every card and row height in §3 is a **minimum** (`.frame(minHeight:)`), never a fixed frame. The heights were recomputed from content using line height ≈ 1.2 × font size, padding 16 + 16 and 1 + 1 of border.
+  - A `grid3` row is as tall as its tallest cell, and every card in the row stretches to that height.
+  - Inside a stretched card, the **chart is the flex child**. It takes the extra height; text blocks never stretch.
+  - The bottom table card takes whatever remains and scrolls its rows, so it shows fewer rows when the rows above grow.
 
-**Range behavior**: Live means the last 60 s at 1-s samples. 1H, 24H, 7D and 30D read from the store (§5.10 lists the display buckets). Titles like "Last 60 seconds" follow the range ("Last hour", "Last 24 hours", "Last 7 days", "Last 30 days"). Tables always show live values; ranges only affect charts.
+**Range behavior**: Live means the last 60 s at 1-s samples. On History, Live also pins the cursor to now (§3.13). 1H, 24H, 7D and 30D read from the store (§5.10 lists the display buckets). Titles like "Last 60 seconds" follow the range ("Last hour", "Last 24 hours", "Last 7 days", "Last 30 days"). Tables always show live values; ranges only affect charts.
 
 ---
 
@@ -599,7 +619,7 @@ Elements, top to bottom:
 | 6 | Thermals row | sub "Nominal · 2,140 rpm"; sparkline 0–100 °C; value `62°C` | `ProcessInfo.thermalState` title-cased; average of fan RPM (SMC `F0Ac…`); SoC average from HID temperature sensors. No fans gives "Nominal · no fans" |
 | 7 | Divider | 1 pt `separator`, margin 4 vertical, 10 horizontal | |
 | 8 | Power row (compact) | icon `power`; "Power"; detail "82% · 5 h 40 m left"; value `18.6 W` | IOPowerSources percent and time remaining. Package W from IOReport Energy Model (CPU+GPU+ANE+DRAM+other). No battery gives detail "AC power" |
-| 9 | Disk row (compact) | icon `disk`; "Disk"; detail "R 142 · W 38.0 MB/s"; value `382 GB` | IOBlockStorageDriver `Statistics` deltas; free = `volumeAvailableCapacityForImportantUsage` of "/" |
+| 9 | Disk row (compact) | icon `disk`; "Disk"; detail "R 142 · W 38.0 MB/s" (CHANGED from the design's "W 38 MB/s" by the §5.4 rate rule); value `382 GB` | IOBlockStorageDriver `Statistics` deltas; free = `volumeAvailableCapacityForImportantUsage` of "/" |
 | 10 | Divider | as #7 | |
 | 11 | Top consumer | HStack gap 10, padding 8×10: tile 26; VStack flex of "Top consumer" `caption` `textSecondary`, name `body13`, detail `caption` `textSecondary` "212% CPU · 3.8 GB"; small secondary "Quit" | App group with the highest CPU (libsysmon, grouped by responsible PID). Quit is disabled for non-user-owned apps |
 | 12 | Divider | as #7 | |
@@ -656,8 +676,8 @@ Layout (768 tall):
 | Row | Height | Grid |
 |---|---|---|
 | Metric tiles | 168 | `grid5` |
-| Timeline + side cards | 256 | `grid3`: timeline span 2; right column VStack gap 12 of Power (122) and Disk (122) |
-| Top processes | flex (≈320) | full width |
+| Timeline + side cards | min 276 | `grid3`: timeline span 2; right column VStack gap 12 of Power (min 134) and Disk (min 120, flex: takes the rest, ≈130) |
+| Top processes | flex (≈300) | full width |
 
 Elements:
 
@@ -673,21 +693,21 @@ Elements:
 
    Clicking a tile navigates to its page.
 
-2. **"Last 60 seconds" card**: card gap 12, height 256.
+2. **"Last 60 seconds" card**: card gap 12, min height 276. The design said 256; the content needs 34 + 20 + 12 + 186 (5 rows × 34 + 4 × 4) + 12 + 12 = 276. Rows keep 34; any extra height goes below the axis.
    - Header: title (it follows the range) and the link "Open History", which navigates to History.
    - 5 × `TTTimelineRow` (gap 4), for CPU, GPU, Memory, Network, Thermals. Values match the tiles; Network shows the ↓ rate.
    - Axis inset 96.
 
-3. **Power card**: gap 10, height 122.
+3. **Power card**: gap 10, min height 134 (the design said 122; content = 34 + 20 + 10 + 29 + 10 + 8 + 10 + 13).
    - Header: `power` icon, "Power", link "Details" (to Power).
    - An HStack with bottom alignment and space-between:
      - left: `title1` "18.6" + `title1Unit` " W package"
-     - right: `caption` `textSecondary` HStack gap 6 of the `battery` glyph and "82% · 5 h 40 m left"
+     - right: `body12` `textSecondary` HStack gap 6 of the `battery` glyph and "82% · 5 h 40 m left"
    - Split bar (§2.16).
    - Legend with values: "CPU 10.8 W", "GPU 4.1 W", "ANE 0.2 W", "DRAM 1.6 W".
    - Binding: IOReport Energy Model channels.
 
-4. **Disk card**: gap 10, height 122.
+4. **Disk card**: gap 10, min height 120. It flexes to fill the column; extra height goes below the stats line.
    - Header: `disk` icon, "Disk", link "Details".
    - A space-between row in `body12`: "Macintosh HD" and "612 of 994 GB used" (`textSecondary`).
    - Medium bar, used fraction, in `disk`.
@@ -697,8 +717,8 @@ Elements:
    - Header: "Top processes", link "All processes".
    - Table template: `minmax(0,2.2fr) 1fr 1fr 1fr 1fr 1fr 28`.
    - Headers: Process | CPU | GPU | Memory | Network | Energy impact | (actions).
-   - The rows are **app groups** (Apps mode), sorted by CPU descending. Show as many as fit (5 at the default size).
-   - Cells: `212.4%`, `0.4%`, `3.82 GB`, `—` or `0.1 MB/s`, energy.
+   - The rows are **app groups** (Apps mode, grouping rules in §3.12), sorted by CPU descending. Show as many as fit (≈4 at the default size).
+   - Cells: `212.4%`, `0.4%`, `3.82 GB`, `—` or `100 KB/s` (CHANGED from the design's "0.1 MB/s" by §5.4), energy.
    - CHANGED: the energy cell shows average watts ("4.82 W"; §5.6) instead of the Energy Impact score.
    - Row click selects; double-click opens Processes with the app selected.
 
@@ -709,9 +729,9 @@ Header: h1 "CPU". Sub: "{chip} · {n} cores ({p} performance + {e} efficiency)".
 | Row | Height | Grid |
 |---|---|---|
 | Stat strip (6) | ≈82 | 6 × 1fr |
-| Cores | 228 | `grid3`: P-cores span 2, E-cores 1 |
-| Usage | 192 | full width |
-| Top CPU consumers | flex (≈230) | full |
+| Cores | min 236 | `grid3`: P-cores span 2, E-cores 1 |
+| Usage | min 196 | full width |
+| Top CPU consumers | flex (≈218, about 3 rows visible; scrolls) | full |
 
 1. **Stat strip**:
 
@@ -724,19 +744,19 @@ Header: h1 "CPU". Sub: "{chip} · {n} cores ({p} performance + {e} efficiency)".
 | Load average | `3.21 · 2.88 · 2.54` | "1 · 5 · 15 min" | `getloadavg` |
 | Threads | `3,104` | "in 612 processes" | libsysmon thread counts / `proc_listallpids` |
 
-2. **Performance cores card**: gap 12.
+2. **Performance cores card**: gap 12, min height 236. The design said 228; content = 34 + 22 (header with a 22-tall badge) + 12 + 143 (bar column: 14 + 6 + 104 + 6 + 13) + 12 + 13. The bar track stays 104; extra height goes below the footer.
    - Header: "Performance cores" plus badge "8 cores" with a `cpu` dot.
    - `TTCoreBars` with 8 columns (per-core % from `host_processor_info`). Map core IDs to clusters with `hw.perflevel0/1.logicalcpu`: on Apple Silicon the E-cores come first in logical order, so confirm this in the M0 spike.
    - Footer: "4.12 GHz of 4.51 GHz" (current P-cluster frequency of the maximum DVFS state, from IORegistry `pmgr` voltage-states), "Active residency 58%" (IOReport cluster residency), "Cluster power 8.9 W" (IOReport energy per cluster; "—" if absent).
 3. **Efficiency cores card**: the same, with badge "4 cores" and a `cpuAlt` dot, 4 columns, and footer "2.59 GHz of 2.89 GHz", "Active residency 29%". CHANGED: the design's label "Residency" is unified to "Active residency".
-4. **Usage card**: gap 10, height 192.
+4. **Usage card**: gap 10, min height 196. The design said 192; content = 34 + 20 + 10 + 110 + 10 + 12.
    - Header: "Usage" and legend [User `cpu`] [System `cpuAlt`].
-   - `TTStackedArea` (full width × 110), then the axis.
+   - `TTStackedArea` (full width × 110, the flex child), then the axis.
 5. **Top CPU consumers**: gap 8.
    - Header: title and link "All processes".
    - Template: `minmax(0,2fr) 70 110 80 90 70 170`.
    - Headers: Process | PID (right) | User (left) | % CPU (right) | CPU time (right) | Threads (right) | (actions).
-   - Rows are individual **processes**, 4 visible.
+   - Rows are individual **processes**, sorted by % CPU. As many as fit are shown; the rest scroll.
    - Cells: `1842`, `arthur` (`textSecondary`), `212.4`, `2:41:07`, `86`.
    - A selected row shows inline [Quit] [Force Quit].
 
@@ -747,8 +767,8 @@ Header: h1 "GPU". Sub: "{chip} · {n}-core GPU · {n}-core Neural Engine". The A
 | Row | Height | Grid |
 |---|---|---|
 | Stat strip (5) | ≈82 | 5 × 1fr |
-| Charts | 250 | `grid3`: Utilization span 2; right column VStack gap 12 of ANE (119) and Media engines (119) |
-| GPU clients | flex (≈414) | full |
+| Charts | min 293 with Media engines (ANE 138 + 12 + Media 143); min 250 without | `grid3`: Utilization span 2; right column VStack gap 12 of ANE and Media engines |
+| GPU clients | flex (≈369 with Media, ≈412 without) | full |
 
 1. **Stat strip**:
    - Utilization: `18%` in `gpu`, sub "active residency" (IOReport GPU Stats)
@@ -756,22 +776,22 @@ Header: h1 "GPU". Sub: "{chip} · {n}-core GPU · {n}-core Neural Engine". The A
    - GPU power: `3.4 W` (IOReport)
    - GPU memory: `3.1 GB`, sub "allocated from unified memory" (IOAccelerator "In use system memory"; "—" with tooltip if absent). This is system-level, so it is kept.
    - Cores: `16`
-2. **Utilization & frequency card**: gap 10, height 250.
+2. **Utilization & frequency card**: gap 10, stretches to the row height (content minimum 246).
    - Header legend: [Utilization `gpu`] [Frequency `gpuAlt`].
-   - `TTDualChart` (fill × 160), then the axis.
-3. **Neural Engine card**: gap 6, height 119. CHANGED per ruling: watts only.
+   - `TTDualChart`, then the axis. The chart is the flex child: at least 160 tall, about 207 when the row is 293.
+3. **Neural Engine card**: gap 6, min height 138 (the design said 119; content = 34 + 22 + 6 + 26 + 6 + 44). CHANGED per ruling: watts only.
    - Header: "Neural Engine" plus badge "16 cores" with a `power` dot.
    - HStack with baseline alignment and space-between:
      - `title2` "0.2 W" (ANE power from IOReport)
      - right side, `body12` `textSecondary`: "idle" when under 0.05 W, otherwise "active"
    - REMOVED: the "{aneNow}%" value.
    - Sparkline (fill × 44) of ANE watts, auto scale (§5.10), in `power`.
-4. **Media engines card**: padding 14, gap 7, height 119. Kept **only if IOReport exposes media-engine residency**.
+4. **Media engines card**: padding 14, gap 7, min height 143 (the design said 119; content = 30 + 20 + 3 × (7 + 24)). Kept **only if IOReport exposes media-engine residency**.
    - Header "Media engines".
    - 3 rows, each a VStack gap 5: a space-between line in `body12` (name, then value in `textSecondary`), then a thin bar in `gpu`.
    - Rows: "Video encode", "Video decode", "ProRes engine". Values: `22%` or "idle" when 0.
    - REMOVED: the codec suffix "· HEVC" (no source).
-   - If media-engine data is unavailable, **REMOVE the card**; the ANE card then fills the right column (250 tall, sparkline 175 tall).
+   - If media-engine data is unavailable, **REMOVE the card**; the ANE card then fills the right column. The row is 250 tall and the sparkline flexes to 250 − 94 = 156.
 5. **GPU clients**:
    - Header: title and link "All processes".
    - CHANGED template: `minmax(0,2fr) 80 90 28`.
@@ -803,18 +823,18 @@ Header: h1 "Memory". Sub: "24 GB unified memory · LPDDR5X · 273 GB/s". RAM com
    - Order: App memory, Wired, Compressed, Cached files, Free.
 3. **Memory pressure card**: gap 10, height 240.
    - Legend: [Normal `mem`] [Warning `statusElevated`] [Critical `statusCritical`]. CHANGED copy: "Warning ≥ 60%" / "Critical ≥ 80%" become "Warning" / "Critical", because the color follows the OS level rather than fixed % thresholds.
-   - Area chart 0–100 (fill × 150). Color each sample span by the OS pressure level at that sample (line and fill switch color at the level change).
+   - Area chart 0–100 (fill × 150, the flex child). Color by the OS pressure level: the span from sample *i* to *i+1* takes the level of sample *i*. The color therefore changes exactly at the first sample reporting the new level. Line and fill switch together, with no gradient or blending across the change.
    - Axis.
 4. **Swap card**: gap 8, height 240.
    - Header: "Swap", then trailing `title2` "1.20 GB" + `title2Unit` " of 2.00 GB".
    - Sparkline (fill × 50), domain 0–allocated, in `memCompressed`.
    - Key-value list: "Swap-ins" `0 / s`; "Swap-outs" `0 / s`; "Swap files" `2` (count of `/System/Volumes/VM/swapfile*`).
 5. **Top memory consumers**:
-   - Template: `minmax(0,2fr) 90 100 90 70 28`.
-   - Headers: Process | Memory | Compressed | Private | Ports | (actions).
-   - Rows are app groups, 4 visible.
-   - Memory is the phys footprint (`proc_pid_rusage` `ri_phys_footprint`).
-   - **Compressed, Private and Ports are shown only if libsysmon provides them** (ruling). If it does not, REMOVE those columns and use the template `minmax(0,2fr) 90 28`. Do not show "—" columns.
+   - CHANGED template: `minmax(0,2fr) 90 28`.
+   - Headers: Process | Memory | (actions).
+   - REMOVED unconditionally (architecture ruling): the Compressed, Private and Ports columns.
+   - Rows are app groups sorted by memory; as many as fit, and the rest scroll.
+   - Memory is the phys footprint (`proc_pid_rusage` `ri_phys_footprint`). Coalition-only root rows show "—" (§3.12).
 
 ### 3.8 Network
 
@@ -875,7 +895,7 @@ Header: h1 "Thermals". Sub: "SoC sensors, fans and macOS thermal pressure".
    - Series: P-core average, GPU average, battery (IOHID sensors, grouped per SPEC).
    - Axis inset 34.
 4. **Fans card**: gap 12, height 244.
-   - Header: `fan` icon in `thermal`, then "Fans".
+   - Header: `fan` icon 16 in `thermal`, stroke 1.5, then "Fans".
    - One `TTFanGauge` row per fan (HStack gap 14), labeled "Left fan" / "Right fan" (or "Fan" when there is one). Max comes from SMC `F{n}Mx`.
    - REMOVED: the Fan mode group [Automatic] [Full speed] (fans are read-only).
    - No fans: the card body shows the centered empty state "This Mac has no fans" (§3.15).
@@ -898,8 +918,8 @@ Header: h1 "Power & Battery". Sub: "On battery · 72.4 Wh · Low Power Mode off"
 | Row | Height | Grid |
 |---|---|---|
 | Stat strip (6) | ≈82 | 6 × 1fr |
-| Charts | 262 | `grid3`: Power by component span 2; Battery 1 |
-| Energy impact | flex (≈402) | full |
+| Charts | min 285 | `grid3`: Power by component span 2; Battery 1 |
+| Energy impact | flex (≈377) | full |
 
 1. **Stat strip**:
    - Package: `18.6 W` in `power`, sub "SoC total"
@@ -908,10 +928,10 @@ Header: h1 "Power & Battery". Sub: "On battery · 72.4 Wh · Low Power Mode off"
    - Neural Engine: `0.2 W`
    - DRAM: `1.6 W`
    - Battery drain: `−18.9 W`, sub "system total" (AppleSmartBattery `InstantAmperage` × `Voltage`; on the adapter it shows `+{W} W` charging or `0.0 W`)
-2. **Power by component card**: gap 10, height 262.
+2. **Power by component card**: gap 10, stretches to the row height (285).
    - Legend: CPU, GPU, ANE, DRAM.
-   - `TTStackedArea` fill × 160, then the axis.
-3. **Battery card**: gap 8, height 262.
+   - `TTStackedArea`, then the axis. The chart is the flex child: at least 160 tall, about 199 at a row height of 285.
+3. **Battery card**: gap 8, min height 285. The design said 262; content = 34 + 20 + 8 + 42 (title1 29 + caption 13) + 8 + 173 (6 key-value rows × 28 + 5 rules).
    - Header: `battery` icon, then "Battery".
    - HStack gap 14:
      - large battery glyph: 84×38, radius 9, 2-pt border white @ 0.4, padding 3; inner fill radius 5 in `battery`, width = charge %. The fill turns `statusElevated` at ≤ 20% and `statusCritical` at ≤ 10% (ADDED).
@@ -928,7 +948,10 @@ Header: h1 "Power & Battery". Sub: "On battery · 72.4 Wh · Low Power Mode off"
    - Header: title and link "All processes".
    - CHANGED template: `minmax(0,2fr) 110 100 120 170`.
    - Headers: Process | Energy impact (right) | 12 h average (right) | Preventing sleep (left) | (actions).
-   - Values are **average watts** from `ri_billed_energy` deltas: "7.15 W" for now, and the 12 h average from the store.
+   - Rows are **app groups**, expandable into their processes exactly as in Processes Apps mode (§3.12: disclosure slot, 30-pt child rows).
+   - Values are **average watts**: per-process `ri_energy_nj` deltas (`proc_pid_rusage` `RUSAGE_INFO_V6`) divided by wall time, summed per app. Root processes add their coalition residual.
+   - Values that include a coalition residual or an estimate carry a `.help("Estimated")` tooltip and are otherwise styled the same.
+   - Examples: "7.15 W" now, and the 12 h average from the store.
    - REMOVED: the App Nap column.
    - Preventing sleep: "Yes" in `statusElevated` or "No" in `textSecondary` (`IOPMCopyAssertionsByProcess`).
    - A selected row shows inline [Quit] [Force Quit].
@@ -941,8 +964,8 @@ Header: h1 "Disk". Sub: "Apple SSD · 1 TB · PCIe" (IORegistry NVMe controller 
 |---|---|---|
 | Stat strip (4) | ≈82 | 4 × 1fr |
 | Volumes | intrinsic ≈131 | full |
-| Charts | 236 | `grid3`: Throughput span 2; SSD health 1 |
-| Disk activity by process | flex (≈285) | full |
+| Charts | min 247 | `grid3`: Throughput span 2; SSD health 1 |
+| Disk activity by process | flex (≈274) | full |
 
 1. **Stat strip**:
    - Read: `142 MB/s` in `disk`, sub "3.4k IOPS"
@@ -955,10 +978,10 @@ Header: h1 "Disk". Sub: "Apple SSD · 1 TB · PCIe" (IORegistry NVMe controller 
      - Volume bar: used, then purgeable.
    - Legend: [Used] [Purgeable].
    - Show up to 2 volumes; beyond 2, the grid wraps to more rows. Eject calls `NSWorkspace.unmountAndEjectDevice`.
-3. **Throughput card**: gap 10, height 236.
+3. **Throughput card**: gap 10, min height 247. The design said 236; content = 34 + 20 + 10 + 161 (80 + 1 + 80) + 10 + 12.
    - Legend: [Read `disk`] [Write `diskWrite`] [scale {N} MB/s].
-   - `TTMirroredChart` 2 × 80 with a shared scale, then the axis.
-4. **SSD health card**: gap 6, height 236.
+   - `TTMirroredChart` 2 × 80 with a shared scale (the halves are the flex children and split any extra height equally), then the axis.
+4. **SSD health card**: gap 6, stretches to the row height (content 235).
    - Header: "SSD health" plus a badge "Healthy" (`statusCalm`), "Worn" (`statusElevated`, percentage used ≥ 80), or "Failing" (`statusCritical`, SMART critical warning ≠ 0).
    - Key-value list: Percentage used `2%`; Data written `48.2 TB`; Data read `61.7 TB`; Temperature `41°C`; Power-on hours `3,412`; Unsafe shutdowns `3`.
    - Per ruling: only what the NVMe SMART IOKit plugin gives without root. If SMART is unavailable, the list collapses to one row "Status: Verified" (from DiskArbitration/IOKit `SMART Status`), and the badge reflects that status only.
@@ -988,10 +1011,18 @@ Layout: a list card (flex) above the inspector card. The two are separated by a 
    - Name cell: in Apps mode (ADDED), a 12-wide disclosure slot with `chevronRight` 10 (rotated 90° when expanded, `.easeInOut(0.15)`), then a gap of 6. Then tile 20, the name (tail truncation), and the kind label in `caption` `textTertiary` ("App", "System", "Background"). In Apps mode the kind label becomes "App · 7 processes".
    - PID: responsible PID for an app group.
    - User: `textSecondary`.
-   - `212.4` (CPU, no % sign because the header has one), `9.2`, `3.82 GB`, `0.1 MB/s` or `—`, `22.4 MB/s` or `—`, and energy as "7.15 W" (CHANGED from the score).
+   - `212.4` (CPU, no % sign because the header has one), `9.2`, `3.82 GB`, `100 KB/s` (CHANGED from the design's "0.1 MB/s", §5.4) or `—`, `22.4 MB/s` or `—`, and energy as "7.15 W" (CHANGED from the score; §5.6).
    - Group values are sums over the child processes.
-4. **App grouping** (ADDED):
-   - Apps are grouped by responsible PID (fallback: bundle path). Daemons without an app are grouped under a single "System" group with kind "System".
+4. **App grouping** (ADDED). Rows are formed in this order:
+   1. **App group**: every process whose responsible PID (`responsibility_get_pid_responsible_for_pid`) resolves to an app bundle joins that app's group. The group is named by the app. For example, `com.docker.backend` groups under **Docker Desktop** and is not its own row. Fallback: the bundle path of the executable.
+   2. **Standalone daemon**: a process with no bundle that is responsible for itself becomes **its own group**, named by its process name. For example, `WindowServer` and `mds_stores` stay single rows with kind "System" or "Background".
+   3. **Coalition row**: an unattributable root process (no readable responsible PID or path without root) that belongs to a coalition becomes a row with provenance `.coalition`, named by the coalition leader's `p_comm` and with kind "System".
+      - Its CPU and energy come from the coalition's resource usage (energy is marked "estimated", §3.10).
+      - Its Memory cell shows "—" with the tooltip "Requires root · updated when Processes is open". This holds until the `ps` RSS fallback (run only while Processes is visible) delivers a value; the cell then shows that value.
+      - PID and User show the leader's PID and "root".
+   4. **"System"**: anything left over (no responsible PID, no coalition) is summed into one "System" row.
+   - The design's sample rows (Xcode, Final Cut Pro, Safari, WindowServer, com.docker.backend) mix rules 1 and 2. They were illustrative; under these rules the Docker row reads "Docker Desktop".
+   - This Apps-mode expansion is what satisfies SPEC's per-app "process list". The App detail does not repeat it.
    - Expanding a group inserts child rows, 30 tall:
      - disclosure slot empty
      - 16-pt tile, indented so the child name starts 28 right of the parent name
@@ -1025,13 +1056,13 @@ Layout: a list card (flex) above the inspector card. The two are separated by a 
    - For non-owned processes, Quit and Force Quit are disabled (opacity 0.4) with the tooltip "Owned by {user}".
 
 **Inspector expanded: App detail** (ADDED per ruling):
-- The card grows to about 380 tall with `.easeInOut(0.2)`, and the list card shrinks (at least 5 rows stay visible).
-- Below the collapsed content: a 1-pt `separator` with 16 above and 16 below, then a body 266 tall laid out as `grid` 2 × 1fr with gap 24.
+- The card grows to min 391 tall (78 + 33 + 280) with `.easeInOut(0.2)`. The list card shrinks; about 7 rows stay visible at the default size, never fewer than 5.
+- Below the collapsed content: a 1-pt `separator` with 16 above and 16 below, then a body of **min 280** laid out as `grid` 2 × 1fr with gap 24. The left column needs 24 + 10 + 224 + 10 + 12 = 280. The connections table is the flex child.
 - **Left, Activity**:
-  - `TTCardHeader`-style row: "Activity" `sectionTitle`, then a compact `TTSegmented` [Live 1H 24H 7D 30D] (default Live).
+  - `TTCardHeader`-style row (24 tall): "Activity" `sectionTitle`, then a **compact** `TTSegmented` (§2.13) [Live 1H 24H 7D 30D] (default Live). Gap 10 to the rows.
   - 6 × `TTTimelineRow` (gap 4) with 30-tall sparklines: CPU (% of one core, auto scale ≥ 100), GPU, Memory, Network (↓+↑), Disk (R+W), Energy (W).
   - Values are this app's current values. Historical ranges read the per-app store rows (apps under the threshold count toward `other` and show a gap).
-  - Axis inset 96.
+  - Gap 10, then the axis (inset 96).
 - **Right, "Live connections"** (count in the title, e.g. "Live connections · 14"):
   - Table template `minmax(0,1fr) 52 48 72 72`, header 26, rows 28, scrolling past 7 rows.
   - Headers: Remote host | Port (right) | Proto (left) | ↓ (right) | ↑ (right).
@@ -1050,19 +1081,24 @@ Sampling: 1 s while the window is visible.
 
 ### 3.13 History
 
-Header: h1 "History". Sub: "Stored locally · {bucket} resolution for {range} · kept for 30 days". The buckets are 1H → "15-second", 24H → "5-minute", 7D → "30-minute", 30D → "2-hour", so the design copy is reproduced exactly at 24H. Controls: range `1H 24H 7D 30D` (24H is the default), Settings. There is no Pause button (as designed).
+Header: h1 "History". Sub: "Stored locally · {bucket} resolution for {range} · kept for 30 days". The buckets are 1H → "15-second", 24H → "5-minute", 7D → "30-minute", 30D → "2-hour", so the design copy is reproduced exactly at 24H. Live → "1-second resolution for 60 s". Controls: range `Live 1H 24H 7D 30D` (CHANGED per ruling: Live added; 24H is the default), Settings. There is no Pause button (as designed).
+
+**Live on History** (ruling): Live shows the last 60 s at 1-s buckets and **pins the cursor to now**. Each new sample moves the window, the cursor stays on the newest bucket, and the treemap updates every second.
+- Dragging the cursor or the slider unpins it. The "At" badge "Live" disappears while unpinned.
+- Returning the cursor to the newest bucket, or re-selecting Live, re-pins it.
+- On the other ranges, the cursor starts at the latest bucket but is not pinned, because stored ranges do not advance per second.
 
 Layout: the timeline card (intrinsic, about 507), then the "At" card (flex, about 249).
 
 **Timeline card** (gap 10):
-1. Header: the title is the range label ("Thursday, 24 September" for 24H, "Last hour" for 1H, "18 – 24 September" for 7D, "26 August – 24 September" for 30D). Trailing legend: [Thermal pressure: Fair] with swatch `statusElevatedSwatch`. Add legend items only for band types present in the range: Fair (amber), Serious (amber, band opacity 0.22), Critical (red), Memory pressure (amber), Paused (`fillTrack`).
+1. Header: the title is the range label ("Last 60 seconds" for Live, "Thursday, 24 September" for 24H, "Last hour" for 1H, "18 – 24 September" for 7D, "26 August – 24 September" for 30D). Trailing legend: [Thermal pressure: Fair] with swatch `statusElevatedSwatch`. Add legend items only for band types present in the range: Fair (amber), Serious (amber, band opacity 0.22), Critical (red), Memory pressure (amber), Paused (`fillTrack`).
 2. Body: HStack gap 8.
    - **Label column**, 170 wide:
      - "Events" row: 30 tall, `body12` `textSecondary`, 1-pt bottom `separator`.
      - 6 lane labels, each 58 tall, VStack centered, gap 2, 1-pt bottom `separator`:
        - line 1: icon 14 + name in `body12` `textSecondary`, gap 7
        - line 2: the value at the cursor in `pageTitle` 15/600, left padding 21
-     - Lanes and values: CPU `%`; GPU `%`; Memory pressure `%`; Network ↓ `MB/s` (1 decimal, §5.4); SoC temperature `°C`; Package power `W`.
+     - Lanes and values: CPU `%`; GPU `%`; Memory pressure `%`; Network ↓ as a rate, following the §5.4 bands (`840 KB/s`, `12.4 MB/s`, `142 MB/s`); SoC temperature `°C`; Package power `W`.
    - **Chart column**, fill (810 in the design):
      - Event row, 30 tall: chips (§2.14 `chip`), absolutely positioned and centered at the event's x, top 4. Label "{title} · {HH:mm}", e.g. "Xcode build · 14:30". Click a chip to move the cursor there.
        - Event sources: thermal/memory alerts start ("Thermal: Fair"), runaway app ("{App} CPU spike"), sampling paused/resumed, and swap growth ≥ 1 GB within 30 min ("Swap +2.1 GB").
@@ -1071,9 +1107,9 @@ Layout: the timeline card (intrinsic, about 507), then the "At" card (flex, abou
      - Bands: absolute from y 30 to the bottom, x/width from the event interval, solid `#FFB340` at opacity 0.14 (critical: `#FF453A` 0.14). Paused intervals: `fillTrack` plus a centered `micro` label "Paused" in `textTertiary` if 40 or more wide.
      - Cursor: absolute over the full height (0 to the bottom), 1.5 wide, `textPrimary` @ 0.85. Drag anywhere on the lanes to scrub (ADDED; the design only has the slider).
 3. Axis row, inset 178 (§2.12).
-4. Scrubber, inset 178, VStack gap 4: `caption` `textSecondary` "Scrub timeline", then an `NSSlider` spanning the chart width, tinted `accent`, with steps = bucket count − 1 (288 for 24H).
+4. Scrubber, inset 178, VStack gap 4: `caption` `textSecondary` "Scrub timeline", then an `NSSlider` spanning the chart width, tinted `accent`. Range 0…(bucket count − 1) with integer steps: max 287 for 24H (288 buckets) and 59 for Live.
    - The ← and → keys step one bucket.
-   - The default position is the latest bucket ("now").
+   - The default position is the latest bucket ("now"). In Live it is pinned (see above).
 
 **"At" card**: CHANGED to hold the time-travel treemap (ADDED per ruling). Padding 14×16, HStack gap 24, `aria-live` (`.accessibilityAddTraits(.updatesFrequently)`).
 1. **Left column**, 220 wide, VStack gap 10:
@@ -1083,10 +1119,10 @@ Layout: the timeline card (intrinsic, about 507), then the "At" card (flex, abou
    - Flex spacer.
    - [Export CSV] (regular secondary): saves via `NSSavePanel` the system totals of the current range at display resolution. Columns: `timestamp_iso8601,cpu_pct,gpu_pct,mem_pressure_pct,net_down_Bps,net_up_Bps,soc_temp_c,package_w`.
 2. **Treemap column**, flex, VStack gap 8:
-   - Header row: "App share" `sectionTitle` (flex), then a compact `TTSegmented` [CPU | GPU | Memory | Network | Disk | Energy] (default CPU).
+   - Header row: "App share" `sectionTitle` (flex), then a **compact** `TTSegmented` (§2.13) [CPU | GPU | Memory | Network | Disk | Energy] (default CPU).
    - `TTTreemap` (§2.28) fills the rest (about 760 × 190).
-   - Data: the per-app rows of the bucket under the cursor. At "Now" it updates every 1 s from live samples.
-   - Metric change animation: `.easeInOut(0.2)` on tile frames.
+   - Data: the per-app rows of the bucket under the cursor, grouped by the §3.12 rules. When pinned at now it updates every 1 s from live samples.
+   - Animation: per §2.28, 0.25 s ease-in-out for live updates and metric changes, and none while scrubbing.
    - Empty bucket (paused or no data): the centered message "No data for this moment".
 
 ### 3.14 Settings window (ADDED)
@@ -1126,7 +1162,7 @@ Opened from the Settings button in the popover or header, or with ⌘,. It is a 
 ### 4.1 Canvas and geometry
 
 - Status item: `NSStatusItem.squareLength`. The image is 18×18 pt, drawn at 1× and 2×.
-- The design draws the glyph in an 18×18 viewBox rendered at **16 pt** in the menu bar (and at 20 pt in the popover header, 72 pt on the reference card). So: in the 18-pt canvas, draw the viewBox geometry scaled by **s = 8/9**, around the canvas center (9, 9).
+- The design draws the glyph in an 18×18 viewBox rendered at **16 pt** in the menu bar (and at 20 pt in the popover header, 72 pt on the reference card; those two scale the viewBox directly with no 8/9 factor, see §4.3). So: in the 18-pt menu bar canvas, draw the viewBox geometry scaled by **s = 8/9**, around the canvas center (9, 9).
 
 Reference geometry, in viewBox units (y-down, origin top-left, angles θ measured **clockwise from 12 o'clock**):
 
@@ -1147,7 +1183,7 @@ Point formula (y-down): `x = 9 + r·sin θ`, `y = 9 − r·cos θ`.
 
 Final values in the 18-pt canvas (× 8/9): arc radius **5.689**, stroke **1.956**, dot r **1.244 / 1.422 / 1.867**. The center stays (9, 9) and the angles are unchanged. The glyph's outer extent is r + stroke/2 = 6.667, so it spans 2.33…15.67 pt and leaves about 2.3 pt of clear margin.
 
-Note: with round caps, adjacent arc ends almost touch (the 14° gap chord is 1.39 pt against a cap overhang of 0.98 pt on each side). That is the design and must not be "fixed".
+Note: with round caps, adjacent arc ends almost touch (the 14° gap chord is 1.39 pt against a cap overhang of 0.98 pt on each side). That is the design and must not be "fixed". The caps of neighboring arcs overlap by about 0.57 pt along the stroke centerline, so paint order and compositing matter (§4.2).
 
 ### 4.2 Drawing instructions
 
@@ -1178,6 +1214,14 @@ path.lineWidth = lw; path.lineCapStyle = .round; color.setStroke(); path.stroke(
 
 Check arc 0 in the 18-pt canvas: the start point is (9 + 5.689·sin 7°, 9 − 5.689·cos 7°) = (9.693, 3.353) in y-down coordinates.
 
+**Paint order and compositing** (required, because the round caps overlap):
+1. **Group arcs by color.** All non-stressed arcs go into **one** `Path` (or `NSBezierPath`) with one subpath per arc, and are stroked **once**. Each stressed color gets its own single-path stroke the same way. A single stroke of one path never double-covers its own overlap, so no alpha buildup occurs.
+2. **Order**: stroke the non-stressed (label-color / template) path first. Then stroke the stressed path(s), elevated before critical. Then fill the center dot last. A stressed arc's caps therefore sit on top of its neighbors' caps.
+3. **Transparency layer**: wrap the whole glyph in one transparency layer, and apply any glyph-wide alpha (the paused 0.5, and the pulse) to that layer rather than to individual strokes. The overlap between differently colored neighbors then does not composite twice against the menu bar.
+   - SwiftUI: `ctx.drawLayer { … }` with `ctx.opacity` set on the outer context.
+   - AppKit: `CGContext.beginTransparencyLayer(auxiliaryInfo:)` … `endTransparencyLayer()` with `setAlpha` before it.
+4. The template (calm) image follows the same rule: one path for all 5 arcs plus the dot, drawn opaque black.
+
 ### 4.3 States
 
 | State | Arcs | Center dot | Image type | Behavior |
@@ -1191,7 +1235,7 @@ Check arc 0 in the 18-pt canvas: the start point is (9 + 5.689·sin 7°, 9 − 5
 - **Pulse**: 600 ms, ease-in-out. The dot radius goes 2.1 → 2.9 → 2.1 (viewBox units) and the stressed arc's opacity goes 1 → 0.45 → 1. Render 18 frames at 30 fps by swapping `button.image`, then leave the static critical image. It runs once per transition into critical, and never while Reduce Motion is on.
 - **Paused** (ADDED): the calm template drawn at 0.5 alpha. Alerts are suppressed while paused.
 - **Accessibility**: `button.setAccessibilityLabel("Telltale, \(statusLine)")`. Tooltip: the status line.
-- **Popover header glyph**: the same drawing at 20 pt (scale 20/18) with the same state colors. The calm arcs use `textPrimary` `#F2F2F4`.
+- **Popover header glyph**: `MenuBar.dc.html` draws it as `svg width=20 viewBox="0 0 18 18"`. It is the **viewBox geometry scaled by 20/18 into a 20×20 frame**, with **no** 8/9 factor: center (10, 10), arc r 7.111, stroke 2.444, dot r 1.556 / 1.778 / 2.333. It uses the same state colors, paint order and compositing. The calm arcs use `textPrimary` `#F2F2F4`.
 
 ---
 
@@ -1261,7 +1305,7 @@ Exceptions:
 | Context | Rule | Example |
 |---|---|---|
 | System (package, components, battery drain) | 1 decimal W | `18.6 W`, `0.2 W`, `−18.9 W` |
-| Per-app average power (tables, inspector, treemap) | ≥ 1 W: 1 decimal; < 1 W: 2 decimals; > 0 and < 0.01 W: `<0.01 W`; 0 → `—` | `7.2 W`, `0.34 W` |
+| Per-app average power (tables, inspector, treemap, popover expansion) | ≥ 10 W: 1 decimal; 0.01–9.99 W: 2 decimals; > 0 and < 0.01 W: `<0.01 W`; 0 → `—`. Source: `ri_energy_nj` deltas (rusage v6) plus the coalition residual for root processes; estimated values carry an "Estimated" tooltip | `12.4 W`, `7.15 W`, `4.82 W`, `0.35 W`, `<0.01 W` |
 | Battery capacity | 1 decimal Wh | `68.1 of 72.4 Wh` |
 | Adapter | integer W | `96 W` |
 
@@ -1326,12 +1370,17 @@ Bucket aggregate: mean for rates and %, max for temperatures (the stored peak).
 2. **Popover position.** The mock right-aligns the popover to the screen edge (12 in). Built horizontally centered on the status item, 8 below the menu bar, and clamped to the screen.
 3. **Popover shape.** The design has no arrow, so it is a borderless `NSPanel`, not an `NSPopover`.
 4. **Menu bar glyph size.** The viewBox is 18, rendered at 16 in the design. Built as an 18-pt canvas with the glyph scaled 8/9, so it matches the mock's visual size.
-5. **Range sets.** The design shows `Live 1H 24H 7D` on category pages and `1H 24H 7D 30D` on History. The ruling requires 30D, so category pages get `Live 1H 24H 7D 30D`. History keeps no Live segment; "Live" is the cursor at the latest bucket.
+5. **Range sets.** The design shows `Live 1H 24H 7D` on category pages and `1H 24H 7D 30D` on History. Per the SPEC ruling, every page gets `Live 1H 24H 7D 30D`. On History, Live pins the cursor to now and follows it (§3.13), and History still defaults to 24H.
 6. **History subtitle.** "5-minute resolution for 24 h" describes display buckets, not storage (the store keeps full resolution for 24 h). The copy is kept and made range-dependent.
 7. **Row selection fill.** The design uses `#0A84FF` at 0.22 (CPU and Power tables) and at 0.28 (Processes). Unified to 0.28.
 8. **"Residency" vs "Active residency"** on the P and E cards. Unified to "Active residency".
 9. **Energy copy vs watts.** The ruling requires watts. Headers "Energy impact"/"Energy" and the sort label "Energy" are kept as design copy; values become W (§5.6). The 12 h average is also in W.
-10. **Overview "Top processes".** The rows are app groups (that matches the design's row set, e.g. com.docker.backend as the Docker group). The title copy is kept.
+10. **App grouping vs the design's sample rows.** The design's rows (Xcode, Final Cut Pro, Safari, WindowServer, com.docker.backend) do **not** follow any one grouping rule. The ruling (§3.12) is:
+    - Bundled apps group by responsible PID, so `com.docker.backend` rolls up under **Docker Desktop**.
+    - A daemon with no bundle is its own group, named by its process, so **WindowServer stays a row**.
+    - Unattributable root processes appear as coalition rows (provenance `.coalition`, named by the coalition leader's `p_comm`).
+    - Anything else is summed into "System".
+    - Overview "Top processes", Power "Energy impact", GPU clients, Memory and Network tables all use app groups. The "Top processes" title copy is kept.
 11. **Per-app memory precision.** The design mixes "0.48 GB" and "894 MB". Rule: under 1 GB always shows MB.
 12. **Rate precision.** The design mixes integer ("38 MB/s" stat) and 1 decimal ("1.2 MB/s" table). Rule: 1 decimal below 100 MB/s, integer at 100 and above, everywhere. The "0.1 MB/s" table value becomes "100 KB/s" via the KB rule.
 13. **Percent sign in tables.** It depends on whether the header contains "%". This reproduces both the Overview and the Processes/CPU tables unchanged.
@@ -1342,7 +1391,7 @@ Bucket aggregate: mean for rates and %, max for temperatures (the stored peak).
 18. **Thermal scale lighting.** Only the current level is lit, not a cumulative fill.
 19. **ANE card.** The ruling removes %. The headline becomes W, and the right-hand text becomes "idle"/"active"; the sparkline plots W.
 20. **Media engines.** Kept only with IOReport data, and the codec label is dropped. If there is no data, the card is removed and ANE fills the column.
-21. **Memory table columns.** Compressed, Private and Ports are removed entirely when libsysmon lacks them, rather than shown as "—" columns.
+21. **Memory table columns.** Compressed, Private and Ports are removed unconditionally (architecture review). The table is Process | Memory | actions.
 22. **Top consumer "· exporting".** Removed, because there is no activity-description source.
 23. **"Sample" button.** It is not in the spec and not dropped by the rulings. Kept as design (`/usr/bin/sample`, owned processes only).
 24. **"Undo demo" link.** Prototype-only, so removed. The toast remains.
