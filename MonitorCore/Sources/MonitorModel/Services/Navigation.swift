@@ -1,0 +1,32 @@
+import Foundation
+
+public enum DashboardPage: String, CaseIterable, Sendable, Codable {
+    case overview, cpu, gpu, memory, network, thermals, power, disk, processes, history
+
+    /// Sidebar title (DESIGN.md sidebar).
+    public var title: String {
+        switch self {
+        case .overview: "Overview"
+        case .cpu: "CPU"
+        case .gpu: "GPU"
+        case .memory: "Memory"
+        case .network: "Network"
+        case .thermals: "Thermals"
+        case .power: "Power & Battery"
+        case .disk: "Disk"
+        case .processes: "Processes"
+        case .history: "History"
+        }
+    }
+
+    /// Sidebar section: Monitor (overview…thermals), System (power, disk), Activity (processes, history).
+    public var section: Section {
+        switch self {
+        case .overview, .cpu, .gpu, .memory, .network, .thermals: .monitor
+        case .power, .disk: .system
+        case .processes, .history: .activity
+        }
+    }
+
+    public enum Section: String, Sendable, CaseIterable { case monitor, system, activity }
+}

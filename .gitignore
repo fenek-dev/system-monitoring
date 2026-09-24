@@ -1,5 +1,8 @@
 .build/
 .build-*/
+.build*/
+MonitorCore/.build/
+Telltale.xcodeproj/
 .swiftpm/
 DerivedData/
 xcuserdata/
