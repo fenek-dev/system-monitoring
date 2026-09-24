@@ -19,6 +19,7 @@ import SwiftUI
             // Diagnostic: "Open Dashboard" (13) in regular / medium / semibold on 261×30 accent buttons.
             .init(id: "weights", size: CGSize(width: 261, height: 90)) { AnyView(WeightsSample()) },
         ] + GalleryCharts.items + GalleryTable.items + GalleryGauges.items + GalleryOverlays.items
+            + GalleryPopover.items
     }
 }
 
