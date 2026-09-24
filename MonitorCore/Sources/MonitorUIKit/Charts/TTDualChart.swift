@@ -32,5 +32,7 @@ public struct TTDualChart: View, Equatable {
                         yDomain: dashedDomain, lineOnly: true, lineWidth: dashed.lineWidth ?? TTStroke.sparkThin,
                         dash: dashed.dash.isEmpty ? TTChartFill.gpuFrequencyDash : dashed.dash, showsCollecting: false)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ChartAccessibility.summary([solid, dashed]))
     }
 }

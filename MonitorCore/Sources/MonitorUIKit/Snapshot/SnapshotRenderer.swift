@@ -41,6 +41,26 @@ import UniformTypeIdentifiers
         }
     }
 
+    /// ImageRenderer drawing into our own CGContext, with font smoothing (stem darkening) switchable.
+    /// Diagnostic path for the font-weight comparison against Chrome's grayscale AA (W3 report).
+    public static func imageRendererCG<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2, smoothFonts: Bool) -> CGImage? {
+        TTFormat.$locale.withValue(locale) {
+            let renderer = ImageRenderer(content: prepared(view, size: size))
+            renderer.proposedSize = ProposedViewSize(size)
+            let pw = Int((size.width * scale).rounded()), ph = Int((size.height * scale).rounded())
+            guard let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: SnapshotImage.colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            ctx.setAllowsFontSmoothing(smoothFonts)
+            ctx.setShouldSmoothFonts(smoothFonts)
+            ctx.setAllowsFontSubpixelPositioning(true)
+            ctx.setShouldSubpixelPositionFonts(true)
+            ctx.scaleBy(x: scale, y: scale)
+            renderer.render { _, draw in draw(ctx) }
+            return ctx.makeImage()
+        }
+    }
+
     /// Offscreen `NSWindow` + `NSHostingView` (draws AppKit-backed controls, text fields, sliders).
     public static func hosting<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2) -> CGImage? {
         TTFormat.$locale.withValue(locale) { hostingUnscoped(view, size: size, scale: scale) }

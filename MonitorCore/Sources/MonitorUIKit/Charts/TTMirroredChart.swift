@@ -33,5 +33,7 @@ public struct TTMirroredChart: View, Equatable {
                 TTEmptyState(.collecting(since: nil))
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ChartAccessibility.summary([up, down]))
     }
 }

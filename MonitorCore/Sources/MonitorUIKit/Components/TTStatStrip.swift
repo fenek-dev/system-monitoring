@@ -4,7 +4,7 @@ import SwiftUI
 /// label `caption` `textSecondary`; value `stat` (first cell in the category accent via `tint`);
 /// optional sub `caption` `textTertiary`. Cells top-aligned; values never wrap (scale ≥ 0.8).
 public struct TTStatStrip: View, Equatable {
-    public struct Item: Identifiable, Equatable {
+    public struct Item: Identifiable, Equatable, Sendable {
         public var id: String
         public var label: String
         public var value: String?
@@ -53,6 +53,7 @@ public struct TTStatStrip: View, Equatable {
                 .padding(.vertical, TTSpace.statCellVertical)
                 .padding(.horizontal, TTSpace.statCellHorizontal)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                .accessibilityElement(children: .combine)
             }
         }
         .padding(TTStroke.hairline) // border outside the cells (≈ 80 + 2)

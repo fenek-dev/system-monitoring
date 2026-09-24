@@ -270,7 +270,9 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
     }
 
     private struct TableRow: View, Equatable {
-        let line: Line
+        /// Row types are caller-defined (not necessarily Sendable); rows are only built and compared on the main
+        /// actor by SwiftUI's `.equatable()` diffing.
+        nonisolated(unsafe) let line: Line
         let columns: [Column]
         let widths: [CGFloat]
         let selected: Bool
@@ -343,8 +345,10 @@ public struct TTTableStyle: Sendable, Equatable {
 
     /// Fixed-sorted tables (Overview, CPU, GPU, Power…): header 26, rows 34.
     public static let standard = TTTableStyle()
-    /// Processes: header 28, row gap 1, header click sorts with the active indicator.
-    public static let processes = TTTableStyle(headerHeight: 28, rowSpacing: 1, headerSorts: true, showsSortIndicator: true)
+    /// Processes: header 28, row gap 1, header click sets the sort binding (active indicator shown); rows are NOT
+    /// re-sorted by the table — `ProcessTableModel` owns sorting and passes pre-sorted rows.
+    public static let processes = TTTableStyle(headerHeight: 28, rowSpacing: 1, sortsRows: false, headerSorts: true,
+                                               showsSortIndicator: true)
     public static let disk = TTTableStyle(rowHeight: 32)
     public static let compact = TTTableStyle(rowHeight: 28)
 }
