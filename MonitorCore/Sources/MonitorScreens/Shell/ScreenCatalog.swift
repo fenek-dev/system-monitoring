@@ -192,13 +192,17 @@ public extension AlertState {
 }
 
 public extension LiveModel {
-    /// Scenario frames 0…`ticks` applied in order (the latest is `frame(at: ticks)`, ARCHITECTURE §8), then
+    /// Scenario frames 0…`ticks` (only frame 0 for `.collecting`) applied in order (the latest is `frame(at: ticks)`,
+    /// ARCHITECTURE §8), then
     /// presenting, so every snapshot property is filled. `.paused` also pauses the model at the last frame.
     @MainActor static func mock(_ scenario: MockScenario, ticks: Int = 60) -> LiveModel {
         let provider = MockDataProvider(scenario: scenario)
         let model = LiveModel(device: provider.device)
         var last: SystemFrame?
-        for tick in 0...max(ticks, 0) {
+        // `.collecting` = DESIGN §3.15 "First launch": one sample only, so charts are below the 2-sample threshold
+        // and show "Collecting…".
+        let lastTick = scenario == .collecting ? 0 : max(ticks, 0)
+        for tick in 0...lastTick {
             let f = provider.frame(at: tick)
             model.apply(f)
             last = f
