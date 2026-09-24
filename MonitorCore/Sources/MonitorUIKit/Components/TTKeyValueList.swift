@@ -46,6 +46,7 @@ public struct TTKeyValueList: View, Equatable {
                         .truncationMode(.middle)
                 }
                 .padding(.vertical, TTSpace.x7)
+                .accessibilityElement(children: .combine)
                 .overlay(alignment: .bottom) {
                     if i < rows.count - 1 { TTSeparator() }
                 }

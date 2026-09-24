@@ -1,5 +1,6 @@
 import Foundation
 import MonitorModel
+import SwiftUI
 import Testing
 @testable import MonitorUIKit
 
@@ -35,6 +36,68 @@ import Testing
         #expect(ChartSegments.y(value: -5, domain: 0...100, height: 40) == 40)
         #expect(ChartSegments.y(value: 72, domain: 40...105, height: 65) == 33)
         #expect(ChartSegments.y(value: 3, domain: 3...3, height: 10) == 10) // degenerate domain → baseline
+    }
+
+    struct PathStats: Equatable {
+        var moves = 0, lines = 0, closes = 0
+        var maxYAtBaseline = 0 // points on the baseline
+    }
+
+    func stats(_ path: Path, baseline: CGFloat) -> PathStats {
+        var s = PathStats()
+        path.forEach { el in
+            switch el {
+            case .move(let p):
+                s.moves += 1
+                if p.y == baseline { s.maxYAtBaseline += 1 }
+            case .line(let p):
+                s.lines += 1
+                if p.y == baseline { s.maxYAtBaseline += 1 }
+            case .closeSubpath: s.closes += 1
+            default: break
+            }
+        }
+        return s
+    }
+
+    /// Canvas gap rule: each run is its own line subpath and its own closed area; gaps are never bridged.
+    @Test func gapsBreakLineAndCloseAreaPerRun() {
+        let p = pts([10, 20, 30, nil, nil, 40, 50, nil, 60, 70, 80])
+        var line = Path()
+        var area: Path? = Path()
+        ChartSegments.addSeries(p, domain: 0...100, in: CGSize(width: 100, height: 50), line: &line, area: &area)
+        let l = stats(line, baseline: 50)
+        #expect(l.moves == 3)          // three runs
+        #expect(l.lines == 2 + 1 + 2)  // n−1 segments per run
+        #expect(l.closes == 0)
+        let a = stats(area!, baseline: 50)
+        #expect(a.moves == 3)
+        #expect(a.closes == 3)
+        // Each run: move to baseline, up, along, down to baseline, back along baseline → 3 baseline points per run.
+        #expect(a.maxYAtBaseline == 9)
+        // No segment of the line spans the gap between x(2)=20 and x(5)=50.
+        var prev: CGPoint?
+        var bridged = false
+        line.forEach { el in
+            switch el {
+            case .move(let q): prev = q
+            case .line(let q):
+                if let a = prev, a.x <= 20, q.x >= 50 { bridged = true }
+                prev = q
+            default: break
+            }
+        }
+        #expect(!bridged)
+    }
+
+    @Test func flippedAreaHangsFromTheTop() {
+        var line = Path()
+        var area: Path? = Path()
+        ChartSegments.addSeries(pts([50, 100]), domain: 0...100, in: CGSize(width: 10, height: 40), line: &line, area: &area,
+                                flipped: true)
+        // Value 0 would sit on the top edge; 50 hangs to the middle, 100 reaches the bottom.
+        #expect(line.boundingRect == CGRect(x: 0, y: 20, width: 10, height: 20))
+        #expect(stats(area!, baseline: 0).maxYAtBaseline == 3)
     }
 
     @Test func decimateKeepsShortSeries() {

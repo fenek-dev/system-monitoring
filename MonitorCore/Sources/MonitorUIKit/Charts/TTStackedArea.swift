@@ -13,6 +13,7 @@ public struct TTStackedArea: View, Equatable {
     let outline: Color?
     let outlineWidth: CGFloat
     let grid: Int
+    let summary: String
 
     public init(_ series: [ChartSeries], yDomain: ClosedRange<Double>) {
         self.init(series, yDomain: yDomain, outline: nil)
@@ -21,6 +22,7 @@ public struct TTStackedArea: View, Equatable {
     public init(_ series: [ChartSeries], yDomain: ClosedRange<Double>, outline: Color?,
                 outlineWidth: CGFloat = TTStroke.sparkThin, grid: Int = 4) {
         layers = Self.cumulative(series.map(\.points))
+        summary = ChartAccessibility.summary(series)
         colors = series.map { $0.color.opacity($0.fillOpacity ?? 1) }
         self.yDomain = yDomain
         self.outline = outline
@@ -59,7 +61,8 @@ public struct TTStackedArea: View, Equatable {
         } else {
             let chart = self
             TTChartCanvas { ctx, size in chart.draw(&ctx, size: size) }
-                .accessibilityHidden(true)
+                .accessibilityElement()
+                .accessibilityLabel(summary)
         }
     }
 

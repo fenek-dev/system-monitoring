@@ -66,5 +66,6 @@ public struct TTTimelineRow: View, Equatable {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(height: height)
+        .accessibilityElement(children: .combine)
     }
 }

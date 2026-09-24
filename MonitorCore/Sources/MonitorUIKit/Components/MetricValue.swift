@@ -2,7 +2,7 @@ import SwiftUI
 
 /// One signature everywhere (ARCHITECTURE §6, DESIGN §3.15):
 /// - nil (or "—") → "—" in `textTertiary`, same font, `.help(reason)` when a reason is given;
-/// - `estimated` → same style, `.help("Estimated")` (DESIGN §3.10);
+/// - `estimated` → same style, `.help("Estimated")` (DESIGN §3.10), announced as "estimated";
 /// - otherwise the text in the inherited foreground style, tabular digits, one line.
 public struct MetricValue: View, Equatable {
     private let text: String?
@@ -17,22 +17,46 @@ public struct MetricValue: View, Equatable {
         self.font = font
     }
 
-    private var isUnavailable: Bool { text == nil || text == TTFormat.unavailable }
+    /// What the value presents: displayed text, tooltip (nil = none), accessibility label.
+    struct Presentation: Equatable {
+        var text: String
+        var unavailable: Bool
+        var tooltip: String?
+        var accessibilityLabel: String
+    }
+
+    nonisolated static func presentation(_ text: String?, unavailableReason: String?, estimated: Bool) -> Presentation {
+        guard let text, text != TTFormat.unavailable else {
+            return Presentation(text: TTFormat.unavailable, unavailable: true, tooltip: unavailableReason,
+                                accessibilityLabel: unavailableReason.map { "Unavailable, \($0)" } ?? "Unavailable")
+        }
+        return Presentation(text: text, unavailable: false, tooltip: estimated ? "Estimated" : nil,
+                            accessibilityLabel: estimated ? "\(text), estimated" : text)
+    }
 
     public var body: some View {
-        if isUnavailable {
-            Text(TTFormat.unavailable)
-                .font(font)
-                .foregroundStyle(TTColor.textTertiary)
-                .lineLimit(1)
-                .help(unavailableReason ?? "")
-                .accessibilityLabel(unavailableReason.map { "Unavailable, \($0)" } ?? "Unavailable")
-        } else {
-            Text(text ?? "")
-                .font(font)
-                .monospacedDigit()
-                .lineLimit(1)
-                .help(estimated ? "Estimated" : "")
-        }
+        let p = Self.presentation(text, unavailableReason: unavailableReason, estimated: estimated)
+        Text(p.text)
+            .font(font)
+            .monospacedDigit()
+            .lineLimit(1)
+            .modifier(UnavailableStyle(active: p.unavailable)) // available values inherit the caller's style
+            .modifier(OptionalHelp(text: p.tooltip))
+            .accessibilityLabel(p.accessibilityLabel)
+    }
+}
+
+struct UnavailableStyle: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        if active { content.foregroundStyle(TTColor.textTertiary) } else { content }
+    }
+}
+
+/// `.help` only when there is a tooltip (no empty help tags).
+struct OptionalHelp: ViewModifier {
+    let text: String?
+    func body(content: Content) -> some View {
+        if let text { content.help(text) } else { content }
     }
 }

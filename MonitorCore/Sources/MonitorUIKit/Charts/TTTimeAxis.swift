@@ -1,4 +1,5 @@
 import MonitorModel
+import os
 import SwiftUI
 
 /// DESIGN §2.12 time axis: HStack space-between across the chart width, `micro` `textTertiary`.
@@ -39,17 +40,12 @@ public struct TTTimeAxis: View, Equatable {
         case .week:
             var cal = Calendar(identifier: .gregorian)
             cal.timeZone = timeZone
-            let f = DateFormatter()
-            f.locale = locale
-            f.timeZone = timeZone
-            f.setLocalizedDateFormatFromTemplate("EEE")
-            return (0..<7).reversed().map { f.string(from: cal.date(byAdding: .day, value: -$0, to: end) ?? end) }
+            return AxisFormatters.format((0..<7).reversed().map { cal.date(byAdding: .day, value: -$0, to: end) ?? end },
+                                         template: "EEE", fixed: false, locale: locale, timeZone: timeZone)
         case .month:
-            let f = DateFormatter()
-            f.locale = locale
-            f.timeZone = timeZone
-            f.dateFormat = "d MMM" // DESIGN §2.12 fixed order; month names localized
-            return (0..<5).map { k in f.string(from: end.addingTimeInterval(-30 * 86_400 * Double(4 - k) / 4)) }
+            // DESIGN §2.12 fixed "d MMM" order; month names localized.
+            return AxisFormatters.format((0..<5).map { k in end.addingTimeInterval(-30 * 86_400 * Double(4 - k) / 4) },
+                                         template: "d MMM", fixed: true, locale: locale, timeZone: timeZone)
         }
     }
 
@@ -60,6 +56,32 @@ public struct TTTimeAxis: View, Equatable {
                 Text(labels[i]).font(TTFont.micro).foregroundStyle(TTColor.textTertiary).lineLimit(1).fixedSize()
                 if i < labels.count - 1 { Spacer(minLength: 4) }
             }
+        }
+    }
+}
+
+/// `DateFormatter`s cached per (template, locale, time zone) — never built per render.
+enum AxisFormatters {
+    private final class Box: @unchecked Sendable {
+        var formatters: [String: DateFormatter] = [:]
+    }
+
+    private static let lock = OSAllocatedUnfairLock(uncheckedState: Box())
+
+    static func format(_ dates: [Date], template: String, fixed: Bool, locale: Locale, timeZone: TimeZone) -> [String] {
+        let key = "\(template)|\(fixed)|\(locale.identifier)|\(timeZone.identifier)"
+        return lock.withLockUnchecked { box in
+            let f: DateFormatter
+            if let cached = box.formatters[key] {
+                f = cached
+            } else {
+                f = DateFormatter()
+                f.locale = locale
+                f.timeZone = timeZone
+                if fixed { f.dateFormat = template } else { f.setLocalizedDateFormatFromTemplate(template) }
+                box.formatters[key] = f
+            }
+            return dates.map(f.string(from:))
         }
     }
 }
