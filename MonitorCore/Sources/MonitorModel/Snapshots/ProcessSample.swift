@@ -8,6 +8,8 @@ public struct ProcessSample: Sendable, Codable, Hashable, Identifiable {
     public var app: AppKey
     public var provenance: Provenance
     public var coalitionID: UInt64?
+    /// `p_comm` of the coalition leader (ICR-4), for "counted in the ‹leader› coalition row"; nil if unknown.
+    public var coalitionLeaderName: String?
     public var cpuPercent: Double?, cpuTimeNs: UInt64?, threads: Int32?
     public var memory: UInt64?, memorySource: MemorySource?
     public var gpuPercent: Double?, gpuTimeNs: UInt64?
@@ -26,6 +28,7 @@ public struct ProcessSample: Sendable, Codable, Hashable, Identifiable {
         app: AppKey = .system,
         provenance: Provenance = .measured,
         coalitionID: UInt64? = nil,
+        coalitionLeaderName: String? = nil,
         cpuPercent: Double? = nil,
         cpuTimeNs: UInt64? = nil,
         threads: Int32? = nil,
@@ -55,6 +58,7 @@ public struct ProcessSample: Sendable, Codable, Hashable, Identifiable {
         self.app = app
         self.provenance = provenance
         self.coalitionID = coalitionID
+        self.coalitionLeaderName = coalitionLeaderName
         self.cpuPercent = cpuPercent
         self.cpuTimeNs = cpuTimeNs
         self.threads = threads
