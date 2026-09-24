@@ -151,11 +151,19 @@ struct GPUMediaEnginesCard: View {
         fraction < 0.005 ? "idle" : TTFormat.percent(fraction)
     }
 
+    /// Ruling: one row, "Media engine". IOReport's media channels ("Video encoder/scaler", and any others a chip
+    /// exposes) are combined by **max** activeFraction — the busiest block is how busy the media hardware is; a sum
+    /// could exceed 100 % and an average would hide a saturated encoder. nil when no channel is reported.
+    static func combined(_ engines: [MediaEngineReading]) -> MediaEngineReading? {
+        guard let busiest = engines.map(\.activeFraction).max() else { return nil }
+        return MediaEngineReading(name: "Media engine", activeFraction: busiest)
+    }
+
     var body: some View {
-        let engines = live.gpu.mediaEngines
+        let engine = Self.combined(live.gpu.mediaEngines)
         TTCard(padding: TTSpace.cardPaddingMediaEngines, spacing: TTSpace.x7) {
             TTCardHeader("Media engines")
-            ForEach(engines, id: \.name) { e in
+            if let e = engine {
                 VStack(alignment: .leading, spacing: TTSpace.x5) {
                     HStack {
                         Text(e.name).foregroundStyle(TTColor.textPrimary)
@@ -166,7 +174,7 @@ struct GPUMediaEnginesCard: View {
                     .font(TTFont.body12).lineLimit(1)
                     TTProgressBar(value: e.activeFraction, tint: TTColor.gpu)
                 }
-                .frame(maxHeight: e.name == engines.last?.name ? .infinity : nil, alignment: .top)   // extra below
+                .fillBelow()   // extra height below the row
             }
         }
         .frame(minHeight: 143, maxHeight: .infinity, alignment: .top)

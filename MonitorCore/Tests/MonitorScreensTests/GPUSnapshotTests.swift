@@ -43,6 +43,17 @@ struct GPUSnapshotTests {
     }
 
     /// C1: media engine "idle" under 0.5 %; GPU time tooltip keyed on the GPU time itself.
+    /// Ruling: one "Media engine" row; IOReport channels combined by max activeFraction.
+    @Test func mediaEnginesCombineIntoOneRow() {
+        let one = GPUMediaEnginesCard.combined([MediaEngineReading(name: "Video encoder/scaler", activeFraction: 0.22)])
+        #expect(one == MediaEngineReading(name: "Media engine", activeFraction: 0.22))
+        let many = GPUMediaEnginesCard.combined([MediaEngineReading(name: "A", activeFraction: 0.1),
+                                                 MediaEngineReading(name: "B", activeFraction: 0.4)])
+        #expect(many?.activeFraction == 0.4)
+        #expect(GPUMediaEnginesCard.combined([]) == nil)
+        #expect(ScreenFixture.live(.calm).gpu.mediaEngines.count == 1)   // mock follows the ruling
+    }
+
     @Test func mediaValueAndGPUTimeReason() throws {
         #expect(GPUMediaEnginesCard.valueText(0.004) == "idle")
         #expect(GPUMediaEnginesCard.valueText(0.22) == "22%")

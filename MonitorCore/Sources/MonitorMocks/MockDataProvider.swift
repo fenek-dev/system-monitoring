@@ -326,10 +326,9 @@ public struct MockDataProvider: Sendable {
             allocatedMemory: 3_100 * 1_048_576,
             coreCount: device.gpuCores,
             aneWatts: socAvailable ? signals.value(.pa, at: tick) : nil,
+            // Ruling (W6b): IOReport exposes one combined media channel (encoder/scaler) on this chip.
             mediaEngines: socAvailable ? [
-                MediaEngineReading(name: "Video encode", activeFraction: Self.fraction(encPercent)),
-                MediaEngineReading(name: "Video decode", activeFraction: Self.fraction(encPercent * 0.6)),
-                MediaEngineReading(name: "ProRes engine", activeFraction: Self.fraction(encPercent * 0.3)),
+                MediaEngineReading(name: "Video encoder/scaler", activeFraction: Self.fraction(encPercent)),
             ] : []
         )
     }
