@@ -7,6 +7,8 @@ import SwiftUI
 /// Body: 4 top padding, rows `body12` `textPrimary` tabular, height 34 (style), radius 6, zebra on odd rows,
 /// hover `fillHover`, selection `rowSelected`. `children` rows (height 30) follow an expanded parent, share its
 /// zebra parity and see `\.ttRowDepth == 1`. Right-click → `rowMenu`. ↑/↓ select, ←/→ collapse/expand.
+/// Rows are Equatable (unchanged rows skip body per tick); only the hovered/selected row carries tooltips, the live
+/// actions button and the context menu (`\.ttRowActive`).
 /// Rows are sorted by the active column's `sortKey` (descending default, nil last, stable) unless
 /// `style.sortsRows` is false (caller pre-sorted, e.g. `ProcessTableModel`).
 public struct TTTable<Row: Identifiable & Equatable>: View {
@@ -45,6 +47,7 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
     let children: ((Row) -> [Row])?
     let style: TTTableStyle
     let onDoubleClick: ((Row) -> Void)?
+    let columnsVersion: Int
     @State private var expanded: Set<Row.ID> = []
     @Environment(\.isSnapshot) private var isSnapshot
 
@@ -54,9 +57,12 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                   style: .standard, expandedByDefault: [], onDoubleClick: nil)
     }
 
+    /// - Parameter columnsVersion: changes whenever state captured by the `cell` closures (sensor health, unit
+    ///   settings) changes; rows are Equatable on their data, so without it such a change would leave stale cells.
     public init(rows: [Row], columns: [Column], selection: Binding<Row.ID?>, sort: Binding<(column: String, descending: Bool)>,
                 rowMenu: ((Row) -> AnyView)? = nil, children: ((Row) -> [Row])? = nil, style: TTTableStyle,
-                expandedByDefault: Set<Row.ID> = [], onDoubleClick: ((Row) -> Void)? = nil) {
+                expandedByDefault: Set<Row.ID> = [], onDoubleClick: ((Row) -> Void)? = nil, columnsVersion: Int = 0) {
+        self.columnsVersion = columnsVersion
         self.rows = rows
         self.columns = columns
         _selection = selection
@@ -227,7 +233,8 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
         ForEach(lines) { line in
             let id = line.row.id
             TableRow(line: line, columns: columns, widths: widths, selected: selection == id,
-                     height: line.depth > 0 ? style.childRowHeight : style.rowHeight)
+                     height: line.depth > 0 ? style.childRowHeight : style.rowHeight, columnsVersion: columnsVersion,
+                     rowMenu: rowMenu)
                 .equatable()
                 .environment(\.ttRowDepth, line.depth)
                 .environment(\.ttRowDisclosure, line.hasChildren
@@ -235,7 +242,17 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                 .contentShape(Rectangle())
                 .onTapGesture { selection = id }
                 .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleClick?(line.row) })
-                .contextMenu { if let rowMenu { rowMenu(line.row) } }
+                .accessibilityAddTraits(selection == id ? [.isSelected] : [])
+                .accessibilityAction { selection = id }
+                .modifier(OpenAccessibilityAction(open: onDoubleClick.map { open in { open(line.row) } }))
+        }
+    }
+
+    /// VoiceOver "Open" for tables with a double-click action (M13).
+    private struct OpenAccessibilityAction: ViewModifier {
+        let open: (() -> Void)?
+        func body(content: Content) -> some View {
+            if let open { content.accessibilityAction(named: "Open", open) } else { content }
         }
     }
 
@@ -277,13 +294,24 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
         let widths: [CGFloat]
         let selected: Bool
         let height: CGFloat
+        /// Caller's version of state the cell closures capture (health, units): part of `==`, so such a change
+        /// redraws rows whose data did not change (M2).
+        let columnsVersion: Int
+        /// Not part of `==` (a new closure each table body must not re-evaluate unchanged rows).
+        let rowMenu: ((Row) -> AnyView)?
         @State private var hovering = false
+        @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
 
         nonisolated static func == (a: Self, b: Self) -> Bool {
             a.line.row == b.line.row && a.line.depth == b.line.depth && a.line.parity == b.line.parity
                 && a.line.isExpanded == b.line.isExpanded && a.line.hasChildren == b.line.hasChildren
                 && a.selected == b.selected && a.widths == b.widths && a.height == b.height
+                && a.columnsVersion == b.columnsVersion
         }
+
+        /// Hovered or selected (or VoiceOver on): the only rows that carry tooltips, the live actions button and
+        /// the context menu (W5c pattern, U-M1).
+        private var active: Bool { hovering || selected || voiceOver }
 
         var fill: Color {
             if selected { return TTColor.rowSelected }
@@ -313,6 +341,9 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                     }
             )
             .onHover { hovering = $0 }
+            .environment(\.ttRowActive, active)
+            .contextMenu { if active, let rowMenu { rowMenu(line.row) } }
+            .accessibilityElement(children: .combine)
         }
     }
 }

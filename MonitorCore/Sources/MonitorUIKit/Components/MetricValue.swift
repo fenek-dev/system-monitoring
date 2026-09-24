@@ -53,10 +53,12 @@ struct UnavailableStyle: ViewModifier {
     }
 }
 
-/// `.help` only when there is a tooltip (no empty help tags).
+/// `.help` only when there is a tooltip (no empty help tags), and only in an active table row (`\.ttRowActive`:
+/// hovered/selected; always true outside tables).
 struct OptionalHelp: ViewModifier {
     let text: String?
+    @Environment(\.ttRowActive) private var active
     func body(content: Content) -> some View {
-        if let text { content.help(text) } else { content }
+        if let text, active { content.help(text) } else { content }
     }
 }

@@ -201,6 +201,38 @@ final class RankCache<Row> {
     }
 }
 
+/// `TTTable.columnsVersion` for cells that capture sensor health and unit settings (M2).
+@MainActor func tableColumnsVersion(_ live: LiveModel, units: UnitPreferences) -> Int {
+    var h = Hasher()
+    h.combine(live.healthVersion)
+    h.combine(units.temperature.rawValue)
+    h.combine(units.networkRate.rawValue)
+    return h.finalize()
+}
+
+/// DESIGN §5.10: a Live rate chart's scale only grows during the session; stored ranges use the window's own nice
+/// ceiling. Held in `@State` and updated during body like `RankCache` (not observed; a range switch starts over).
+@MainActor
+final class LiveCeilings {
+    private var range: HistoryRange?
+    private var values: [String: Double] = [:]
+
+    func ceiling(_ key: String, range: HistoryRange, _ value: Double) -> Double {
+        if range != self.range {
+            self.range = range
+            values.removeAll()
+        }
+        guard range == .live else { return value }
+        let v = max(values[key] ?? 0, value.isFinite ? value : 0)
+        values[key] = v
+        return v
+    }
+
+    func domain(_ key: String, range: HistoryRange, _ d: ClosedRange<Double>) -> ClosedRange<Double> {
+        d.lowerBound...max(d.lowerBound, ceiling(key, range: range, d.upperBound))
+    }
+}
+
 // MARK: - Small shared views
 
 /// Card header trailing link.
@@ -250,15 +282,19 @@ struct FitRows<Content: View>: View {
 
 /// Value legend spread space-between (Overview Power card, 298 wide). `TTLegend`'s fixed gap 14 does not fit four
 /// "CPU 10.8 W" items (the artboard's CSS wraps "W" onto a second line). One type size for every item: `caption`
-/// when it fits, else all items in `micro`.
+/// on a card wide enough for four "DRAM 12.3 W"-sized items (≈ 330 pt; wider windows), else all items in `micro`
+/// (the default 300-pt card). Chosen by the card width, not by measuring both variants each tick
+/// (`ViewThatFits`, U-M1); the width only changes on a window resize.
 struct ColumnLegend: View {
     let items: [(label: String, color: Color)]
+    @State private var roomy = false
+
+    nonisolated static let captionMinWidth: CGFloat = 350
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            row(TTFont.caption, gap: 8)
-            row(TTFont.micro, gap: 6)
-        }
+        (roomy ? row(TTFont.caption, gap: 8) : row(TTFont.micro, gap: 6))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: Bool.self) { $0.size.width >= Self.captionMinWidth } action: { roomy = $0 }
     }
 
     private func row(_ font: Font, gap: CGFloat) -> some View {

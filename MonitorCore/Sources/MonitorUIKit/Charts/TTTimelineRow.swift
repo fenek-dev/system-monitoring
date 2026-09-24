@@ -67,7 +67,7 @@ public struct TTTimelineRow: View, Equatable {
                 .frame(width: chartWidth, height: 30)
             MetricValue(value, unavailableReason: unavailableReason, font: TTFont.body12)
                 .foregroundStyle(TTColor.textPrimary)
-                .minimumScaleFactor(0.8)
+                .layoutPriority(1)               // fixed layout, no scale-to-fit pass per tick (U-M1)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(height: height)

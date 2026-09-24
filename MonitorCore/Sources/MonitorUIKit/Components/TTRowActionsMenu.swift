@@ -124,6 +124,20 @@ public struct TTRowActionsButton: View {
     }
 
     public var body: some View {
+        if rowActive {
+            button
+        } else {
+            // Inactive table row (not hovered/selected): the same glyph without Button, tooltip, menu anchor or
+            // hover tracking; the row turns active under the pointer before a click can land (U-M1).
+            TTIcon(.ellipsis, size: 16, color: TTColor.textSecondary)
+                .frame(width: side, height: side)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @Environment(\.ttRowActive) private var rowActive
+
+    private var button: some View {
         Button(action: popUp) {
             TTIcon(.ellipsis, size: 16, color: TTColor.textSecondary)
                 .frame(width: side, height: side)

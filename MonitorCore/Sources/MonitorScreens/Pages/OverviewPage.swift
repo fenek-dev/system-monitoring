@@ -6,27 +6,26 @@ import SwiftUI
 /// DESIGN §3.4 Overview (Main). Content 1020 × 768 at the default size:
 /// tiles `grid5` (168) · `grid3` row (min 276): "Last 60 seconds" span 2 | Power (min 134) over Disk (min 120, flex)
 /// · Top processes (flex). The header subtitle comes from the shell (`PageHeader.defaultSubtitle`).
-/// Each block is its own view, so a tick re-evaluates only the blocks that read the changed category.
+/// Each block is its own view, so a tick re-evaluates only the blocks that read the changed category; the page root
+/// reads no live state (the range readers sit inside the tiles and the timeline card), so a Live tick never
+/// re-lays out the page container (U-M1).
 public struct OverviewPage: View {
     public init() {}
 
     public var body: some View {
-        // One reader feeds the tiles and the timeline (same five metrics, one store read per bucket).
-        RangeSeriesReader(OverviewTiles.metrics) { s in
-            FlexPage(minContentHeight: 168 + 276 + 200 + 2 * TTSpace.gridGap) {
-                OverviewTiles(series: s)
-                GridRow(columns: 3, spans: [2, 1], minHeight: 276) {
-                    OverviewTimelineCard(series: s)
-                    VStack(spacing: TTSpace.gridGap) {
-                        OverviewPowerCard()
-                        OverviewDiskCard()
-                    }
+        FlexPage(minContentHeight: 168 + 276 + 200 + 2 * TTSpace.gridGap) {
+            OverviewTiles()
+            GridRow(columns: 3, spans: [2, 1], minHeight: 276) {
+                OverviewTimelineCard()
+                VStack(spacing: TTSpace.gridGap) {
+                    OverviewPowerCard()
+                    OverviewDiskCard()
                 }
-                OverviewTopProcessesCard()
-                    .frame(minHeight: 200, maxHeight: .infinity, alignment: .top)
             }
-            .processActionsHost()
+            OverviewTopProcessesCard()
+                .frame(minHeight: 200, maxHeight: .infinity, alignment: .top)
         }
+        .processActionsHost()
     }
 }
 
@@ -34,19 +33,23 @@ public struct OverviewPage: View {
 
 /// DESIGN §3.4.1: five `TTMetricTile`s (`grid5`); click navigates to the category page.
 struct OverviewTiles: View {
-    let series: RangeSeries
     @Environment(LiveModel.self) private var live
     @Environment(NavigationModel.self) private var nav
     @Environment(\.unitPreferences) private var units
+    @State private var ceilings = LiveCeilings()
 
+    /// Same five metrics as the timeline card (each card reads the store once per bucket in stored ranges).
     static let metrics: [HistoryMetric] = [.cpuUsage, .gpuUsage, .memUsed, .netRx, .socTemp]
 
     var body: some View {
-        GridRow(columns: 5) {
-            ForEach(Self.tiles(series, live: live, units: units), id: \.category) { t in
-                TTMetricTile(category: t.category, value: t.value, prefix: t.prefix, unit: t.unit, detail: t.detail,
-                             points: t.points, unavailableReason: t.reason, yDomain: t.domain) {
-                    nav.page = t.category.dashboardPage
+        RangeSeriesReader(Self.metrics) { series in
+            GridRow(columns: 5) {
+                ForEach(Self.tiles(series, live: live, units: units, ceilings: ceilings), id: \.category) { t in
+                    TTMetricTile(category: t.category, value: t.value, prefix: t.prefix, unit: t.unit, detail: t.detail,
+                                 points: t.points, unavailableReason: t.reason, yDomain: t.domain) {
+                        nav.page = t.category.dashboardPage
+                    }
+                    .equatable()
                 }
             }
         }
@@ -63,7 +66,8 @@ struct OverviewTiles: View {
         var reason: String?
     }
 
-    static func tiles(_ s: RangeSeries, live: LiveModel, units: UnitPreferences) -> [Tile] {
+    static func tiles(_ s: RangeSeries, live: LiveModel, units: UnitPreferences,
+                      ceilings: LiveCeilings = LiveCeilings()) -> [Tile] {
         let health = live.sensorHealth
         func reason(_ m: HistoryMetric) -> String? { unavailableReason(m, health: health) }
 
@@ -102,7 +106,8 @@ struct OverviewTiles: View {
             Tile(category: .memory, value: mem.value, unit: mem.unit, detail: memSub.joined(separator: " · "),
                  points: s[.memUsed], domain: 0...Double(max(live.memory.total, 1)), reason: reason(.memUsed)),
             Tile(category: .network, value: net.rxBps.map { TTFormat.rate($0, units: units) }, prefix: "↓ ", unit: nil,
-                 detail: netSub.joined(separator: " · "), points: s[.netRx], domain: W5a.rateDomain(s[.netRx]),
+                 detail: netSub.joined(separator: " · "), points: s[.netRx],
+                 domain: ceilings.domain("netRx", range: s.range, W5a.rateDomain(s[.netRx])),
                  reason: reason(.netRx)),
             Tile(category: .thermals, value: temp.value, unit: temp.unit, detail: thermSub.joined(separator: " · "),
                  points: s[.socTemp], domain: 0...100, reason: reason(.socTemp)),
@@ -125,12 +130,15 @@ struct OverviewTiles: View {
 /// DESIGN §3.4.2: card gap 12, min 276: header (range title + "Open History"), 5 × `TTTimelineRow` (gap 4), axis
 /// inset 96; extra height goes below the axis.
 struct OverviewTimelineCard: View {
-    let series: RangeSeries
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
+    @State private var ceilings = LiveCeilings()
 
     var body: some View {
-        let s = series
+        RangeSeriesReader(OverviewTiles.metrics) { s in card(s) }
+    }
+
+    private func card(_ s: RangeSeries) -> some View {
         TTCard(spacing: TTSpace.gridGap) {
             TTCardHeader(s.range.lastTitle) { PageLink("Open History", to: .history) }
             VStack(spacing: TTSpace.x4) {
@@ -169,7 +177,7 @@ struct OverviewTimelineCard: View {
                 domain: 0...Double(max(live.memory.total, 1))),
             Row(label: "Network", value: TTFormat.rate(live.network.rxBps, units: units),
                 reason: unavailableReason(.netRx, health: h), points: s[.netRx], color: TTColor.net,
-                domain: W5a.rateDomain(s[.netRx])),
+                domain: ceilings.domain("netRx", range: s.range, W5a.rateDomain(s[.netRx]))),
             Row(label: "Thermals", value: TTFormat.temperature(live.thermals.socAverage, units: units),
                 reason: unavailableReason(.socTemp, health: h), points: s[.socTemp], color: TTColor.thermal,
                 domain: 0...100),
@@ -281,10 +289,12 @@ struct OverviewTopProcessesCard: View {
     @Environment(\.unitPreferences) private var units
     @State private var selection: AppKey?
     @State private var sort: (column: String, descending: Bool) = ("cpu", true)
+    @State private var cache = RankCache<AppSample>()
 
     var body: some View {
         let health = live.sensorHealth
-        let rows = Self.rows(live)
+        // Ranked once per apps change (`appsVersion`), not on every body evaluation (U-M1).
+        let rows = cache.rows(version: live.appsVersion) { Self.rows(live) }
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Top processes") { PageLink("All processes", to: .processes) }
             FitRows { n in   // "as many as fit (≈4 at the default size)"
@@ -294,7 +304,7 @@ struct OverviewTopProcessesCard: View {
                         }, children: nil,
                         // Pre-sorted by CPU before the prefix; the table must not re-sort (header sorting is off).
                         style: TTTableStyle(sortsRows: false, scrolls: false, emptyMessage: "No processes"),
-                        onDoubleClick: open)
+                        onDoubleClick: open, columnsVersion: tableColumnsVersion(live, units: units))
             }
         }
     }

@@ -165,7 +165,9 @@ public struct TTMetricTile: View, Equatable {
                     }
                 }
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                // Fixed layout (no scale-to-fit pass per tick) except for rates, whose strings vary in length
+                // ("↓ 999.9 KB/s") and can outgrow a tile (U-M1).
+                .minimumScaleFactor(tile.prefix == nil ? 1 : 0.7)
             }
         }
     }
