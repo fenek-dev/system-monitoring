@@ -90,6 +90,32 @@ struct PopoverTests {
         #expect(PopoverModel.thermalSubtitle(t, device: device, stressed: false) == "Nominal · no fans")
     }
 
+    /// U-I2: an unknown fan count (SMC unreachable / placeholder) is not "no fans"; an unknown battery is not
+    /// "AC power" — before the first frame nothing is claimed.
+    @Test func unknownDeviceFactsAreNotFacts() {
+        var t = SystemFrame.empty.thermals
+        t.pressure = .nominal
+        #expect(DeviceInfo.placeholder.fanCount == nil && DeviceInfo.placeholder.hasBattery == nil)
+        #expect(PopoverModel.thermalSubtitle(t, device: .placeholder, stressed: false) == "Nominal")
+
+        let fresh = LiveModel()                      // before the first frame
+        fresh.isPresenting = true
+        #expect(PopoverModel.row(.power, live: fresh, units: UnitPreferences()).subtitle == nil)
+        #expect(PopoverModel.row(.thermals, live: fresh, units: UnitPreferences()).subtitle?.contains("no fans") != true)
+
+        let unknown = ScreenFixture.live(.deviceUnknown)
+        #expect(unknown.device.fanCount == nil && unknown.device.hasBattery == nil)
+        #expect(PopoverModel.row(.power, live: unknown, units: UnitPreferences()).subtitle == nil)
+        #expect(PopoverModel.row(.thermals, live: unknown, units: UnitPreferences()).subtitle == "Nominal")
+
+        var desktop = DeviceInfo.placeholder
+        desktop.hasBattery = false
+        #expect(PopoverModel.powerPhrase(PowerSnapshot(), device: desktop, lastUpdate: Date()) == W5a.batteryPhrase(nil))
+        #expect(PopoverModel.powerPhrase(PowerSnapshot(), device: desktop, lastUpdate: nil) == nil)
+        #expect(PowerCopy.batteryReason(hasBattery: nil, status: .ok) == "Collecting…")
+        #expect(!PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false), hasBattery: nil).contains("adapter"))
+    }
+
     @Test func expansionShowsTopThree() {
         let live = ScreenFixture.live(.calm)
         let apps = PopoverModel.expansionApps(.cpu, live: live)
@@ -195,6 +221,7 @@ struct PopoverTests {
         assertScreen("popover", scenario: .sensorsUnavailable)
         assertScreen("popover", scenario: .collecting)
         assertScreen("popover", scenario: .paused)
+        assertScreen("popover", scenario: .deviceUnknown)
     }
 
     @Test func expandedSnapshot() {

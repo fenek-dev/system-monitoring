@@ -196,6 +196,16 @@ struct MemoryPressureChart: View {
         }
         .accessibilityElement()
         .accessibilityLabel("Memory pressure")
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    /// "Latest 34%, normal" / "No data" (M13).
+    var accessibilitySummary: String {
+        guard let i = points.lastIndex(where: { $0.value?.isFinite == true }), let v = points[i].value else {
+            return "No data"
+        }
+        let level = i < levels.count ? ", \(levels[i].title.lowercased())" : ""
+        return "Latest \(TTFormat.percent(v))\(level)"
     }
 }
 
@@ -222,7 +232,7 @@ struct MemorySwapCard: View {
                 }
                 TTAreaChart(s[.swapUsed], color: TTColor.memCompressed,
                             yDomain: 0...Double(max(m.swapTotal ?? 1, 1)), fillOpacity: TTChartFill.swap,
-                            lineWidth: TTStroke.spark, showsCollecting: reason == nil)
+                            lineWidth: TTStroke.spark, showsCollecting: reason == nil, partialHistory: s.range != .live)
                     .equatable()
                     .frame(height: 50)
                 TTKeyValueList(rows: [
@@ -251,16 +261,7 @@ struct MemoryConsumersCard: View {
 
     /// App groups by memory descending (stable; nil last); pre-sorted, the table does not re-sort.
     nonisolated static func rank(_ apps: [AppSample]) -> [AppSample] {
-        apps.enumerated().filter { $0.element.identity.key != .other }
-            .sorted { a, b in
-                switch (a.element.memory, b.element.memory) {
-                case let (x?, y?): x != y ? x > y : a.offset < b.offset
-                case (.some, nil): true
-                case (nil, .some): false
-                case (nil, nil): a.offset < b.offset
-                }
-            }
-            .map(\.element)
+        TTSort.stable(apps.filter { $0.identity.key != .other }) { $0.memory.map { Double($0) } }
     }
 
     static func rows(_ live: LiveModel) -> [AppSample] { rank(live.apps) }

@@ -34,7 +34,18 @@ import Testing
         #expect(lines.map(\.parity) == [0, 0, 0, 1, 0])
         #expect(lines.map(\.hasChildren) == [true, false, false, false, true])
         #expect(lines.map(\.isExpanded) == [true, false, false, false, false])
+
+        // M11: with a `hasChildren` test, `children` runs only for expanded rows; the result is the same.
+        let asked = Box()
+        let lazy = T.lines(rows, key: key, descending: true, children: { asked.ids.append($0.id); return $0.kids },
+                           expanded: ["p0"], hasChildren: { !$0.kids.isEmpty })
+        #expect(asked.ids == ["p0"])
+        #expect(lazy.map(\.row.id) == lines.map(\.row.id))
+        #expect(lazy.map(\.hasChildren) == lines.map(\.hasChildren))
+        #expect(lazy.map(\.isExpanded) == lines.map(\.isExpanded))
     }
+
+    private final class Box { var ids: [String] = [] }
 
     @Test func columnWidthsSplitRemainingSpace() {
         let widths = T.columnWidths([.fraction(2.2, min: 0), .fixed(64), .fraction(1, min: 0), .flexible(min: 50)],

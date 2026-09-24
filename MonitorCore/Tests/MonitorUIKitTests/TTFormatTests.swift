@@ -5,9 +5,9 @@ import Testing
 
 /// DESIGN §5 samples. Locale fixed to en_US (the design's samples are en-US).
 @Suite(.enUS) struct TTFormatTests {
-    @Test func localeIsScopedNotGlobal() async {
+    @Test func localeIsScopedNotGlobal() {
         #expect(TTFormat.count(3104) == "3,104")
-        await TTFormat.$locale.withValue(Locale(identifier: "de_DE")) {
+        TTFormat.$locale.withValue(Locale(identifier: "de_DE")) {
             #expect(TTFormat.count(3104) == "3.104")
         }
         #expect(TTFormat.count(3104) == "3,104")
@@ -63,7 +63,6 @@ import Testing
         #expect(TTFormat.cpuPercent(212.4, sign: false) == "212.4")
         #expect(TTFormat.cpuPercentInteger(212.4) == "212%")
         #expect(TTFormat.cpuPercentInteger(812) == "812%")
-        #expect(TTFormat.percentValue(0.0, digits: 1) == "0.0%")
     }
 
     // MARK: §5.3 Bytes

@@ -51,13 +51,13 @@ private struct PowerHeaderSubtitle: View {
 enum PowerCopy {
     /// "On battery · 72.4 Wh · Low Power Mode off" / "On power adapter · 96 W · …" (DESIGN §3.10 header).
     /// A laptop whose battery reading is missing (sensor unavailable) doesn't claim a power source unless the adapter
-    /// wattage says so.
-    static func subtitle(_ p: PowerSnapshot, hasBattery: Bool) -> String {
+    /// wattage says so. `hasBattery == nil` (not known yet) claims nothing either (U-I2).
+    static func subtitle(_ p: PowerSnapshot, hasBattery: Bool?) -> String {
         var parts: [String] = []
         let adapter = p.adapterWatts.map { "On power adapter · \(TTFormat.number($0, digits: 0)) W" }
         if let b = p.battery {
             parts.append(b.onAC ? (adapter ?? "On power adapter") : "On battery")
-        } else if !hasBattery {
+        } else if hasBattery == false {
             parts.append(adapter ?? "On power adapter")
         } else if let adapter {
             parts.append(adapter)
@@ -100,10 +100,14 @@ enum PowerCopy {
         return p.battery == nil ? nil : "Connected"
     }
 
-    /// Why battery values are "—": no battery (desktop), else the battery sensor's reason.
-    static func batteryReason(hasBattery: Bool, status: SensorStatus) -> String {
-        guard hasBattery else { return "This Mac has no battery" }
-        return status.reason ?? "Not reported by the battery"
+    /// Why battery values are "—": no battery (desktop), else the battery sensor's reason; "Collecting…" while it
+    /// is not known yet whether this Mac has a battery (U-I2).
+    static func batteryReason(hasBattery: Bool?, status: SensorStatus) -> String {
+        switch hasBattery {
+        case false?: return "This Mac has no battery"
+        case nil: return status.reason ?? "Collecting…"
+        case true?: return status.reason ?? "Not reported by the battery"
+        }
     }
 
     /// Glyph fill: `battery`, `statusElevated` at ≤ 20 %, `statusCritical` at ≤ 10 % (ADDED).
@@ -147,6 +151,8 @@ private struct PowerByComponentCard: View {
     @Environment(NavigationModel.self) private var nav
     @Environment(\.now) private var fixedNow
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
+    /// Live scale only grows during a session (DESIGN §5.10, M5).
+    @State private var ceilings = LiveCeilings()
 
     private static let metrics: [HistoryMetric] = [.cpuWatts, .gpuWatts, .aneWatts, .dramWatts]
 
@@ -171,7 +177,8 @@ private struct PowerByComponentCard: View {
                 if stacked.isEmpty, let reason = unavailableReason(.cpuWatts, health: live.sensorHealth) {
                     SystemChartUnavailable(reason: reason)
                 } else {
-                    TTStackedArea(stacked, yDomain: 0...PowerChartScale.ceiling(stacked.map(\.points)))
+                    TTStackedArea(stacked, yDomain: 0...ceilings.ceiling("stack", range: range,
+                                                                         PowerChartScale.ceiling(stacked.map(\.points))))
                 }
             }
             .frame(minHeight: 160, maxHeight: .infinity)
@@ -228,9 +235,11 @@ private struct BatteryCard: View {
             .frame(minHeight: 20)
             // "No battery" only on Macs without one; a laptop whose battery sensor is down keeps the layout with
             // "—" + the sensor's reason.
-            if p.battery != nil || live.device.hasBattery {
+            // Unknown (`hasBattery == nil`, before the first frame) keeps this layout too: "—" + "Collecting…".
+            if p.battery != nil || live.device.hasBattery != false {
                 let b = p.battery
-                let missing = b == nil ? PowerCopy.batteryReason(hasBattery: true, status: live.status(of: .battery)) : nil
+                let missing = b == nil
+                    ? PowerCopy.batteryReason(hasBattery: live.device.hasBattery, status: live.status(of: .battery)) : nil
                 let notReported = missing ?? Self.notReported
                 HStack(spacing: TTSpace.x14) {
                     BatteryGlyph(percent: b?.percent)
@@ -315,7 +324,7 @@ enum EnergyRows {
     /// App groups with energy > 0 or a sleep assertion (or an unavailable value to explain), excluding "Other";
     /// sorted by energy, descending (nil last, stable).
     static func apps(_ apps: [AppSample], averages: [AppKey: Double], health: [SensorID: SensorStatus]) -> [EnergyRow] {
-        SystemPageSort.descending(rows(apps, averages: averages, health: health)) { $0.watts }
+        TTSort.stable(rows(apps, averages: averages, health: health)) { $0.watts }
     }
 
     private static func rows(_ apps: [AppSample], averages: [AppKey: Double],
@@ -346,6 +355,7 @@ private struct EnergyImpactCard: View {
     @Environment(\.now) private var fixedNow
     @State private var selection: String?
     @State private var averages: [AppKey: Double] = [:]
+    @State private var rankCache = RankCache<EnergyRow>()
     let feedback: ProcessActionFeedback
 
     init(selection: String? = nil, feedback: ProcessActionFeedback) {
@@ -355,8 +365,9 @@ private struct EnergyImpactCard: View {
 
     var body: some View {
         let health = live.sensorHealth
-        let rows = EnergyRows.apps(live.apps, averages: averages, health: health)
-        let children = childMap(rows, health: health)
+        // M11: ranked once per (apps, health, 12 h averages) change; child rows built only for rows the table
+        // shows (and only when it asks: expanded parents), not for every process of every app each tick.
+        let rows = rankCache.rows(version: rowsVersion) { EnergyRows.apps(live.apps, averages: averages, health: health) }
         let sleepReason = sleepUnavailableReason
         let end = fixedNow ?? live.lastUpdate ?? Date()
         TTCard(spacing: TTSpace.x8) {
@@ -373,23 +384,35 @@ private struct EnergyImpactCard: View {
                 TTTable(rows: Array(rows.prefix(limit)), columns: columns(sleepReason: sleepReason),
                         selection: $selection, sort: .constant((column: "energy", descending: true)),
                         rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
-                        children: { children[$0.id] ?? [] },
-                        style: TTTableStyle(emptyMessage: "No app energy use"))
+                        children: { childRows($0, health: health) },
+                        style: TTTableStyle(emptyMessage: "No app energy use"),
+                        hasChildren: { hasChildRows($0) })
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .task(id: Int(end.timeIntervalSince1970 / 60)) { await loadAverages(end: end) }
     }
 
-    /// Child process rows for apps with more than one process (Processes Apps-mode disclosure).
-    private func childMap(_ rows: [EnergyRow], health: [SensorID: SensorStatus]) -> [String: [EnergyRow]] {
-        var children: [String: [EnergyRow]] = [:]
-        for row in rows {
-            guard case .app(let identity, _) = row.target else { continue }
-            let procs = live.processes(of: identity.key)
-            if procs.count > 1 { children[row.id] = procs.map { EnergyRows.process($0, identity: identity, health: health) } }
-        }
-        return children
+    /// Version of the ranked rows' inputs (`RankCache`).
+    private var rowsVersion: Int {
+        var h = Hasher()
+        h.combine(live.appsVersion)
+        h.combine(live.healthVersion)
+        h.combine(averages)
+        return h.finalize()
+    }
+
+    private func hasChildRows(_ row: EnergyRow) -> Bool {
+        guard case .app(let identity, _) = row.target else { return false }
+        return live.processes(of: identity.key).count > 1
+    }
+
+    /// Child process rows for an app with more than one process (Processes Apps-mode disclosure); called by the
+    /// table per shown row.
+    private func childRows(_ row: EnergyRow, health: [SensorID: SensorStatus]) -> [EnergyRow] {
+        guard case .app(let identity, _) = row.target else { return [] }
+        let procs = live.processes(of: identity.key)
+        return procs.count > 1 ? procs.map { EnergyRows.process($0, identity: identity, health: health) } : []
     }
 
     private var sleepUnavailableReason: String? {

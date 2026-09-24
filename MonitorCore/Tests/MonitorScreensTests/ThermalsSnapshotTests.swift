@@ -10,13 +10,15 @@ import Testing
 
 /// DESIGN §3.9 Thermals page goldens (`__Snapshots__/thermals-*.png`).
 @MainActor
-@Suite("ThermalsSnapshotTests", .enabled { await ScreenFixture.snapshotsAvailable })
+@Suite("ThermalsSnapshotTests")
 struct ThermalsSnapshotTests {
     // restricted/collecting renders are identical to calm for this page (no process rows; firstTick covers
     // "Collecting…"), so they have no goldens of their own.
     @Test func calm() { assertScreen("thermals", scenario: .calm) }
     @Test func thermalCritical() { assertScreen("thermals", scenario: .thermalCritical) }
     @Test func sensorsUnavailable() { assertScreen("thermals", scenario: .sensorsUnavailable) }
+    /// U-I2: fan count unknown (SMC unreachable) → "—" + the SMC reason, never "This Mac has no fans".
+    @Test func deviceUnknown() { assertScreen("thermals", scenario: .deviceUnknown) }
 
     /// W7 T6 drill: SMC crashed (canary) and HID disabled. Every SoC temperature is unavailable; only the battery
     /// reports (31 °C, below the floor). The chart shows "—" + the reason, never a flat line on the 40° floor.
@@ -39,6 +41,23 @@ struct ThermalsSnapshotTests {
                                isSnapshot: true, now: MockDataProvider.referenceDate)
         assertSnapshot(ThermalsPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent,
                        named: "thermals-temps-unavailable")
+    }
+
+    /// U-M9: the "Approximate mapping" caption/tooltip when the SMC keys did not match the catalog
+    /// (`ThermalSnapshot.approximateMapping`, set by the engine from `SMCReading.catalogMatched`).
+    @Test func approximateMapping() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.thermals.approximateMapping = true
+            live.apply(f)
+        }
+        live.isPresenting = true
+        let ctx = ShellContext(live: live, settings: ScreenCatalog.snapshotSettings(), history: provider.history(),
+                               isSnapshot: true, now: MockDataProvider.referenceDate)
+        assertSnapshot(ThermalsPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent,
+                       named: "thermals-approximate-calm")
     }
 
     /// A raw sensor row clicked open: its 30-pt 1H strip ("Collecting…" until the page has recorded samples).
@@ -176,7 +195,8 @@ struct ThermalsPageLogicTests {
         // header 26 + 4 top padding, then whole 32-pt rows only.
         #expect(SystemFittedRows<EmptyView>.limit(height: 30 + 32 * 6 + 31, rowHeight: 32, headerHeight: 26) == 6)
         #expect(SystemFittedRows<EmptyView>.limit(height: 10, rowHeight: 32, headerHeight: 26) == 0)
-        #expect(SystemPageSort.descending([1.0, nil, 3.0, 3.0], by: { $0 }).map { $0 } == [3.0, 3.0, 1.0, nil])
+        #expect(TTSort.stable([1.0, nil, 3.0, 3.0], by: { $0 }).map { $0 } == [3.0, 3.0, 1.0, nil])
+        #expect(TTSort.stable([1.0, nil, 3.0, .nan], descending: false, by: { $0 }).map { $0?.isNaN } == [false, false, nil, true])
     }
 
     @Test func rawModeNestsSensorsHottestFirstAndCollectsOrphans() {

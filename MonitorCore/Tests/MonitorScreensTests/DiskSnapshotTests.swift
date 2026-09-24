@@ -10,7 +10,7 @@ import Testing
 
 /// DESIGN §3.11 Disk goldens (`__Snapshots__/disk-*.png`).
 @MainActor
-@Suite("DiskSnapshotTests", .enabled { await ScreenFixture.snapshotsAvailable })
+@Suite("DiskSnapshotTests")
 struct DiskSnapshotTests {
     // The mock's sensorsUnavailable/collecting/restricted scenarios render identically to calm on this page, so
     // the unavailable state uses its own fixture and firstTick covers "Collecting…".

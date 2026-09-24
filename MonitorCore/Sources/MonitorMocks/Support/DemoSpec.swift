@@ -80,7 +80,7 @@ enum DemoSpec {
     static func params(for scenario: MockScenario) -> [DemoKey: DemoParam] {
         var p = calm
         switch scenario {
-        case .calm, .collecting, .paused, .restricted, .runaway:
+        case .calm, .collecting, .paused, .restricted, .runaway, .deviceUnknown:
             break
 
         case .thermalFair:

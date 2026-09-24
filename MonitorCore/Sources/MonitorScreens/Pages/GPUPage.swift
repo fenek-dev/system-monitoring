@@ -66,9 +66,10 @@ struct GPUStatStrip: View {
                   unavailableReason: unavailableReason(.gpuWatts, health: h) ?? "Not reported by IOReport"),
             .init(id: "memory", label: "GPU memory",
                   value: TTFormat.memory(g.allocatedMemory, style: .headline), detail: "allocated from unified memory",
-                  unavailableReason: "Not reported by IOAccelerator"),
+                  // M12: the gpuClients sensor's own reason first (e.g. "Disabled after a crash").
+                  unavailableReason: live.status(of: .gpuClients).reason ?? "Not reported by IOAccelerator"),
             .init(id: "cores", label: "Cores", value: TTFormat.count(g.coreCount ?? live.device.gpuCores),
-                  unavailableReason: "GPU core count not reported"),
+                  unavailableReason: live.status(of: .gpuClients).reason ?? "GPU core count not reported"),
         ]
     }
 }
@@ -109,6 +110,8 @@ struct GPUUtilizationCard: View {
 struct GPUNeuralEngineCard: View {
     let flexes: Bool
     @Environment(LiveModel.self) private var live
+    /// Live scale only grows during a session (DESIGN §5.10, M5).
+    @State private var ceilings = LiveCeilings()
 
     var body: some View {
         let w = live.gpu.aneWatts
@@ -126,9 +129,11 @@ struct GPUNeuralEngineCard: View {
                         Text(w < 0.05 ? "idle" : "active").font(TTFont.body12).foregroundStyle(TTColor.textSecondary)
                     }
                 }
-                TTAreaChart(s[.aneWatts], color: TTColor.power, yDomain: W5a.autoDomain(s[.aneWatts], minimum: 1),
+                TTAreaChart(s[.aneWatts], color: TTColor.power,
+                            yDomain: ceilings.domain("ane", range: s.range, W5a.autoDomain(s[.aneWatts], minimum: 1)),
                             fillOpacity: TTChartFill.ane, lineWidth: TTStroke.spark,
-                            showsCollecting: w != nil || unavailableReason(.aneWatts, health: live.sensorHealth) == nil)
+                            showsCollecting: w != nil || unavailableReason(.aneWatts, health: live.sensorHealth) == nil,
+                            partialHistory: s.range != .live)
                     .equatable()
                     .frame(minHeight: 44, maxHeight: flexes ? .infinity : 44)
             }
@@ -195,13 +200,9 @@ struct GPUClientsCard: View {
 
     /// GPU clients by % GPU descending (stable); pre-sorted, the table does not re-sort.
     nonisolated static func rank(_ apps: [AppSample]) -> [AppSample] {
-        apps.enumerated()
-            .filter { $0.element.identity.key != .other && (($0.element.gpuPercent ?? 0) > 0 || ($0.element.gpuTimeNs ?? 0) > 0) }
-            .sorted { a, b in
-                let x = a.element.gpuPercent ?? 0, y = b.element.gpuPercent ?? 0
-                return x != y ? x > y : a.offset < b.offset
-            }
-            .map(\.element)
+        TTSort.stable(apps.filter { $0.identity.key != .other && (($0.gpuPercent ?? 0) > 0 || ($0.gpuTimeNs ?? 0) > 0) }) {
+            $0.gpuPercent ?? 0
+        }
     }
 
     static func rows(_ live: LiveModel) -> [AppSample] { rank(live.apps) }

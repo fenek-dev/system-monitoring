@@ -20,7 +20,7 @@ struct PopoverRowView: View, Equatable {
                      unavailableReason: row.unavailableReason, points: row.points, yDomain: row.domain,
                      compact: row.compact,
                      expanded: Binding(get: { expanded }, set: { if $0 != expanded { toggle() } }),
-                     topApps: topApps, level: row.stress)
+                     topApps: topApps, level: row.stress, showsCollecting: !row.sensorDown)
     }
 }
 

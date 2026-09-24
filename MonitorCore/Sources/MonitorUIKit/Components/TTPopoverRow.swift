@@ -52,6 +52,7 @@ public struct TTPopoverRow: View {
     @Binding var expanded: Bool
     let topApps: [AppSample]
     let level: AlertLevel
+    let showsCollecting: Bool
     @Environment(\.appCommands) private var commands
     @Environment(\.unitPreferences) private var units
     @Environment(\.isSnapshot) private var isSnapshot
@@ -66,9 +67,11 @@ public struct TTPopoverRow: View {
 
     /// - `level`: stressed state (thermal/memory/runaway alert on this category).
     /// - `yDomain`: nil → category default (§5.10) or auto nice ceiling.
+    /// - `showsCollecting`: sparkline "Collecting…" below 2 samples; nil = automatic (unless `unavailableReason`).
     public init(category: MonitorModel.Category, subtitle: String?, value: String?, unavailableReason: String? = nil,
                 points: [SeriesPoint], yDomain: ClosedRange<Double>? = nil, compact: Bool, expanded: Binding<Bool>,
-                topApps: [AppSample], level: AlertLevel) {
+                topApps: [AppSample], level: AlertLevel, showsCollecting: Bool? = nil) {
+        self.showsCollecting = showsCollecting ?? (unavailableReason == nil)
         self.category = category
         self.subtitle = subtitle
         self.value = value
@@ -200,7 +203,7 @@ public struct TTPopoverRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             TTAreaChart(points, color: TTColor.category(category), yDomain: domain, fillOpacity: TTChartFill.sparkline,
-                        lineWidth: TTStroke.sparkThin, showsCollecting: unavailableReason == nil)
+                        lineWidth: TTStroke.sparkThin, showsCollecting: showsCollecting)
                 .frame(width: 84, height: 22)
             MetricValue(value, unavailableReason: unavailableReason, font: TTFont.body13Value)
                 .foregroundStyle(valueColor)

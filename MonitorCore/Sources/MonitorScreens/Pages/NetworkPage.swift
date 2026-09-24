@@ -284,14 +284,10 @@ struct NetworkAppsCard: View {
     /// Apps with network activity now or this session, by ↓+↑ descending (stable). With the flow sensor unavailable
     /// nothing has activity, so every app group is listed (cells show "—" with the reason) instead of an empty table.
     nonisolated static func rank(_ apps: [AppSample], flowsUnavailable: Bool) -> [AppSample] {
-        let candidates = apps.enumerated().filter {
-            $0.element.identity.key != .other
-                && (flowsUnavailable || (total($0.element) ?? 0) > 0 || (session($0.element) ?? 0) > 0)
+        let candidates = apps.filter {
+            $0.identity.key != .other && (flowsUnavailable || (total($0) ?? 0) > 0 || (session($0) ?? 0) > 0)
         }
-        return candidates.sorted { a, b in
-            let x = total(a.element) ?? 0, y = total(b.element) ?? 0
-            return x != y ? x > y : a.offset < b.offset
-        }.map(\.element)
+        return TTSort.stable(candidates) { total($0) ?? 0 }
     }
 
     static func rows(_ live: LiveModel) -> [AppSample] {

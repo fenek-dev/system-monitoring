@@ -26,8 +26,8 @@ struct DeviceInfoSmokeTests {
         }
         print("W6a device: \(d.modelName) | \(d.hwModel) | \(d.chipName) \(d.performanceCores)P+\(d.efficiencyCores)E " +
               "GPU \(d.gpuCores ?? -1) ANE \(d.neuralEngineCores ?? -1) | \(d.memoryBytes >> 30) GB \(d.memoryType ?? "-") " +
-              "\(d.memoryBandwidth ?? "-") | \(d.osVersion) (\(d.osBuild)) | boot \(d.bootTime) | battery \(d.hasBattery) " +
-              "fans \(d.fanCount) | cost \(W6aFixture.ms(cost))ms")
+              "\(d.memoryBandwidth ?? "-") | \(d.osVersion) (\(d.osBuild)) | boot \(d.bootTime) | battery \(d.hasBattery.map { "\($0)" } ?? "unknown") " +
+              "fans \(d.fanCount.map { "\($0)" } ?? "unknown") | cost \(W6aFixture.ms(cost))ms")
         print("W6a system_profiler: model=\(field("Model Name") ?? "-") id=\(field("Model Identifier") ?? "-") chip=\(field("Chip") ?? "-") " +
               "cores=\(field("Total Number of Cores") ?? "-") memory=\(field("Memory") ?? "-")")
         #expect(d.hwModel == field("Model Identifier"))

@@ -50,12 +50,6 @@ public enum TTFormat {
         return number(f * 100, digits: digits) + "%"
     }
 
-    /// A value already in percent → "22.1%".
-    public static func percentValue(_ p: Double?, digits: Int = 1) -> String {
-        guard let p = nonNegative(p) else { return unavailable }
-        return number(p, digits: digits) + "%"
-    }
-
     /// Per-app CPU/GPU (% of one core; may exceed 100), 1 decimal: "212.4%". `sign: false` for "% CPU" headers.
     public static func cpuPercent(_ p: Double?) -> String { cpuPercent(p, sign: true) }
 
@@ -326,16 +320,6 @@ public enum TTFormat {
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         func two(_ v: Int) -> String { v < 10 ? "0\(v)" : "\(v)" }
         return h > 0 ? "\(h):\(two(m)):\(two(s))" : "\(m):\(two(s))"
-    }
-
-    /// 24-hour "HH:mm" in `timeZone`.
-    public static func clock(_ date: Date?, timeZone: TimeZone = .current) -> String {
-        guard let date else { return unavailable }
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = timeZone
-        let c = cal.dateComponents([.hour, .minute], from: date)
-        let h = c.hour ?? 0, m = c.minute ?? 0
-        return (h < 10 ? "0\(h)" : "\(h)") + ":" + (m < 10 ? "0\(m)" : "\(m)")
     }
 
     // MARK: - §5.10 Chart domains

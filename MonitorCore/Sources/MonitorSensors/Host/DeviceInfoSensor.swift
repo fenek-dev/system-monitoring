@@ -75,7 +75,7 @@ enum DeviceInfoParser {
             bootTime: Date(timeIntervalSince1970: TimeInterval(r.bootTimeSec) + TimeInterval(r.bootTimeUsec) / 1_000_000),
             osVersion: osVersion(r.osVersion),
             hasBattery: r.hasBattery,
-            fanCount: r.fanCount ?? 0
+            fanCount: r.fanCount                   // nil = SMC unreachable: unknown, not "no fans" (U-I2)
         )
     }
 

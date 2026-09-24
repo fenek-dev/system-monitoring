@@ -68,9 +68,11 @@ struct PopoverCategoryRow: View {
     let toggle: () -> Void
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
+    /// Grow-only Live rate ceiling for the sparkline while the popover is open (DESIGN §5.10, M5).
+    @State private var ceilings = LiveCeilings()
 
     var body: some View {
-        PopoverRowView(row: PopoverModel.row(category, live: live, units: units), expanded: expanded,
+        PopoverRowView(row: PopoverModel.row(category, live: live, units: units, ceilings: ceilings), expanded: expanded,
                        topApps: expanded ? PopoverModel.expansionApps(category, live: live) : [], toggle: toggle)
             .equatable()
     }

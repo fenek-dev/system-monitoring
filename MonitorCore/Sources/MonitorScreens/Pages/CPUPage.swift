@@ -169,15 +169,7 @@ struct CPUConsumersCard: View {
 
     /// Top 50 by % CPU, descending, nil last, stable — sorted before the cap (the table does not re-sort).
     nonisolated static func rank(_ processes: [ProcessSample]) -> [ProcessSample] {
-        let keyed = processes.enumerated().map { (i: $0.offset, v: $0.element.cpuPercent, p: $0.element) }
-        return Array(keyed.sorted { a, b in
-            switch (a.v, b.v) {
-            case let (x?, y?): x != y ? x > y : a.i < b.i
-            case (.some, nil): true
-            case (nil, .some): false
-            case (nil, nil): a.i < b.i
-            }
-        }.prefix(cap).map(\.p))
+        Array(TTSort.stable(processes) { $0.cpuPercent }.prefix(cap))
     }
 
     static func rows(_ live: LiveModel) -> [ProcessSample] { rank(live.processes) }
@@ -216,7 +208,8 @@ struct CPUConsumersCard: View {
                 AnyView(Text(p.isExitedResidualRow ? "" : String(p.pid)))   // ICR-13: no PID
             },
             .init(id: "user", title: "User", width: .fixed(110)) {
-                AnyView(Text($0.user ?? "—").foregroundStyle(TTColor.textSecondary).truncationMode(.tail))
+                AnyView(MetricValue($0.user, unavailableReason: "Owner not reported", font: TTFont.body12)
+                    .foregroundStyle(TTColor.textSecondary).truncationMode(.tail))
             },
             .init(id: "cpu", title: "% CPU", width: .fixed(80), alignment: .trailing, sortKey: \.cpuPercent) {
                 metricCell(TTFormat.cpuPercent($0.cpuPercent, sign: false), reason: unavailableReason(.cpu, $0, health: health),

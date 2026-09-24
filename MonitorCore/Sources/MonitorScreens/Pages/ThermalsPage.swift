@@ -593,6 +593,8 @@ private struct ThermalSensorTable: View {
                         .equatable()
                         .contentShape(Rectangle())
                         .onTapGesture { openStrips = SensorsCardLines.toggled(openStrips, line) }
+                        .accessibilityAddTraits(.isButton)   // tap toggles the row's strip (M13)
+                        .accessibilityAction { openStrips = SensorsCardLines.toggled(openStrips, line) }
                     if line.depth > 0, openStrips.contains(line.id) {
                         TTAreaChart(strip(line.id), color: TTColor.thermal, yDomain: 20...105,
                                     fillOpacity: TTChartFill.timeline, lineWidth: TTStroke.sparkThin)
@@ -680,23 +682,6 @@ struct SystemChartUnavailable: View {
     }
 }
 
-enum SystemPageSort {
-    /// Stable descending sort by `key`, nil/non-finite last (the tables' fixed headline sort).
-    static func descending<T>(_ items: [T], by key: (T) -> Double?) -> [T] {
-        items.enumerated()
-            .map { (i: $0.offset, k: key($0.element).flatMap { $0.isFinite ? $0 : nil }, v: $0.element) }
-            .sorted { a, b in
-                switch (a.k, b.k) {
-                case let (x?, y?): x != y ? x > y : a.i < b.i
-                case (.some, nil): true
-                case (nil, .some): false
-                case (nil, nil): a.i < b.i
-                }
-            }
-            .map(\.v)
-    }
-}
-
 /// Bottom table cards: snapshot renders show only whole rows (no clipped sliver of a last row); live tables pass
 /// every row and scroll. `content(limit)` receives the row budget for the height it is given.
 struct SystemFittedRows<Content: View>: View {
@@ -776,7 +761,7 @@ enum SystemRangeSeries {
 
     @MainActor static func points(_ metric: HistoryMetric, range: HistoryRange, live: LiveModel,
                                   stored: [HistoryMetric: [SeriesPoint]]) -> [SeriesPoint] {
-        range == .live ? live.series(metric) : (stored[metric] ?? [])
+        range == .live ? live.chartSeries(metric) : (stored[metric] ?? [])
     }
 
     /// Store series for a non-live range; Live → empty (the ring is read directly).

@@ -31,9 +31,12 @@ enum PopoverModel {
         var domain: ClosedRange<Double>
         /// Alert level of the category's arc (row fill + value color when not calm).
         var stress: AlertLevel
+        /// The headline sensor is down: "—" + reason and an empty sparkline (no "Collecting…").
+        var sensorDown = false
     }
 
-    static func row(_ c: MonitorModel.Category, live: LiveModel, units: UnitPreferences) -> Row {
+    static func row(_ c: MonitorModel.Category, live: LiveModel, units: UnitPreferences,
+                    ceilings: LiveCeilings = LiveCeilings()) -> Row {
         let health = live.sensorHealth
         let reason = unavailableReason(c.headlineMetric, health: health)
         let stress = c.iconArc.flatMap { live.alert.paused ? nil : live.alert.arcs[$0] } ?? .calm
@@ -49,28 +52,28 @@ enum PopoverModel {
             if let p { parts.append(TTFormat.ghz(p, digits: 1)) }
             r.subtitle = parts.isEmpty ? nil : parts.joined(separator: " · ")
             r.value = TTFormat.percent(live.cpu.usage)
-            r.points = live.series(.cpuUsage)
+            r.points = live.chartSeries(.cpuUsage)
         case .gpu:
             r.subtitle = live.gpu.frequencyMHz.map { TTFormat.frequency($0) }
             r.value = TTFormat.percent(live.gpu.usage)
-            r.points = live.series(.gpuUsage)
+            r.points = live.chartSeries(.gpuUsage)
         case .memory:
             r.subtitle = live.memory.pressureLevel.map { "pressure \($0.title.lowercased())" }
             r.value = TTFormat.memory(live.memory.used, style: .headline)
-            r.points = live.series(.memUsed)
+            r.points = live.chartSeries(.memUsed)
             r.domain = 0...Double(max(live.memory.total, 1))
         case .network:
             r.subtitle = live.network.txBps.map { TTFormat.rate($0, units: units, direction: .up) }
             r.value = TTFormat.rate(live.network.rxBps, units: units)
-            r.points = live.series(.netRx)
-            r.domain = W5a.rateDomain(r.points)
+            r.points = live.chartSeries(.netRx)
+            r.domain = ceilings.domain("netRx", range: .live, W5a.rateDomain(r.points))
         case .thermals:
             r.subtitle = thermalSubtitle(live.thermals, device: live.device, stressed: stress != .calm)
             r.value = TTFormat.temperature(live.thermals.socAverage, units: units)
-            r.points = live.series(.socTemp)
+            r.points = live.chartSeries(.socTemp)
             r.domain = 0...100
         case .power:
-            r.subtitle = live.power.battery == nil && live.device.hasBattery ? nil : W5a.batteryPhrase(live.power.battery)
+            r.subtitle = powerPhrase(live.power, device: live.device, lastUpdate: live.lastUpdate)
             // Package from IOReport; if the Energy Model is missing, the SMC system power so the row never
             // shows "—" while the Mac reports its draw (CP2).
             let w = W5a.packageWatts(live.power) ?? live.power.systemWatts
@@ -85,10 +88,25 @@ enum PopoverModel {
                 r.unavailableReason = reason ?? "Boot volume not reported"
             }
         }
+        // M3: a "—" always has a reason; a fallback (sensor fine, value missing) keeps "Collecting…" on.
+        r.sensorDown = reason != nil && r.unavailableReason != nil
+        if r.unavailableReason == nil, r.value == nil || r.value == TTFormat.unavailable {
+            r.unavailableReason = headlineReason(c.headlineMetric, value: nil, live: live).reason
+        }
         return r
     }
 
-    /// Calm "Nominal · 2,140 rpm"; stressed "Fair · fans 3,900 rpm"; no fans "Nominal · no fans".
+    /// Battery phrase for the popover Power row and the Overview power card: the battery's phrase, "AC power" only
+    /// when this Mac is known to have no battery, nil (no claim) while that is unknown — before the first frame
+    /// (DESIGN §3.15 "First launch") or on a laptop whose battery reading is missing (U-I2).
+    static func powerPhrase(_ p: PowerSnapshot, device: DeviceInfo, lastUpdate: Date?) -> String? {
+        guard lastUpdate != nil else { return nil }
+        if p.battery != nil { return W5a.batteryPhrase(p.battery) }
+        return device.hasBattery == false ? W5a.batteryPhrase(nil) : nil
+    }
+
+    /// Calm "Nominal · 2,140 rpm"; stressed "Fair · fans 3,900 rpm"; no fans "Nominal · no fans" — only when the
+    /// fan count is known to be 0 (nil = unknown: SMC unreachable or before the first frame, U-I2).
     static func thermalSubtitle(_ t: ThermalSnapshot, device: DeviceInfo, stressed: Bool) -> String? {
         var parts: [String] = []
         if let p = t.pressure { parts.append(p.title) }

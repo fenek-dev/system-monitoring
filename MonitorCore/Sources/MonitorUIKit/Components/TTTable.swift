@@ -7,6 +7,8 @@ import SwiftUI
 /// Body: 4 top padding, rows `body12` `textPrimary` tabular, height 34 (style), radius 6, zebra on odd rows,
 /// hover `fillHover`, selection `rowSelected`. `children` rows (height 30) follow an expanded parent, share its
 /// zebra parity and see `\.ttRowDepth == 1`. Right-click → `rowMenu`. ↑/↓ select, ←/→ collapse/expand.
+/// Rows are Equatable (unchanged rows skip body per tick); only the hovered/selected row carries tooltips, the live
+/// actions button and the context menu (`\.ttRowActive`).
 /// Rows are sorted by the active column's `sortKey` (descending default, nil last, stable) unless
 /// `style.sortsRows` is false (caller pre-sorted, e.g. `ProcessTableModel`).
 public struct TTTable<Row: Identifiable & Equatable>: View {
@@ -45,6 +47,9 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
     let children: ((Row) -> [Row])?
     let style: TTTableStyle
     let onDoubleClick: ((Row) -> Void)?
+    let columnsVersion: Int
+    /// Cheap "has children" test; with it, `children` runs only for expanded rows.
+    let hasChildren: ((Row) -> Bool)?
     @State private var expanded: Set<Row.ID> = []
     @Environment(\.isSnapshot) private var isSnapshot
 
@@ -54,9 +59,14 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                   style: .standard, expandedByDefault: [], onDoubleClick: nil)
     }
 
+    /// - Parameter columnsVersion: changes whenever state captured by the `cell` closures (sensor health, unit
+    ///   settings) changes; rows are Equatable on their data, so without it such a change would leave stale cells.
     public init(rows: [Row], columns: [Column], selection: Binding<Row.ID?>, sort: Binding<(column: String, descending: Bool)>,
                 rowMenu: ((Row) -> AnyView)? = nil, children: ((Row) -> [Row])? = nil, style: TTTableStyle,
-                expandedByDefault: Set<Row.ID> = [], onDoubleClick: ((Row) -> Void)? = nil) {
+                expandedByDefault: Set<Row.ID> = [], onDoubleClick: ((Row) -> Void)? = nil, columnsVersion: Int = 0,
+                hasChildren: ((Row) -> Bool)? = nil) {
+        self.columnsVersion = columnsVersion
+        self.hasChildren = hasChildren
         self.rows = rows
         self.columns = columns
         _selection = selection
@@ -81,27 +91,26 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
 
     nonisolated static func sorted(_ rows: [Row], key: ((Row) -> Double?)?, descending: Bool) -> [Row] {
         guard let key else { return rows }
-        let keyed = rows.enumerated().map { (i: $0.offset, k: key($0.element).flatMap { $0.isFinite ? $0 : nil }, r: $0.element) }
-        return keyed.sorted { a, b in
-            switch (a.k, b.k) {
-            case let (x?, y?):
-                if x != y { return descending ? x > y : x < y }
-                return a.i < b.i
-            case (.some, nil): return true
-            case (nil, .some): return false
-            case (nil, nil): return a.i < b.i
-            }
-        }.map(\.r)
+        return TTSort.stable(rows, descending: descending, by: key)
     }
 
+    /// `hasChildren`: cheap test; when given, `children` is called only for expanded rows (M11).
     nonisolated static func lines(_ rows: [Row], key: ((Row) -> Double?)?, descending: Bool, children: ((Row) -> [Row])?,
-                                  expanded: Set<Row.ID>) -> [Line] {
+                                  expanded: Set<Row.ID>, hasChildren: ((Row) -> Bool)? = nil) -> [Line] {
         var out: [Line] = []
         out.reserveCapacity(rows.count)
         for (i, row) in sorted(rows, key: key, descending: descending).enumerated() {
-            let kids = children?(row) ?? []
-            let open = !kids.isEmpty && expanded.contains(row.id)
-            out.append(Line(row: row, depth: 0, parity: i % 2, hasChildren: !kids.isEmpty, isExpanded: open))
+            let kids: [Row]
+            let has: Bool
+            if let hasChildren {
+                has = hasChildren(row)
+                kids = has && expanded.contains(row.id) ? children?(row) ?? [] : []
+            } else {
+                kids = children?(row) ?? []
+                has = !kids.isEmpty
+            }
+            let open = has && !kids.isEmpty && expanded.contains(row.id)
+            out.append(Line(row: row, depth: 0, parity: i % 2, hasChildren: has, isExpanded: open))
             if open {
                 for kid in sorted(kids, key: key, descending: descending) {
                     out.append(Line(row: kid, depth: 1, parity: i % 2, hasChildren: false, isExpanded: false))
@@ -158,8 +167,9 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
 
     public var body: some View {
         let lines = style.sortsRows
-            ? Self.lines(rows, key: activeColumn?.sortKey, descending: sort.descending, children: children, expanded: expanded)
-            : Self.lines(rows, key: nil, descending: true, children: children, expanded: expanded)
+            ? Self.lines(rows, key: activeColumn?.sortKey, descending: sort.descending, children: children, expanded: expanded,
+                         hasChildren: hasChildren)
+            : Self.lines(rows, key: nil, descending: true, children: children, expanded: expanded, hasChildren: hasChildren)
         GeometryReader { geo in
             let widths = Self.columnWidths(columns.map(\.width), available: geo.size.width - 2 * TTSpace.tableRowInset,
                                            gap: TTSpace.tableCellGap)
@@ -227,7 +237,8 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
         ForEach(lines) { line in
             let id = line.row.id
             TableRow(line: line, columns: columns, widths: widths, selected: selection == id,
-                     height: line.depth > 0 ? style.childRowHeight : style.rowHeight)
+                     height: line.depth > 0 ? style.childRowHeight : style.rowHeight, columnsVersion: columnsVersion,
+                     rowMenu: rowMenu)
                 .equatable()
                 .environment(\.ttRowDepth, line.depth)
                 .environment(\.ttRowDisclosure, line.hasChildren
@@ -235,7 +246,17 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                 .contentShape(Rectangle())
                 .onTapGesture { selection = id }
                 .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleClick?(line.row) })
-                .contextMenu { if let rowMenu { rowMenu(line.row) } }
+                .accessibilityAddTraits(selection == id ? [.isSelected] : [])
+                .accessibilityAction { selection = id }
+                .modifier(OpenAccessibilityAction(open: onDoubleClick.map { open in { open(line.row) } }))
+        }
+    }
+
+    /// VoiceOver "Open" for tables with a double-click action (M13).
+    private struct OpenAccessibilityAction: ViewModifier {
+        let open: (() -> Void)?
+        func body(content: Content) -> some View {
+            if let open { content.accessibilityAction(named: "Open", open) } else { content }
         }
     }
 
@@ -277,13 +298,24 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
         let widths: [CGFloat]
         let selected: Bool
         let height: CGFloat
+        /// Caller's version of state the cell closures capture (health, units): part of `==`, so such a change
+        /// redraws rows whose data did not change (M2).
+        let columnsVersion: Int
+        /// Not part of `==` (a new closure each table body must not re-evaluate unchanged rows).
+        let rowMenu: ((Row) -> AnyView)?
         @State private var hovering = false
+        @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
 
         nonisolated static func == (a: Self, b: Self) -> Bool {
             a.line.row == b.line.row && a.line.depth == b.line.depth && a.line.parity == b.line.parity
                 && a.line.isExpanded == b.line.isExpanded && a.line.hasChildren == b.line.hasChildren
                 && a.selected == b.selected && a.widths == b.widths && a.height == b.height
+                && a.columnsVersion == b.columnsVersion
         }
+
+        /// Hovered or selected (or VoiceOver on): the only rows that carry tooltips, the live actions button and
+        /// the context menu (W5c pattern, U-M1).
+        private var active: Bool { hovering || selected || voiceOver }
 
         var fill: Color {
             if selected { return TTColor.rowSelected }
@@ -313,7 +345,27 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                     }
             )
             .onHover { hovering = $0 }
+            .environment(\.ttRowActive, active)
+            .contextMenu { if active, let rowMenu { rowMenu(line.row) } }
+            .accessibilityElement(children: .combine)
         }
+    }
+}
+
+/// The one table sort (M10): by `key`, stable (ties keep input order), nil and non-finite keys last in both directions.
+public enum TTSort {
+    public static func stable<T>(_ items: [T], descending: Bool = true, by key: (T) -> Double?) -> [T] {
+        items.enumerated()
+            .map { (i: $0.offset, k: key($0.element).flatMap { $0.isFinite ? $0 : nil }, v: $0.element) }
+            .sorted { a, b in
+                switch (a.k, b.k) {
+                case let (x?, y?): x != y ? (descending ? x > y : x < y) : a.i < b.i
+                case (.some, nil): true
+                case (nil, .some): false
+                case (nil, nil): a.i < b.i
+                }
+            }
+            .map(\.v)
     }
 }
 

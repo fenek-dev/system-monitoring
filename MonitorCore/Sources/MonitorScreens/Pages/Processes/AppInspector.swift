@@ -85,9 +85,9 @@ struct AppInspector: View {
         parts.append("PID \(row.pid.map { String($0) } ?? "—")")
         if let user = row.user { parts.append(user) }
         if row.rowKind == .app && row.processCount > 1 {
-            parts.append("\(row.processCount.formatted()) processes")
+            parts.append("\(TTFormat.count(row.processCount)) processes")
         } else if let t = row.threads {
-            parts.append("\(Int(t).formatted()) \(t == 1 ? "thread" : "threads")")
+            parts.append("\(TTFormat.count(Int(t))) \(t == 1 ? "thread" : "threads")")
         }
         return parts.joined(separator: " · ")
     }
@@ -228,7 +228,7 @@ private struct ConnectionsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: TTSpace.x10) {
-            Text(connections.isEmpty ? "Live connections" : "Live connections · \(connections.count.formatted())")
+            Text(connections.isEmpty ? "Live connections" : "Live connections · \(TTFormat.count(connections.count))")
                 .font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary).monospacedDigit()
                 .frame(height: 24, alignment: .leading)
             VStack(alignment: .leading, spacing: 0) {

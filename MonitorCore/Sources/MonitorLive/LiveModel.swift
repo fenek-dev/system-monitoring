@@ -145,6 +145,22 @@ public final class LiveModel {
         return history.appSeries(app, metric, window: window)
     }
 
+    /// Live chart data: the last `window` on a fixed 1-s slot grid ending at the newest sample (nil = gap), so
+    /// index-placed charts show every point at its real time (U-I1). Use this for every Live chart; `series` is
+    /// the raw ring (analysis, peak trackers).
+    public func chartSeries(_ metric: HistoryMetric, window: Duration = .seconds(60)) -> [SeriesPoint] {
+        _ = version(metric.category)
+        _ = seriesVersion
+        return history.gridSeries(metric, window: window)
+    }
+
+    /// `chartSeries` for a tracked app (empty unless tracked).
+    public func chartAppSeries(_ app: AppKey, _ metric: AppMetric, window: Duration = .seconds(60)) -> [SeriesPoint] {
+        _ = appsVersion
+        _ = seriesVersion
+        return history.gridAppSeries(app, metric, window: window)
+    }
+
     /// Apps with a positive value for the category's key (ARCHITECTURE §5.5), descending; excludes `.other`.
     public func topApps(_ category: MonitorModel.Category, count: Int = 3) -> [AppSample] {
         _ = appsVersion

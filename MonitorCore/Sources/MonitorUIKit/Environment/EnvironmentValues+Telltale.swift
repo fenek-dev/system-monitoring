@@ -22,6 +22,10 @@ public extension EnvironmentValues {
     @Entry var ttRowDepth: Int = 0
     /// Set by `TTTable`: whether the row has children, is expanded, and a toggle.
     @Entry var ttRowDisclosure: TTRowDisclosure? = nil
+    /// Set by `TTTable` per row: true while the row is hovered or selected (or VoiceOver is on). Inactive rows
+    /// skip per-cell tooltips (`MetricValue`) and render `TTRowActionsButton` as a static glyph, so a tick that
+    /// changes a row's values does not rebuild tooltips, buttons and menu anchors (W5c pattern). Default true.
+    @Entry var ttRowActive: Bool = true
 }
 
 /// Disclosure state handed to a table row's cells (use `TTDisclosureButton` in the name cell).

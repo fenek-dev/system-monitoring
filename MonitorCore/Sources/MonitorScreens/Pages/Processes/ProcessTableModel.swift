@@ -450,7 +450,7 @@ public extension ProcessTableModel {
                     out.lines.append(kid)
                 }
             }
-            out.countLabel = "\(tops.count.formatted()) apps · \(input.processCount.formatted()) processes"
+            out.countLabel = "\(TTFormat.count(tops.count)) apps · \(TTFormat.count(input.processCount)) processes"
         case .processes:
             var rows: [ProcessRow] = []
             rows.reserveCapacity(input.processes.count)
@@ -462,7 +462,7 @@ public extension ProcessTableModel {
             rows = keepingExitedWithApp(sorted(rows, by: input.sort, descending: input.descending, rank: rank))
             for i in rows.indices { rows[i].parity = i % 2 }
             out.lines = rows
-            out.countLabel = "\(rows.count.formatted()) of \(input.processCount.formatted()) shown"
+            out.countLabel = "\(TTFormat.count(rows.count)) of \(TTFormat.count(input.processCount)) shown"
         }
         out.emptyMessage = query.isEmpty ? "No processes" : "No processes match “\(input.query.trimmingCharacters(in: .whitespaces))”"
         return out
@@ -717,7 +717,7 @@ public extension ProcessTableModel {
         let path = app.identity.bundlePath.map(trimmedBundle) ?? responsible?.path
         return ProcessRow(
             id: .app(key), rowKind: .app, depth: 0, parity: 0, name: app.identity.displayName,
-            kindLabel: count > 1 ? "\(base) · \(count.formatted()) processes" : base,
+            kindLabel: count > 1 ? "\(base) · \(TTFormat.count(count)) processes" : base,
             identity: AppIdentity(key: key, displayName: app.identity.displayName, bundlePath: path),
             // Coalition groups have no known leader PID: "—" rather than an arbitrary member (ruling).
             pid: coalitionOnly ? nil : responsible?.pid, user: responsible?.user ?? members.first?.user,
@@ -742,7 +742,7 @@ public extension ProcessTableModel {
     private nonisolated static func summaryRow(key: AppKey, hidden: Int, identity: AppIdentity) -> ProcessRow {
         ProcessRow(
             id: .restricted(key), rowKind: .restrictedSummary, depth: 1, parity: 0,
-            name: "+\(hidden.formatted()) restricted", kindLabel: nil, identity: nil, pid: nil, user: nil, uid: nil,
+            name: "+\(TTFormat.count(hidden)) restricted", kindLabel: nil, identity: nil, pid: nil, user: nil, uid: nil,
             provenance: .restricted, cpu: nil, gpu: nil, memory: nil, network: nil, disk: nil, energy: nil,
             reasons: ProcessCellReasons(), cpuEstimated: false, energyEstimated: false, hasChildren: false,
             isExpanded: false, processCount: hidden, threads: nil, path: nil, appKey: key,

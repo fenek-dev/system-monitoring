@@ -18,14 +18,19 @@ public struct TTAreaChart: View, Equatable {
     let grid: Int
     let bands: [TTChartBand]
     let showsCollecting: Bool
+    let partialHistory: Bool
 
     /// - Parameters:
     ///   - fillOpacity: area opacity applied to `color` (`TTChartFill`, e.g. `.sparkline` 0.22).
     ///   - flipped: area hangs down from the top edge (mirrored chart bottom half).
     ///   - grid: number of divisions for the faint page-chart gridlines (0 = none; page charts use 4).
+    ///   - partialHistory: stored ranges (DESIGN §3.15 "Partial history", U-M6): the leading run with no sample
+    ///     (before the first stored bucket) is `fillTrack` with "No data yet" when ≥ 60 wide, and a loaded window
+    ///     with fewer than 2 samples reads "No data yet" instead of "Collecting…" (an empty one is still loading).
     public init(_ points: [SeriesPoint], color: Color, yDomain: ClosedRange<Double>, fillOpacity: Double = 1,
                 lineOnly: Bool = false, lineWidth: CGFloat = TTStroke.spark, flipped: Bool = false, dash: [CGFloat] = [],
-                grid: Int = 0, bands: [TTChartBand] = [], showsCollecting: Bool = true) {
+                grid: Int = 0, bands: [TTChartBand] = [], showsCollecting: Bool = true, partialHistory: Bool = false) {
+        self.partialHistory = partialHistory
         self.points = points
         self.color = color
         self.yDomain = yDomain
@@ -46,7 +51,14 @@ public struct TTAreaChart: View, Equatable {
         if showsCollecting && ChartSegments.sampleCount(points) < 2 {
             ZStack {
                 if grid > 1 { TTChartCanvas { ctx, size in ChartGrid.draw(&ctx, size: size, divisions: grid) } }
-                TTEmptyState(.collecting(since: nil))
+                // An empty window is a store read still in flight ("Collecting…"); a loaded one with < 2 samples
+                // has no history yet.
+                if partialHistory && !points.isEmpty {
+                    Rectangle().fill(TTColor.fillTrack)
+                    Text("No data yet").font(TTFont.micro).foregroundStyle(TTColor.textTertiary)
+                } else {
+                    TTEmptyState(.collecting(since: nil))
+                }
             }
         } else {
             let chart = self
@@ -62,6 +74,14 @@ public struct TTAreaChart: View, Equatable {
             ctx.fill(Path(CGRect(x: 0, y: y0, width: size.width, height: y1 - y0)), with: .color(band.color))
         }
         ChartGrid.draw(&ctx, size: size, divisions: grid)
+        if partialHistory, let first = points.firstIndex(where: { $0.value?.isFinite == true }), first > 0 {
+            let x1 = ChartSegments.x(index: first, count: points.count, width: size.width)
+            ctx.fill(Path(CGRect(x: 0, y: 0, width: x1, height: size.height)), with: .color(TTColor.fillTrack))
+            if x1 >= 60 {
+                ctx.draw(Text("No data yet").font(TTFont.micro).foregroundStyle(TTColor.textTertiary),
+                         at: CGPoint(x: x1 / 2, y: size.height / 2))
+            }
+        }
         let limit = max(2, Int(size.width * 2))
         let drawn = points.count > limit ? ChartSegments.decimate(points, maxPoints: limit) : points
         var line = Path()

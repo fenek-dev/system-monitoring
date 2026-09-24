@@ -8,7 +8,8 @@ import SwiftUI
 
 // MARK: - Range-aware chart data
 
-/// Chart data for the page's range (DESIGN §3.0 "Range behavior"): Live reads `LiveModel.series` (last 60 s),
+/// Chart data for the page's range (DESIGN §3.0 "Range behavior"): Live reads `LiveModel.chartSeries` (last 60 s
+/// on the 1-s grid),
 /// other ranges read the store (`historyProvider.series(…, bucket: nil)` = the range's display bucket).
 struct RangeSeries {
     var range: HistoryRange
@@ -60,7 +61,7 @@ struct RangeSeriesReader<Content: View>: View {
         let range = nav.range
         if range == .live {
             content(RangeSeries(range: .live, end: now ?? live.lastUpdate ?? Date(),
-                                points: Dictionary(uniqueKeysWithValues: metrics.map { ($0, live.series($0)) })))
+                                points: Dictionary(uniqueKeysWithValues: metrics.map { ($0, live.chartSeries($0)) })))
         } else {
             let end = Self.storeEnd(clock: clock, range: range, fallback: now ?? Date())
             let key = LoadKey(range: range, bucketEnd: end)
@@ -200,6 +201,50 @@ final class RankCache<Row> {
     }
 }
 
+/// "—" tooltip for a headline value (DESIGN §3.15, M3): the sensor's reason when its sources are down; else, when
+/// the value is missing while the sensor is fine, a fallback ("Collecting — rates need two samples" while
+/// collecting, "Not reported on this Mac" otherwise). nil when the value is present.
+/// Pair it with `showsCollecting: sensorDown == false` so a fallback reason never hides a chart's "Collecting…".
+@MainActor func headlineReason(_ metric: HistoryMetric, value: String?, live: LiveModel)
+    -> (reason: String?, sensorDown: Bool) {
+    if let r = unavailableReason(metric, health: live.sensorHealth) { return (r, true) }
+    guard value == nil || value == TTFormat.unavailable else { return (nil, false) }
+    if case .collecting = live.phase { return ("Collecting — rates need two samples", false) }
+    return ("Not reported on this Mac", false)
+}
+
+/// `TTTable.columnsVersion` for cells that capture sensor health and unit settings (M2).
+@MainActor func tableColumnsVersion(_ live: LiveModel, units: UnitPreferences) -> Int {
+    var h = Hasher()
+    h.combine(live.healthVersion)
+    h.combine(units.temperature.rawValue)
+    h.combine(units.networkRate.rawValue)
+    return h.finalize()
+}
+
+/// DESIGN §5.10: a Live rate chart's scale only grows during the session; stored ranges use the window's own nice
+/// ceiling. Held in `@State` and updated during body like `RankCache` (not observed; a range switch starts over).
+@MainActor
+final class LiveCeilings {
+    private var range: HistoryRange?
+    private var values: [String: Double] = [:]
+
+    func ceiling(_ key: String, range: HistoryRange, _ value: Double) -> Double {
+        if range != self.range {
+            self.range = range
+            values.removeAll()
+        }
+        guard range == .live else { return value }
+        let v = max(values[key] ?? 0, value.isFinite ? value : 0)
+        values[key] = v
+        return v
+    }
+
+    func domain(_ key: String, range: HistoryRange, _ d: ClosedRange<Double>) -> ClosedRange<Double> {
+        d.lowerBound...max(d.lowerBound, ceiling(key, range: range, d.upperBound))
+    }
+}
+
 // MARK: - Small shared views
 
 /// Card header trailing link.
@@ -249,15 +294,27 @@ struct FitRows<Content: View>: View {
 
 /// Value legend spread space-between (Overview Power card, 298 wide). `TTLegend`'s fixed gap 14 does not fit four
 /// "CPU 10.8 W" items (the artboard's CSS wraps "W" onto a second line). One type size for every item: `caption`
-/// when it fits, else all items in `micro`.
+/// on a card wide enough for four "DRAM 12.3 W"-sized items (≈ 330 pt; wider windows), else all items in `micro`
+/// (the default 300-pt card). Chosen by the card width, not by measuring both variants each tick
+/// (`ViewThatFits`, U-M1); the width only changes on a window resize.
 struct ColumnLegend: View {
-    let items: [(label: String, color: Color)]
+    struct Item {
+        var label: String
+        /// nil → "—" in `textTertiary` with `reason` as tooltip (DESIGN §3.15, M3).
+        var value: String?
+        var reason: String?
+        var color: Color
+    }
+
+    let items: [Item]
+    @State private var roomy = false
+
+    nonisolated static let captionMinWidth: CGFloat = 350
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            row(TTFont.caption, gap: 8)
-            row(TTFont.micro, gap: 6)
-        }
+        (roomy ? row(TTFont.caption, gap: 8) : row(TTFont.micro, gap: 6))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: Bool.self) { $0.size.width >= Self.captionMinWidth } action: { roomy = $0 }
     }
 
     private func row(_ font: Font, gap: CGFloat) -> some View {
@@ -267,9 +324,29 @@ struct ColumnLegend: View {
                 HStack(spacing: TTSpace.x6) {
                     RoundedRectangle(cornerRadius: TTRadius.r2, style: .continuous).fill(items[i].color)
                         .frame(width: 8, height: 8)
-                    Text(items[i].label).font(font).foregroundStyle(TTColor.textSecondary)
+                    LabeledMetricText(label: items[i].label, value: items[i].value, reason: items[i].reason, font: font)
+                        .foregroundStyle(TTColor.textSecondary)
                         .monospacedDigit().lineLimit(1).fixedSize()
                 }
+            }
+        }
+    }
+}
+
+/// "CPU 11.0 W" as one text; a missing value is "CPU " + `MetricValue` "—" (`textTertiary`, reason tooltip; M3).
+struct LabeledMetricText: View {
+    let label: String
+    let value: String?
+    let reason: String?
+    let font: Font
+
+    var body: some View {
+        if let value, value != TTFormat.unavailable {
+            Text(label + " " + value).font(font)
+        } else {
+            HStack(spacing: 0) {
+                Text(label + " ").font(font)
+                MetricValue(nil, unavailableReason: reason, font: font)
             }
         }
     }
@@ -384,6 +461,16 @@ extension ProcessSample {
 extension AppSample {
     /// An app group made only of the ICR-13 exited-processes row.
     var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy(\.isExitedResidual) }
+
+    /// "Estimated" CPU marker, the same rule as the Processes table (M4): an exited-only group, a group whose value
+    /// includes an ICR-13 exited share, or one with coalition-provenance members.
+    @MainActor func cpuIsEstimated(_ live: LiveModel) -> Bool {
+        isExitedResidualOnly || exitedResidual != nil
+            || live.processes(of: identity.key).contains { $0.provenance == .coalition }
+    }
+
+    /// "Estimated" energy marker (Processes rule, M4): energy attributed by estimate or including an exited share.
+    var energyIsEstimated: Bool { energyEstimated || exitedResidual != nil || isExitedResidualOnly }
 }
 
 /// Name cell for an ICR-13 row: tile + italic `textSecondary` name.
