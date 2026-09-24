@@ -146,6 +146,38 @@ struct RuntimeHarness {
         await h.pipeline.shutdown()
     }
 
+    /// N4: a store open slower than the 3 s termination timeout must not keep crash-canary markers set — shutdown
+    /// stops the engine (invalidate → disarm) before it awaits the store.
+    @Test func shutdownClearsCanaryBeforeAwaitingASlowStoreOpen() async throws {
+        let suite = "dev.telltale.tests.canary-\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let canary = TelltaleRuntime.canary(suite: suite)
+        let factory = SensorFactory { _ in
+            // Warming (off-queue setup still running): the marker stays armed between calls.
+            SensorSuite(smc: FixtureSensor(.smc, readings: [.failure(.transient("warming up"))],
+                                           cadence: .every(.seconds(60), background: .seconds(60))))
+        }
+        let engine = SamplingEngine(factory: factory, canary: canary,
+                                    resolver: { BundleAppResolver(currentUID: 501, readInfoPlist: { _ in nil }) },
+                                    interactiveInterval: .milliseconds(10), backgroundInterval: .milliseconds(20))
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        let opening = Task<LivePipeline.OpenedStore, Never> {
+            for await _ in gate {}                                        // migration that takes "forever"
+            return LivePipeline.OpenedStore(store: nil, persistent: false)
+        }
+        let pipeline = LivePipeline(engine: engine, opening: opening)
+        pipeline.start()
+        let armedBy = ContinuousClock.now + .seconds(5)
+        while !canary.isTripped(.smc), ContinuousClock.now < armedBy { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(canary.isTripped(.smc))
+        let shutdown = Task { await pipeline.shutdown() }
+        let clearedBy = ContinuousClock.now + .seconds(2)
+        while canary.isTripped(.smc), ContinuousClock.now < clearedBy { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!canary.isTripped(.smc), "marker still set while the store is opening")
+        open.finish()
+        await shutdown.value
+    }
+
     @Test func shutdownIsIdempotentAndSafeBeforeStart() async throws {
         let idle = try RuntimeHarness()
         await idle.pipeline.shutdown()
