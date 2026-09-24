@@ -16,6 +16,7 @@ public struct ProcessesPage: View {
     @Environment(\.processesExpandSelectionOnAppear) private var expandOnAppear
     @Environment(\.processesExpandOnAppear) private var expandKeysOnAppear
     @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(\.presentConfirmDialog) private var confirmDialog
     @State private var table = ProcessTableModel()
     @State private var coordinator = ProcessActionCoordinator()
     @State private var inspector = AppInspectorModel()
@@ -49,7 +50,7 @@ public struct ProcessesPage: View {
             AppInspector(row: selectedRow, availability: availability, detailExpanded: detailExpanded,
                          onToggleDetail: toggleDetail,
                          onQuit: { target in Task { await coordinator.quit(target) } },
-                         onForceQuit: { coordinator.requestForceQuit($0) },
+                         onForceQuit: { forceQuit($0) },
                          model: inspector)
                 .layoutPriority(1)
         }
@@ -62,11 +63,10 @@ public struct ProcessesPage: View {
                 .accessibilityLabel("Search processes")
         }
         .environment(\.processActions, ownedActions)
-        .environment(\.requestForceQuit, { [coordinator] target in coordinator.requestForceQuit(target) })
+        .environment(\.requestForceQuit, { target in forceQuit(target) })
         .environment(\.onProcessActionResult, { [coordinator] target, result in
             coordinator.report(target, result, force: false)
         })
-        .overlay { forceQuitDialog }
         .background { shortcuts(selectedRow, availability) }
         .focusable()
         .focusEffectDisabled()
@@ -172,20 +172,23 @@ public struct ProcessesPage: View {
 
     // MARK: Dialog & keys
 
-    @ViewBuilder private var forceQuitDialog: some View {
-        if let target = coordinator.pendingForceQuit {
-            TTConfirmDialog(title: ProcessActionCoordinator.dialogTitle(target),
-                            message: ProcessActionCoordinator.dialogMessage,
-                            confirmTitle: "Force Quit",
-                            onConfirm: { Task { await coordinator.confirmForceQuit() } },
-                            onCancel: { coordinator.cancelForceQuit() })
+    /// Force Quit always confirms through the shell's window-level dialog (`\.presentConfirmDialog`).
+    private func forceQuit(_ target: ProcessTarget) {
+        if let presenter = confirmDialog {
+            let confirm: ProcessActionCoordinator.Confirm = { title, message, confirmTitle in
+                await presenter.confirm(title: title, message: message, confirmTitle: confirmTitle)
+            }
+            coordinator.confirm = confirm
+        } else {
+            coordinator.confirm = nil
         }
+        Task { await coordinator.forceQuit(target) }
     }
 
     private func shortcuts(_ row: ProcessRow?, _ availability: ProcessActionAvailability) -> some View {
         ZStack {
             Button("Force Quit") {
-                if let t = row?.target, availability.canForceQuit { coordinator.requestForceQuit(t) }
+                if let t = row?.target, availability.canForceQuit { forceQuit(t) }
             }
             .keyboardShortcut(.delete, modifiers: .command)
             Button("Search") { searchFocused = true }

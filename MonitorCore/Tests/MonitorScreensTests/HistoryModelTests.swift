@@ -117,11 +117,12 @@ enum HT {
     }
 }
 
-/// Polls (5 ms) until `condition` holds or 3 s pass — robust under a loaded test runner.
+/// Polls until `condition` holds, for up to 2,000 main-actor turns (~10 s idle). Counted in turns, not wall time:
+/// other suites rendering snapshots on the main actor can stall it for seconds without eating the budget.
 @MainActor func waitUntil(_ condition: @MainActor () async -> Bool) async {
-    let deadline = ContinuousClock.now + .seconds(3)
-    while ContinuousClock.now < deadline {
+    for _ in 0..<2_000 {
         if await condition() { return }
+        await Task.yield()
         try? await Task.sleep(for: .milliseconds(5))
     }
 }

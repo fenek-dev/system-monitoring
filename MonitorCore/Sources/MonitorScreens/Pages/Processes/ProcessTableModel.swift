@@ -545,7 +545,7 @@ public extension ProcessTableModel {
         let target: ProcessTarget? = synthetic ? nil
             : .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid)
         let exited = isExitedResidual(p.id)
-        let kind = exited ? nil : processKind(p, responsibleID: responsibleID)
+        let kind = exited ? (p.name.isEmpty ? nil : exitedName) : processKind(p, responsibleID: responsibleID)
         // An app's main process shows its bundle ("/Applications/Final Cut Pro.app", DESIGN §3.12 inspector).
         let displayPath = kind == "App" ? p.path.map(trimmedBundle) : p.path
         var row = ProcessRow(
@@ -573,7 +573,8 @@ public extension ProcessTableModel {
         return row
     }
 
-    /// ICR-13: `ProcessID.exitedResidual` rows carry pid −2.
+    /// ICR-13: `ProcessID.exitedResidual` rows carry pid −2 (coalition residual rows are −1, so the pid alone
+    /// separates them; switch to `ProcessID.exitedResidual` once W7 makes it public).
     nonisolated static func isExitedResidual(_ id: ProcessID) -> Bool { id.pid == -2 }
     nonisolated static let exitedName = "Exited processes"
 

@@ -43,20 +43,29 @@ struct AppInspectorActionTests {
     }
 
     @Test func forceQuitNeedsConfirmation() async {
-        let c = ProcessActionCoordinator(actions: actions)
-        c.requestForceQuit(xcode)
-        #expect(c.pendingForceQuit == xcode)
-        #expect(log.entries.isEmpty)                                       // nothing sent before confirming
-        #expect(ProcessActionCoordinator.dialogTitle(xcode) == "Force quit “Xcode”?")
-        c.cancelForceQuit()
-        #expect(c.pendingForceQuit == nil)
-        await c.confirmForceQuit()                                         // no pending target: no-op
-        #expect(log.entries.isEmpty)
-        c.requestForceQuit(xcode)
-        await c.confirmForceQuit()
+        var asked: [(String, String, String)] = []
+        var answer = false
+        let c = ProcessActionCoordinator(actions: actions, confirm: { title, message, button in
+            asked.append((title, message, button))
+            return answer
+        })
+        await c.forceQuit(xcode)                                           // cancelled in the dialog
+        #expect(asked.count == 1)
+        #expect(asked.first?.0 == "Force quit “Xcode”?")
+        #expect(asked.first?.1 == ProcessActionCoordinator.dialogMessage)
+        #expect(asked.first?.2 == "Force Quit")
+        #expect(log.entries.isEmpty)                                       // nothing sent without confirming
+        #expect(c.toast == nil)
+        answer = true
+        await c.forceQuit(xcode)
         #expect(log.entries == ["forceQuit Xcode -> done"])
-        #expect(c.pendingForceQuit == nil)
         #expect(c.toast?.text == "Xcode was force quit.")
+    }
+
+    @Test func forceQuitWithoutDialogHostDoesNothing() async {
+        let c = ProcessActionCoordinator(actions: actions, confirm: nil)
+        await c.forceQuit(xcode)
+        #expect(log.entries.isEmpty)
     }
 
     @Test func refusedActionToastsAndCancelledIsSilent() async {

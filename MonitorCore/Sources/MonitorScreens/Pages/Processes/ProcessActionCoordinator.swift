@@ -3,8 +3,9 @@ import MonitorModel
 import Observation
 
 /// Quit / Force Quit flow for the Processes page (DESIGN §2.25, §2.26, §3.12). Every action goes through the
-/// injected `ProcessActions` service; Force Quit always asks first (`pendingForceQuit` drives `TTConfirmDialog`).
-/// Results become the toolbar toast ("{name} quit." / "{name} was force quit."), auto-dismissed after 4 s.
+/// injected `ProcessActions` service. Force Quit always asks first through the injected `confirm` (the shell's
+/// window-level `presentConfirmDialog`); without a dialog host nothing is force-quit. Results become the toolbar
+/// toast ("{name} quit." / "{name} was force quit."), auto-dismissed after 4 s.
 @MainActor @Observable
 public final class ProcessActionCoordinator {
     public struct Toast: Equatable, Sendable {
@@ -12,16 +13,20 @@ public final class ProcessActionCoordinator {
         public var text: String
     }
 
-    public private(set) var pendingForceQuit: ProcessTarget?
+    /// (title, message, confirmTitle) → true only when confirmed.
+    public typealias Confirm = @MainActor (String, String, String) async -> Bool
+
     public private(set) var toast: Toast?
     @ObservationIgnored public var actions: ProcessActions
+    @ObservationIgnored public var confirm: Confirm?
     @ObservationIgnored private var toastCounter = 0
 
     /// Toast lifetime (DESIGN §3.12).
     public nonisolated static let toastDuration: Duration = .seconds(4)
 
-    public init(actions: ProcessActions = .noop) {
+    public init(actions: ProcessActions = .noop, confirm: Confirm? = nil) {
         self.actions = actions
+        self.confirm = confirm
     }
 
     public func quit(_ target: ProcessTarget) async {
@@ -29,18 +34,11 @@ public final class ProcessActionCoordinator {
         report(target, result, force: false)
     }
 
-    /// Opens the confirm dialog; nothing is sent to the process yet.
-    public func requestForceQuit(_ target: ProcessTarget) {
-        pendingForceQuit = target
-    }
-
-    public func cancelForceQuit() {
-        pendingForceQuit = nil
-    }
-
-    public func confirmForceQuit() async {
-        guard let target = pendingForceQuit else { return }
-        pendingForceQuit = nil
+    /// Asks for confirmation (DESIGN §3.12 copy), then force-quits through the service. Cancel → nothing sent.
+    public func forceQuit(_ target: ProcessTarget) async {
+        guard let confirm else { return }
+        let confirmed = await confirm(Self.dialogTitle(target), Self.dialogMessage, "Force Quit")
+        guard confirmed else { return }
         let result = await actions.forceQuit(target)
         report(target, result, force: true)
     }
