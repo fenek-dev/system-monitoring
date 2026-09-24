@@ -98,8 +98,12 @@ import Testing
         #expect(abs(mixed[1].average - 10) < 1e-9)
         #expect(abs((mixed[0].total ?? 0) - 50 * 3_600) < 1e-6)
         #expect(mixed[1].peak == 20)                                         // raw-tail rows still hold 20
-        // A 1 h interval stays on raw.
-        #expect(try await store.topApps(.cpu, in: DateInterval(start: T.t0 + 1_800, duration: 1_800), limit: 2)[1].peak == 20)
+        // Boundary: exactly 3600 s stays on raw, 3601 s reads 1 m + tail. App rows before t0+30 min now exist only
+        // in app_1m (raw app rows deleted above; raw system rows remain), so raw sees A for half the hour.
+        let exactHour = try await store.topApps(.cpu, in: DateInterval(start: T.t0, duration: 3_600), limit: 1)
+        #expect(exactHour.first?.average == 25)                              // raw: 50 × half the covered time
+        let overHour = try await store.topApps(.cpu, in: DateInterval(start: T.t0, duration: 3_601), limit: 1)
+        #expect(overHour.first?.average == 50)                               // 1 m rows + raw tail
     }
 
     @Test func systemTotalAndPeak() async throws {

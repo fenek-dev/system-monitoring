@@ -1,5 +1,6 @@
 import Foundation
 import MonitorModel
+import os
 import Testing
 @testable import MonitorStore
 
@@ -40,6 +41,27 @@ import Testing
         let runs = await store.maintenanceRuns
         try await Task.sleep(for: .milliseconds(200))                        // ~10 timer periods
         #expect(await store.maintenanceRuns == runs)
+    }
+
+    /// Another connection holds the write lock longer than the 1.5 s busy timeout: the final flush fails,
+    /// the batch is dropped and logged, and shutdown returns inside the runtime's 3 s budget.
+    @Test func shutdownUnderForeignWriteLockFailsWithinBudget() async throws {
+        let url = T.tempDB()
+        let other = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        let store = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        await store.append(RecordBatch(record: fullRecord(T.t0)))
+        let locked = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await other.holdWriteLock(seconds: 2.5) { locked.withLock { $0 = true } } }
+        while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+
+        let started = ContinuousClock.now
+        await #expect(throws: (any Error).self) { try await store.shutdown() }
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed >= .seconds(1.4))                                  // it did wait for the lock
+        #expect(elapsed < .seconds(2.2))                                   // ~1.5 s busy timeout, well under 3 s
+        #expect(await store.droppedBatches == 1)
+        try await holder.value
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 0)
     }
 
     @Test func appendAfterShutdownIsDroppedNotBuffered() async throws {

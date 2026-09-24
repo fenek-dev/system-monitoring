@@ -4,6 +4,8 @@ import os
 
 enum StoreDatabase {
     static let log = Logger(subsystem: "dev.telltale", category: "MonitorStore")
+    /// SQLite busy timeout for every connection (seconds).
+    static let busyTimeout: TimeInterval = 1.5
 
     /// Opens (creating if needed), applies pragmas, migrates and adds missing metric columns.
     /// A file written by a newer schema (`user_version` > ours) is moved aside and a fresh file started.
@@ -33,8 +35,9 @@ enum StoreDatabase {
         var config = Configuration()
         config.label = "dev.telltale.history"
         // Another connection to the same file (a previous store still finishing a flush or maintenance pass,
-        // a second app instance) must make us wait, not fail the open with SQLITE_BUSY.
-        config.busyMode = .timeout(5)
+        // a second app instance) must make us wait, not fail the open with SQLITE_BUSY. Ruling: 1.5 s, so the
+        // final flush in `shutdown()` completes or fails well inside the runtime's 3 s termination budget.
+        config.busyMode = .timeout(StoreDatabase.busyTimeout)
         config.prepareDatabase { db in
             // Writer connection only: DatabasePool gives its reader connections a copy of this configuration
             // with `readonly = true` (GRDB `DatabasePool.readerConfiguration`); the in-memory queue is the writer.

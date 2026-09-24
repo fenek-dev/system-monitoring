@@ -90,6 +90,9 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
 
     /// Termination path (ARCHITECTURE §4, via `.terminateLater`; no flushSync): stops the maintenance timer,
     /// waits for a pass in flight, then flushes everything buffered. The runtime bounds it with its 3 s timeout.
+    /// Budget: a `maintain()` pass is not cancellable once its transaction started (worst seen ~710 ms) and is
+    /// awaited here; the final flush then completes, or fails after the 1.5 s SQLite busy timeout if another
+    /// connection holds the write lock — the batch is dropped and logged, and this throws.
     public func shutdown() async throws {
         isShutDown = true
         maintenanceTask?.cancel()
@@ -138,6 +141,7 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
                 try await writer.write { db in try RecordWriter.write(records, events, db) }
             } catch {
                 StoreDatabase.log.fault("dropped \(records.count) records, \(events.count) events: \(error.localizedDescription, privacy: .public)")
+                self.droppedBatches += 1
                 throw error
             }
         }
@@ -145,7 +149,12 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         return task
     }
 
+    /// Batches dropped after a failed write (tests; each one is also logged as a fault).
+    private(set) var droppedBatches = 0
+
     /// Flush, then rollups (completed buckets) and retention in one transaction, then incremental vacuum.
+    /// Not cancellable once started: the transaction runs to completion (worst seen ~710 ms on 30 days of data),
+    /// which counts against the 3 s shutdown budget when `shutdown()` has to wait for it.
     public func maintain(now: Date) async throws {
         guard !maintaining else { return }
         maintaining = true
