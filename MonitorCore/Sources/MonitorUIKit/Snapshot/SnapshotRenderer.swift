@@ -18,10 +18,10 @@ import UniformTypeIdentifiers
         }
     }
 
-    /// The view with the deterministic snapshot environment, framed to `size`.
+    /// The view with the deterministic snapshot environment, framed to `size`. `TTFormat.locale` is bound to
+    /// en_US only for the duration of each render call (task-local), never globally.
     public static func prepared<V: View>(_ view: V, size: CGSize) -> some View {
-        TTFormat.locale = locale
-        return view
+        view
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .environment(\.isSnapshot, true)
             .environment(\.locale, locale)
@@ -32,15 +32,21 @@ import UniformTypeIdentifiers
 
     /// Pure SwiftUI only (no AppKit-backed controls).
     public static func imageRenderer<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2) -> CGImage? {
-        let renderer = ImageRenderer(content: prepared(view, size: size))
-        renderer.scale = scale
-        renderer.proposedSize = ProposedViewSize(size)
-        renderer.isOpaque = false
-        return renderer.cgImage.flatMap(SnapshotImage.normalized)
+        TTFormat.$locale.withValue(locale) {
+            let renderer = ImageRenderer(content: prepared(view, size: size))
+            renderer.scale = scale
+            renderer.proposedSize = ProposedViewSize(size)
+            renderer.isOpaque = false
+            return renderer.cgImage.flatMap(SnapshotImage.normalized)
+        }
     }
 
     /// Offscreen `NSWindow` + `NSHostingView` (draws AppKit-backed controls, text fields, sliders).
     public static func hosting<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2) -> CGImage? {
+        TTFormat.$locale.withValue(locale) { hostingUnscoped(view, size: size, scale: scale) }
+    }
+
+    private static func hostingUnscoped<V: View>(_ view: V, size: CGSize, scale: CGFloat) -> CGImage? {
         _ = NSApplication.shared
         let rect = CGRect(origin: .zero, size: size)
         let host = NSHostingView(rootView: prepared(view, size: size))
@@ -52,17 +58,16 @@ import UniformTypeIdentifiers
         window.isOpaque = false
         window.contentView = host
         window.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
+        // Deterministic passes: layout, then display (no timed run-loop wait).
         host.layoutSubtreeIfNeeded()
-        // Let SwiftUI commit its first transaction (async image/layout passes).
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        window.displayIfNeeded()
         host.layoutSubtreeIfNeeded()
-        host.display()
 
         let pw = Int((size.width * scale).rounded()), ph = Int((size.height * scale).rounded())
-        guard let rep = NSBitmapImageRep(
+        guard let untagged = NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: pw, pixelsHigh: ph, bitsPerSample: 8, samplesPerPixel: 4,
-            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-        ) else { return nil }
+            hasAlpha: true, isPlanar: false, colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ), let rep = untagged.retagging(with: .sRGB) else { return nil }
         rep.size = size
         host.cacheDisplay(in: rect, to: rep)
         window.contentView = nil

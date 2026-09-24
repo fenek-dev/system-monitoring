@@ -1,6 +1,5 @@
 import Foundation
 import MonitorModel
-import os
 
 /// DESIGN §5 number formatting. Pure functions; nil / NaN / impossible negatives → "—".
 /// Rounding is half-to-even; minus is U+2212; never "-0". Grouping follows `TTFormat.locale`.
@@ -8,13 +7,9 @@ public enum TTFormat {
     public static let unavailable = "—"
     static let minus = "\u{2212}"
 
-    private static let localeBox = OSAllocatedUnfairLock(initialState: Locale.current)
-
-    /// Locale for grouping separators (default `Locale.current`; snapshots and tests set en_US).
-    public static var locale: Locale {
-        get { localeBox.withLock { $0 } }
-        set { localeBox.withLock { $0 = newValue } }
-    }
+    /// Locale for grouping separators: `Locale.autoupdatingCurrent` unless bound for a scope
+    /// (`TTFormat.$locale.withValue(en_US) { … }`, as `SnapshotRenderer` and the tests do). No global mutation.
+    @TaskLocal public static var locale: Locale = .autoupdatingCurrent
 
     // MARK: - Core number formatting
 
@@ -245,7 +240,7 @@ public enum TTFormat {
     /// Per-app average power: ≥ 10 W 1 decimal; 0.01–9.99 W 2 decimals; (0, 0.01) "<0.01 W"; 0 → "—".
     public static func appWatts(_ w: Double?) -> String {
         guard let w = nonNegative(w), w > 0 else { return unavailable }
-        if w < 0.01 && round(w, 2) < 0.01 { return "<0.01 W" }
+        if w < 0.01 { return "<0.01 W" }
         if round(w, 2) >= 10 { return number(w, digits: 1) + " W" }
         return number(w, digits: 2) + " W"
     }
@@ -313,17 +308,15 @@ public enum TTFormat {
 
     // MARK: - §5.8 Durations
 
-    /// Two largest units from d/h/m ("5 h 40 m", "4 d 7 h", "12 m"); under 1 min "<1 m".
+    /// Two largest non-zero units from d/h/m ("5 h 40 m", "4 d 7 h", "4 d 12 m", "12 m"); under 1 min "<1 m".
     public static func duration(_ d: Duration?) -> String {
         guard let d else { return unavailable }
         let seconds = Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
         guard seconds.isFinite, seconds >= 0 else { return unavailable }
         let totalMinutes = Int(seconds / 60)
         if totalMinutes < 1 { return "<1 m" }
-        let days = totalMinutes / 1440, hours = (totalMinutes % 1440) / 60, minutes = totalMinutes % 60
-        if days > 0 { return hours > 0 ? "\(days) d \(hours) h" : "\(days) d" }
-        if hours > 0 { return minutes > 0 ? "\(hours) h \(minutes) m" : "\(hours) h" }
-        return "\(minutes) m"
+        let parts = [(totalMinutes / 1440, "d"), ((totalMinutes % 1440) / 60, "h"), (totalMinutes % 60, "m")]
+        return parts.filter { $0.0 > 0 }.prefix(2).map { "\($0.0) \($0.1)" }.joined(separator: " ")
     }
 
     /// Cumulative CPU/GPU time: "m:ss" under 1 h, "h:mm:ss" from 1 h.

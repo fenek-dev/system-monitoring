@@ -181,6 +181,39 @@ public enum TTColor {
     }
 }
 
+/// DESIGN §1.1 "Chart series fills": opacity applied to the series hex, plus line widths/dash per chart.
+/// Components take these instead of hard-coding opacities.
+public enum TTChartFill {
+    /// Popover sparkline, Overview tile sparkline, History lanes.
+    public static let sparkline: Double = 0.22
+    /// Overview "Last 60 seconds" rows (and App detail rows).
+    public static let timeline: Double = 0.18
+    /// GPU utilization, Memory pressure.
+    public static let gpuUtilization: Double = 0.25
+    public static let memoryPressure: Double = 0.25
+    /// ANE, Swap.
+    public static let ane: Double = 0.20
+    public static let swap: Double = 0.20
+    /// Network ↓ / ↑.
+    public static let netDown: Double = 0.30
+    public static let netUp: Double = 0.25
+    /// Disk read / write.
+    public static let diskRead: Double = 0.30
+    public static let diskWrite: Double = 0.25
+    /// CPU Usage stacked: System (total) `cpuAlt`, User `cpu`, total outline `cpuLine` stroke opacity.
+    public static let cpuSystem: Double = 0.35
+    public static let cpuUser: Double = 0.55
+    public static let cpuOutline: Double = 0.9
+    /// Power stacked (no lines).
+    public static let powerCPU: Double = 0.75
+    public static let powerGPU: Double = 0.70
+    public static let powerANE: Double = 0.80
+    public static let powerDRAM: Double = 0.55
+    /// GPU frequency overlay: `gpuAlt` 1.25 pt @ 0.7, dash [3, 3].
+    public static let gpuFrequency: Double = 0.7
+    public static let gpuFrequencyDash: [CGFloat] = [3, 3]
+}
+
 /// Raw hex values for contrast math and AppKit drawing.
 public enum TTHex {
     public static let bgWindow: UInt32 = 0x1B1B1D

@@ -28,7 +28,7 @@ private struct TypeSample: View {
                 Text("%").font(TTFont.displayUnit).foregroundStyle(TTColor.textSecondary)
             }
             Text("Last 60 seconds").font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary)
-            Text("P 4.12 GHz · E 2.59 GHz").font(TTFont.body12).foregroundStyle(TTColor.textSecondary)
+            Text("P 4.12 GHz · E 2.59 GHz").font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
             Text("60 s ago").font(TTFont.micro).foregroundStyle(TTColor.textTertiary)
         }
         .padding(12)

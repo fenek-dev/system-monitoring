@@ -25,6 +25,8 @@ public enum TTSpace {
     public static let gridGap: CGFloat = 12
     public static let cardPadding: CGFloat = 16
     public static let tileVerticalPadding: CGFloat = 14
+    /// Media engines card padding variant.
+    public static let cardPaddingMediaEngines: CGFloat = 14
     public static let statCellVertical: CGFloat = 12
     public static let statCellHorizontal: CGFloat = 16
     public static let tableCellGap: CGFloat = 12
@@ -73,9 +75,27 @@ public enum TTShadow {
     public static let dialog = Spec(y: 24, radius: 30, opacity: 0.55)
 }
 
-/// DESIGN §1.3 opacity levels.
+/// DESIGN §1.3 opacity levels (all 16) plus the pressed state (§2.14).
 public enum TTOpacity {
+    public static let zebra: Double = 0.025
+    public static let hover: Double = 0.05
+    public static let track: Double = 0.06
+    public static let cardBorder: Double = 0.07
+    public static let field: Double = 0.07
+    public static let separator: Double = 0.08
+    public static let button: Double = 0.10
+    public static let stressedRow: Double = 0.12
+    public static let banner: Double = 0.14
+    public static let band: Double = 0.14
+    public static let segmentOn: Double = 0.18
+    public static let sparklineFill: Double = 0.22
+    public static let inactiveThermalSegment: Double = 0.28
+    public static let rowSelection: Double = 0.28
+    public static let bannerBorder: Double = 0.35
+    public static let purgeable: Double = 0.35
     public static let disabled: Double = 0.40
-    public static let pressed: Double = 0.8
+    public static let scrim: Double = 0.45
+    public static let swatch: Double = 0.50
     public static let cursor: Double = 0.85
+    public static let pressed: Double = 0.8
 }

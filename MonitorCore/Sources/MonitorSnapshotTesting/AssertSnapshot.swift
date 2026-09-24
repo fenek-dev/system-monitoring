@@ -11,13 +11,19 @@ import Testing
 /// - Failures write `<package>/.build/snapshot-failures/<named>.{actual,golden,diff}.png`.
 @MainActor public func assertSnapshot<V: View>(_ view: V, size: CGSize, named: String, path: SnapshotRenderer.Path = .hosting,
                                                tolerance: Double = 0.005, sourceLocation: SourceLocation = #_sourceLocation) {
+    verifySnapshot(view, size: size, named: named, path: path, tolerance: tolerance,
+                   record: ProcessInfo.processInfo.environment["TELLTALE_RECORD"] == "1", sourceLocation: sourceLocation)
+}
+
+/// `assertSnapshot` with an explicit record flag (tests of the harness itself).
+@MainActor func verifySnapshot<V: View>(_ view: V, size: CGSize, named: String, path: SnapshotRenderer.Path,
+                                        tolerance: Double, record: Bool, sourceLocation: SourceLocation) {
     guard let actual = SnapshotRenderer.render(view, size: size, path: path) else {
         Issue.record("snapshot \(named): render failed", sourceLocation: sourceLocation)
         return
     }
     let testFile = URL(fileURLWithPath: sourceLocation.filePath)
     let golden = testFile.deletingLastPathComponent().appendingPathComponent("__Snapshots__/\(named).png")
-    let record = ProcessInfo.processInfo.environment["TELLTALE_RECORD"] == "1"
 
     if record || !FileManager.default.fileExists(atPath: golden.path) {
         do {

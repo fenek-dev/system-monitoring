@@ -4,8 +4,14 @@ import Testing
 @testable import MonitorUIKit
 
 /// DESIGN §5 samples. Locale fixed to en_US (the design's samples are en-US).
-@Suite struct TTFormatTests {
-    init() { TTFormat.locale = Locale(identifier: "en_US") }
+@Suite(.enUS) struct TTFormatTests {
+    @Test func localeIsScopedNotGlobal() async {
+        #expect(TTFormat.count(3104) == "3,104")
+        await TTFormat.$locale.withValue(Locale(identifier: "de_DE")) {
+            #expect(TTFormat.count(3104) == "3.104")
+        }
+        #expect(TTFormat.count(3104) == "3,104")
+    }
 
     let bytes = UnitPreferences()
     let bits = UnitPreferences(networkRate: .bits)
@@ -155,6 +161,8 @@ import Testing
         #expect(TTFormat.appWatts(4.82) == "4.82 W")
         #expect(TTFormat.appWatts(0.35) == "0.35 W")
         #expect(TTFormat.appWatts(0.004) == "<0.01 W")
+        #expect(TTFormat.appWatts(0.006) == "<0.01 W")
+        #expect(TTFormat.appWatts(0.01) == "0.01 W")
         #expect(TTFormat.appWatts(0) == "—")
         #expect(TTFormat.appWatts(nil) == "—")
         #expect(TTFormat.appWatts(9.996) == "10.0 W")
@@ -187,6 +195,7 @@ import Testing
         #expect(TTFormat.duration(.seconds(12 * 60)) == "12 m")
         #expect(TTFormat.duration(.seconds(30)) == "<1 m")
         #expect(TTFormat.duration(.seconds(5 * 3600)) == "5 h")
+        #expect(TTFormat.duration(.seconds(4 * 86400 + 12 * 60)) == "4 d 12 m")
         #expect(TTFormat.cpuTime(52_000_000_000) == "0:52")
         #expect(TTFormat.cpuTime(UInt64(58 * 60 + 12) * 1_000_000_000) == "58:12")
         #expect(TTFormat.cpuTime(UInt64(2 * 3600 + 41 * 60 + 7) * 1_000_000_000) == "2:41:07")

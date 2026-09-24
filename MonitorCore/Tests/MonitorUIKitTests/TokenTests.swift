@@ -28,8 +28,10 @@ import Testing
 
     @Test func iconPathsStayInsideTheGrid() {
         for name in TTIconName.allCases {
-            let bounds = TTIconPaths.all[name]!.boundingRect
-            #expect(!bounds.isEmpty || bounds.width > 0 || bounds.height > 0, "\(name) empty")
+            let path = TTIconPaths.all[name]!
+            let bounds = path.boundingRect
+            #expect(!path.isEmpty, "\(name) has no path")
+            #expect(max(bounds.width, bounds.height) >= 4, "\(name) degenerate \(bounds)")
             #expect(bounds.minX >= 0.9 && bounds.maxX <= 15.1 && bounds.minY >= 0.9 && bounds.maxY <= 15.1,
                     "\(name) bounds \(bounds)")
         }

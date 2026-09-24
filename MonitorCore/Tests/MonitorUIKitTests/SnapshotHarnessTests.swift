@@ -1,5 +1,5 @@
 import Foundation
-import MonitorSnapshotTesting
+@testable import MonitorSnapshotTesting
 import SwiftUI
 import Testing
 @testable import MonitorUIKit
@@ -59,6 +59,70 @@ import Testing
 
     @Test func assertSnapshotMatchesGolden() {
         assertSnapshot(Probe(), size: CGSize(width: 24, height: 12), named: "harness-probe")
+    }
+
+    /// A scratch "package" with a fake test file, so goldens and failure artifacts land in a temp dir.
+    func scratchPackage() throws -> (root: URL, location: SourceLocation) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tt-snap-\(UUID())")
+        let tests = root.appendingPathComponent("Tests/X")
+        try FileManager.default.createDirectory(at: tests, withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("Package.swift"))
+        let file = tests.appendingPathComponent("XTests.swift").path
+        return (root, SourceLocation(fileID: "X/XTests.swift", filePath: file, line: 1, column: 1))
+    }
+
+    @Test func missingGoldenIsRecordedAndReported() throws {
+        let (root, loc) = try scratchPackage()
+        defer { try? FileManager.default.removeItem(at: root) }
+        withKnownIssue {
+            verifySnapshot(Probe(), size: CGSize(width: 8, height: 4), named: "new", path: .imageRenderer,
+                           tolerance: 0.005, record: false, sourceLocation: loc)
+        }
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("Tests/X/__Snapshots__/new.png").path))
+        // Second run matches the recorded golden: no issue.
+        verifySnapshot(Probe(), size: CGSize(width: 8, height: 4), named: "new", path: .imageRenderer,
+                       tolerance: 0.005, record: false, sourceLocation: loc)
+    }
+
+    @Test func mismatchFailsAndWritesArtifacts() throws {
+        let (root, loc) = try scratchPackage()
+        defer { try? FileManager.default.removeItem(at: root) }
+        verifySnapshot(Probe(), size: CGSize(width: 8, height: 4), named: "m", path: .imageRenderer,
+                       tolerance: 0.005, record: true, sourceLocation: loc)
+        withKnownIssue {
+            verifySnapshot(TTColor.bgCard, size: CGSize(width: 8, height: 4), named: "m", path: .imageRenderer,
+                           tolerance: 0.005, record: false, sourceLocation: loc)
+        }
+        let failures = root.appendingPathComponent(".build/snapshot-failures")
+        for suffix in ["actual", "golden", "diff"] {
+            #expect(FileManager.default.fileExists(atPath: failures.appendingPathComponent("m.\(suffix).png").path), "\(suffix)")
+        }
+        // Record mode overwrites the golden and passes.
+        verifySnapshot(TTColor.bgCard, size: CGSize(width: 8, height: 4), named: "m", path: .imageRenderer,
+                       tolerance: 0.005, record: true, sourceLocation: loc)
+        verifySnapshot(TTColor.bgCard, size: CGSize(width: 8, height: 4), named: "m", path: .imageRenderer,
+                       tolerance: 0.005, record: false, sourceLocation: loc)
+    }
+
+    @Test func sizeMismatchFails() throws {
+        let (root, loc) = try scratchPackage()
+        defer { try? FileManager.default.removeItem(at: root) }
+        verifySnapshot(Probe(), size: CGSize(width: 8, height: 4), named: "s", path: .imageRenderer,
+                       tolerance: 1, record: true, sourceLocation: loc)
+        withKnownIssue {
+            verifySnapshot(Probe(), size: CGSize(width: 9, height: 4), named: "s", path: .imageRenderer,
+                           tolerance: 1, record: false, sourceLocation: loc)
+        }
+    }
+
+    @Test func rendererBindsLocaleOnlyDuringRender() throws {
+        struct Grouped: View {
+            var body: some View { Text(TTFormat.count(3104)).font(TTFont.body12) }
+        }
+        let before = TTFormat.$locale.withValue(Locale(identifier: "de_DE")) { TTFormat.count(3104) }
+        #expect(before == "3.104")
+        _ = SnapshotRenderer.render(Grouped(), size: CGSize(width: 60, height: 20), path: .imageRenderer)
+        #expect(TTFormat.$locale.withValue(Locale(identifier: "de_DE")) { TTFormat.count(3104) } == "3.104")
     }
 
     @Test func comparisonSheetIsThreeWide() throws {
