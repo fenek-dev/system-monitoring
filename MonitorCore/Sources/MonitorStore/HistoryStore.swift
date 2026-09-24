@@ -140,7 +140,7 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
             throw error
         }
         do {
-            try await writer.writeWithoutTransaction { db in try db.checkpoint(.truncate) }
+            _ = try await writer.writeWithoutTransaction { db in try db.checkpoint(.truncate) }
         } catch {
             StoreDatabase.log.error("shutdown: WAL checkpoint failed: \(error.localizedDescription, privacy: .public)")
         }
