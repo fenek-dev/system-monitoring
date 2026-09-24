@@ -69,8 +69,8 @@ public struct Sidebar: View {
         case .disk:
             // Ruling (CP2): free = available capacity (`availableBytes`, statfs/container free = diskutil);
             // purgeable is separate. Same field and format as the Disk page's "Free space".
-            guard let v = live.disk.bootVolume else { return TTFormat.storage(nil, style: .capacity) }   // "—"
-            return TTFormat.storage(v.availableBytes, style: .capacity) + " free"
+            guard let v = live.disk.bootVolume else { return ShellFormat.freeSpace(nil) }   // "—"
+            return ShellFormat.freeSpace(v) + " free"                                      // §3.0 "{free} GB free"
         }
     }
 }

@@ -166,6 +166,34 @@ struct ShellSidebarValueTests {
         #expect(Sidebar.value(for: .overview, live: live, units: UnitPreferences()) == nil)
     }
 
+    /// A live model whose boot volume has `available` free and a larger `important` (purgeable included).
+    private func live(available: UInt64, important: UInt64) -> LiveModel {
+        let boot = VolumeInfo(id: "/", name: "Macintosh HD", isInternal: true, totalBytes: 994_000_000_000,
+                              availableBytes: available, availableImportantBytes: important)
+        let m = LiveModel()
+        m.apply(SystemFrame(disk: DiskSnapshot(volumes: [boot])))
+        m.isPresenting = true
+        return m
+    }
+
+    /// W5b report: sidebar "372.53 GB…" vs Disk page "382 GB". Cause: the old sidebar read
+    /// `availableImportantBytes` (purgeable included) through `TTFormat.bytes` (binary, 2 decimals, memory detail
+    /// rule), so 400 GB decimal became "372.53 GB" and overflowed the column. Both now use `ShellFormat.freeSpace`.
+    @Test(arguments: [
+        (UInt64(382_000_000_000), UInt64(400_000_000_000), "382 GB free"),
+        (UInt64(1_090_000_000_000), UInt64(1_200_000_000_000), "1.09 TB free"),
+        (UInt64(45_400_000_000), UInt64(45_400_000_000), "45 GB free"),
+    ])
+    func diskSidebarMatchesDiskPageFreeSpace(_ available: UInt64, _ important: UInt64, _ expected: String) throws {
+        let m = live(available: available, important: important)
+        let boot = try #require(m.disk.bootVolume)
+        let sidebar = Sidebar.value(for: .disk, live: m, units: UnitPreferences())
+        #expect(sidebar == expected)
+        #expect(sidebar == ShellFormat.freeSpace(boot) + " free")              // the Disk page's formatter
+        #expect(ShellFormat.freeSpace(boot) == TTFormat.storage(boot.availableBytes, style: .capacity))
+        #expect((sidebar?.count ?? 0) <= 12)                                   // fits the trailing column
+    }
+
     @Test func diskWithoutBootVolumeIsUnavailable() {
         let live = LiveModel()                                   // no frames: no volumes
         live.isPresenting = true
