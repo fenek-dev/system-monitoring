@@ -60,6 +60,11 @@ import os
                   persistent: opened.persistent, live: live)
     }
 
+    /// Test seam: a store that opens whenever `opening` completes (slow open, N4).
+    convenience init(engine: SamplingEngine, opening: Task<OpenedStore, Never>) {
+        self.init(engine: engine, opening: opening, history: DeferredHistory(opening), persistent: nil)
+    }
+
     /// `persistent` nil: unknown until `opening` completes.
     private init(engine: SamplingEngine, opening: Task<OpenedStore, Never>, history: any HistoryProvider,
                  persistent: Bool?, live: LiveModel = LiveModel()) {
@@ -163,8 +168,7 @@ import os
         let recordTask = started ? self.recordTask : nil
         let task = Task {
             let t0 = ContinuousClock.now
-            await Self.stopAndFlush(engine: engine, store: await opening.value.store, commandTask: commandTask,
-                                    recordTask: recordTask)
+            await Self.stopAndFlush(engine: engine, opening: opening, commandTask: commandTask, recordTask: recordTask)
             Self.log.notice("runtime shutdown in \(Int((ContinuousClock.now - t0) / .milliseconds(1))) ms")
         }
         shutdownTask = task
@@ -227,11 +231,15 @@ import os
         }
     }
 
-    nonisolated private static func stopAndFlush(engine: SamplingEngine, store: HistoryStore?,
+    /// N4: the engine stops first — that invalidates the sensors and clears any armed crash-canary marker — and only
+    /// then is the store awaited. A slow open (migration, corrupt move-aside) that outlasts the 3 s termination
+    /// timeout must never leave a marker set (which would disable that sensor at the next launch).
+    nonisolated private static func stopAndFlush(engine: SamplingEngine, opening: Task<OpenedStore, Never>,
                                                  commandTask: Task<Void, Never>?, recordTask: Task<Void, Never>?) async {
         await commandTask?.value                // queued commands (e.g. a last pause) reach the engine first
-        await engine.stop()                     // finishes both streams after the closing batch
-        await recordTask?.value                 // every batch appended
+        await engine.stop()                   // finishes both streams after the closing batch
+        await recordTask?.value                 // every batch appended (waits for the store to open)
+        let store = await opening.value.store
         do {
             try await store?.shutdown()
         } catch {

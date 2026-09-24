@@ -16,13 +16,16 @@ protocol AnySensorSlot: AnyObject {
 /// - transient/timeout/posix failures reuse the last reading for ≤ 2 intervals, then nil; 3 consecutive failures →
 ///   `.degraded` with backoff 2 s → 60 s;
 /// - unavailable/permission denied → `.unavailable`, `invalidate()`, `prepare()` retried every 5 min;
-/// - crash canary from the first `prepare()`/`sample()` until the first `.fresh` (or unavailable / invalidate);
+/// - crash canary from the first `prepare()`/`sample()` until the first `.fresh` (or unavailable / invalidate),
+///   armed between calls only through warm-up (≤ 30 s, not degraded, still requested), then per call;
 ///   a marker left by a crashed launch disables the sensor.
 /// All scheduling uses `ctx.uptimeNs`; `clock` only times the sensor call.
 final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
     static var unavailableRetryNs: UInt64 { 300_000_000_000 }
     static var backoffStartNs: UInt64 { 2_000_000_000 }
     static var backoffMaxNs: UInt64 { 60_000_000_000 }
+    /// Longest the canary stays armed between calls while a sensor warms up (N1 ruling).
+    static var canaryWarmUpMaxNs: UInt64 { 30_000_000_000 }
 
     private let sensor: any Sensor<R>
     private let canary: CrashCanary
@@ -31,7 +34,11 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
     private(set) var status: SensorStatus = .ok
     private var prepared = false
     private var armed = false
+    private var armedAtNs: UInt64 = 0
     private var canaryDone = false
+    /// The warm-up window ended without a real reading (degraded, no longer requested, or 30 s): from here on the
+    /// canary covers each call only, as it did before S-I2.
+    private var warmUpOver = false
     private var disabled = false
     private var wasRequested = false
     private var lastAttemptNs: UInt64?
@@ -80,15 +87,18 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         if prepared { sensor.invalidate() }
         prepared = false
         disarmCanary()
+        warmUpOver = false                               // a re-prepare starts new off-queue work: a new window
     }
 
     func sample(_ ctx: SampleContext) -> SensorResult<R> {
         if disabled { return .failed(.unavailable(CrashCanary.disabledReason), last: nil, capturedNs: nil) }
         guard let interval = interval(for: ctx) else {
             wasRequested = false
+            endWarmUp()                                  // N1 (b): no longer requested
             return .notRequested
         }
         let now = ctx.uptimeNs
+        if armed, now >= armedAtNs, now - armedAtNs > Self.canaryWarmUpMaxNs { endWarmUp() }   // N1 (c): 30 s cap
         let newlyRequested = !wasRequested
         wasRequested = true
         let isOnce = sensor.cadence == .once
@@ -127,7 +137,14 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
     private func disarmCanary() {
         guard armed else { return }
         armed = false
-        canary.disarm(sensor.id)
+        canary.disarm(sensor.id)                         // flushed (S-M7)
+    }
+
+    /// Ends the between-calls window of a warming sensor that hasn't produced a real reading (N1).
+    private func endWarmUp() {
+        guard !canaryDone else { return }
+        warmUpOver = true
+        disarmCanary()
     }
 
     private func checkCanary() {
@@ -151,11 +168,13 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
 
     private func attempt(now: UInt64, retry: UInt64, window: UInt64, ctx: SampleContext) -> SensorResult<R> {
         lastAttemptNs = now
-        // Canary (S-I2): armed from the first call until the first real reading (`.fresh`), or until the sensor is
-        // ruled unavailable. It stays armed across `.transient`/`.timeout` ("warming up"), so the off-queue work
-        // those sensors start (IOReport setup, HID reads, NStat callbacks) is covered until it has succeeded once.
+        // Canary (S-I2, N1): armed from the first call until the first real reading (`.fresh`), or until the sensor
+        // is ruled unavailable. Between calls it stays armed only through the warm-up of an off-queue sensor
+        // (`.transient`/`.timeout` "warming up": IOReport setup, HID reads, NStat callbacks), and at most 30 s — the
+        // window ends on degraded, on no longer requested, or on the cap. After that it covers each call only.
         if !canaryDone, !armed {
             armed = true
+            armedAtNs = now
             canary.arm(sensor.id)
         }
         if !prepared {
@@ -163,7 +182,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
                 try sensor.prepare()
                 prepared = true
             } catch {
-                return fail(error, now: now, retry: retry, window: window)
+                return failed(error, now: now, retry: retry, window: window)
             }
         }
         let start = clock()
@@ -172,7 +191,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
             result = try sensor.sample(ctx)
         } catch {
             recordCost(since: start)
-            return fail(error, now: now, retry: retry, window: window)
+            return failed(error, now: now, retry: retry, window: window)
         }
         canaryDone = true
         disarmCanary()
@@ -183,6 +202,13 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         lastError = nil
         status = .ok
         return .fresh(result.reading, capturedNs: result.capturedNs)
+    }
+
+    /// `fail`, then the per-call canary rule once the warm-up window is over.
+    private func failed(_ error: SensorError, now: UInt64, retry: UInt64, window: UInt64) -> SensorResult<R> {
+        let result = fail(error, now: now, retry: retry, window: window)
+        if warmUpOver { disarmCanary() }
+        return result
     }
 
     private func fail(_ error: SensorError, now: UInt64, retry: UInt64, window: UInt64) -> SensorResult<R> {
@@ -198,6 +224,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         case .transient, .timeout, .posix:
             consecutiveFailures += 1
             if consecutiveFailures >= 3 {
+                endWarmUp()                                  // N1 (a): degraded/backoff ends the warm-up window
                 status = .degraded(Self.describe(error))
                 backoffNs = backoffNs == 0 ? Self.backoffStartNs : min(backoffNs * 2, Self.backoffMaxNs)
                 nextAttemptNs = now &+ backoffNs
