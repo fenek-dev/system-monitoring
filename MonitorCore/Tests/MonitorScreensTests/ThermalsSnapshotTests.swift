@@ -132,6 +132,11 @@ struct ThermalsPageLogicTests {
         #expect(ThermalChartData.domain([s("p", [44.9])]) == 30...105)          // floor(44.9) − 5 = 39 → 30
         #expect(ThermalChartData.domain([s("p", [nil])]) == 40...105)
         #expect(ThermalChartData.domain([s("battery", [8])]) == 0...105)
+        // Ticks: nice multiples of 20 inside an extended domain; nil (quarter labels) for the default.
+        #expect(ThermalChartData.ticks(20...105) == [100, 80, 60, 40, 20])
+        #expect(ThermalChartData.ticks(30...105) == [100, 80, 60, 40])
+        #expect(ThermalChartData.ticks(0...105) == [100, 80, 60, 40, 20, 0])
+        #expect(ThermalChartData.ticks(40...105) == nil)
         // No visible sample falls below the axis.
         let series = [s("p", [55]), s("battery", [31, 25.2])]
         let lowest = series.flatMap(\.points).compactMap(\.value).min()!

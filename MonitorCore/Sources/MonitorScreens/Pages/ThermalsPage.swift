@@ -164,8 +164,13 @@ private struct TemperaturesCard: View {
                 if let reason = ThermalChartData.unavailableReason(series, health: live.sensorHealth) {
                     SystemChartUnavailable(reason: reason)
                 } else {
-                    TTLineChart(series, yDomain: ThermalChartData.domain(series)) {
-                        TTFormat.temperatureCompact($0, units: units)
+                    let domain = ThermalChartData.domain(series)
+                    if let ticks = ThermalChartData.ticks(domain) {
+                        ThermalTickedLineChart(series: series, domain: domain, ticks: ticks) {
+                            TTFormat.temperatureCompact($0, units: units)
+                        }
+                    } else {
+                        TTLineChart(series, yDomain: domain) { TTFormat.temperatureCompact($0, units: units) }
                     }
                 }
             }
@@ -193,6 +198,15 @@ enum ThermalChartData {
         return lower...baseDomain.upperBound
     }
 
+    /// Axis ticks for an extended domain (lower bound below 40): multiples of 20 inside the domain, top down
+    /// (e.g. 100/80/60/40/20 for 20…105). nil for the default 40…105, which keeps `TTLineChart`'s quarter labels
+    /// (105/89/72/56/40).
+    static func ticks(_ domain: ClosedRange<Double>) -> [Double]? {
+        guard domain.lowerBound < baseDomain.lowerBound else { return nil }
+        let top = (domain.upperBound / 20).rounded(.down) * 20
+        return Array(stride(from: top, through: domain.lowerBound, by: -20))
+    }
+
     /// Missing readings are gaps: nil, non-finite and ≤ 0 °C samples (a sensor that reports nothing) become nil,
     /// so they are never drawn at 0 or clamped to the 40° floor.
     static func sanitized(_ points: [SeriesPoint]) -> [SeriesPoint] {
@@ -211,6 +225,87 @@ enum ThermalChartData {
         // Groups come from the SMC catalog only (ruling), so its status is the reason.
         return MonitorModel.unavailableReason(.cpuPTemp, health: health)
             ?? MonitorModel.unavailableReason(.gpuTemp, health: health)
+    }
+}
+
+/// `TTLineChart`'s look (DESIGN §2.9: label column `micro` `textTertiary`, gap 10, faint gridlines, lines only,
+/// butt caps, round joins, gaps break lines) with labels and gridlines at explicit `ticks` instead of quarters.
+/// Used only for the extended temperature domain.
+/// TODO(W3): drop once `TTLineChart` takes explicit y ticks (ICR note in the W5b report).
+private struct ThermalTickedLineChart: View {
+    let series: [ChartSeries]
+    let domain: ClosedRange<Double>
+    let ticks: [Double]
+    let format: (Double) -> String
+
+    var body: some View {
+        HStack(spacing: TTSpace.x10) {
+            TickLabelsLayout(fractions: ticks.map(fraction)) {
+                ForEach(ticks.indices, id: \.self) { i in
+                    Text(format(ticks[i])).font(TTFont.micro).foregroundStyle(TTColor.textTertiary).lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            ZStack {
+                Canvas(rendersAsynchronously: false) { ctx, size in draw(&ctx, size) }
+                if series.allSatisfy({ ChartSegments.sampleCount($0.points) < 2 }) {
+                    TTEmptyState(.collecting(since: nil))
+                }
+            }
+            .accessibilityHidden(true)
+        }
+    }
+
+    /// 0 at the top (upper bound) … 1 at the bottom (lower bound).
+    private func fraction(_ v: Double) -> Double {
+        (domain.upperBound - v) / max(domain.upperBound - domain.lowerBound, .leastNonzeroMagnitude)
+    }
+
+    private func draw(_ ctx: inout GraphicsContext, _ size: CGSize) {
+        var grid = Path()
+        for t in ticks where t > domain.lowerBound && t < domain.upperBound {
+            let y = size.height * fraction(t)
+            grid.move(to: CGPoint(x: 0, y: y))
+            grid.addLine(to: CGPoint(x: size.width, y: y))
+        }
+        ctx.stroke(grid, with: .color(ChartGrid.color), lineWidth: 1)
+        guard series.contains(where: { ChartSegments.sampleCount($0.points) >= 2 }) else { return }
+        let times = series.flatMap(\.points).map(\.time)
+        guard let t0 = times.min(), let t1 = times.max(), t1 > t0 else { return }
+        let span = t1.timeIntervalSince(t0)
+        for s in series {
+            let pts = ChartSegments.decimate(s.points, maxPoints: 600 / max(series.count, 1))
+            var path = Path()
+            for run in ChartSegments.runs(pts) {
+                for (k, i) in run.enumerated() {
+                    let v = min(max(pts[i].value ?? domain.lowerBound, domain.lowerBound), domain.upperBound)
+                    let p = CGPoint(x: size.width * pts[i].time.timeIntervalSince(t0) / span,
+                                    y: size.height * fraction(v))
+                    if k == 0 { path.move(to: p) } else { path.addLine(to: p) }
+                }
+            }
+            ctx.stroke(path, with: .color(s.color.opacity(s.lineOpacity)),
+                       style: StrokeStyle(lineWidth: s.lineWidth ?? TTStroke.spark, lineCap: .butt, lineJoin: .round,
+                                          dash: s.dash))
+        }
+    }
+}
+
+/// Places each label centered at its fraction of the height (clamped inside); width = widest label.
+private struct TickLabelsLayout: Layout {
+    let fractions: [Double]
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let w = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        return CGSize(width: w, height: proposal.height ?? 150)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (i, s) in subviews.enumerated() where i < fractions.count {
+            let size = s.sizeThatFits(.unspecified)
+            let y = min(max(bounds.height * fractions[i] - size.height / 2, 0), bounds.height - size.height)
+            s.place(at: CGPoint(x: bounds.minX, y: bounds.minY + y), anchor: .topLeading, proposal: .unspecified)
+        }
     }
 }
 
