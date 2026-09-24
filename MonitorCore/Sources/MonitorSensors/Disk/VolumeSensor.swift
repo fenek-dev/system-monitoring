@@ -13,7 +13,7 @@ public final class VolumeSensor: Sensor {
     private static let keys: [URLResourceKey] = [
         .volumeNameKey, .volumeIsInternalKey, .volumeIsEjectableKey, .volumeIsEncryptedKey,
         .volumeTotalCapacityKey, .volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey,
-        .volumeTypeNameKey,
+        .volumeTypeNameKey, .volumeIsLocalKey,
     ]
 
     public init() {}
@@ -27,14 +27,19 @@ public final class VolumeSensor: Sensor {
         for url in urls {
             guard let values = try? url.resourceValues(forKeys: Set(Self.keys)) else { continue }
             let mountPath = url.path
-            let bsdName = ttBSDName(forMountPath: mountPath)
+            // A non-local volume (SMB/NFS/AFP share) has no BSD device, and a hung/unreachable server
+            // can make a syscall against its mount point (statfs) or an IOKit walk against a made-up
+            // BSD name block well past the sensor's 250 ms budget. Only local volumes get either.
+            let isLocal = values.volumeIsLocal ?? true
+            let bsdName = isLocal ? ttBSDName(forMountPath: mountPath) : nil
+            let busLabel = isLocal ? bsdName.flatMap { ttBusLabel(forBSDName: $0) } : nil
             let raw = RawVolumeInfo(
                 mountPath: mountPath,
                 name: values.volumeName,
                 bsdName: bsdName,
                 fsType: values.volumeTypeName,
-                busLabel: bsdName.flatMap { ttBusLabel(forBSDName: $0) },
-                isInternal: values.volumeIsInternal,
+                busLabel: busLabel,
+                isInternal: isLocal ? values.volumeIsInternal : false,
                 isEjectable: values.volumeIsEjectable,
                 isEncrypted: values.volumeIsEncrypted,
                 totalBytes: values.volumeTotalCapacity.map { UInt64($0) },

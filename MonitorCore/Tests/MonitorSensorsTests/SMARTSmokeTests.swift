@@ -6,7 +6,13 @@ import MonitorModel
 /// Real-hardware smoke test. Gated behind `TELLTALE_HW_TESTS=1`; cross-checked against
 /// `/opt/homebrew/bin/smartctl -a disk0` (no sudo — smartmontools 7.2 reads NVMe SMART unprivileged
 /// on Apple Silicon's internal SSD, per findings/extras.md §2).
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
+///
+/// `.serialized`: Swift Testing runs a suite's tests concurrently by default, but two threads
+/// simultaneously driving the NVMeSMARTLib CFPlugIn's create/query/read/destroy dance on the same
+/// physical controller is a genuine race (confirmed: `benchThirtySamples` passes reliably alone, but
+/// intermittently threw `.unavailable` when run alongside `matchesSmartctlOnTheInternalSSD`). Not a
+/// production concern — `SensorSlot` only ever drives one sensor instance from one sampler executor.
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
 struct SMARTSmokeTests {
     @Test func matchesSmartctlOnTheInternalSSD() throws {
         let smartctlPath = "/opt/homebrew/bin/smartctl"
