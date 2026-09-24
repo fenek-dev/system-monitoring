@@ -1412,3 +1412,19 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 - Popover row reorder/hide lives in Settings. Paused → dimmed glyph.
 - Bundle id prefix `dev.telltale`; install to `~/Applications`.
 - Reference PNGs come from the design agent (`docs/design/reference/`). No sudo verification.
+
+## 11. Accepted ICRs (post-lock, additive; these override conflicting text above)
+
+| ICR | Change | Owner |
+|---|---|---|
+| 1 | Weak-link flags passed via `-Xlinker` (`-weak-lIOReport`, `-weak_framework NetworkStatistics`). | W0a |
+| 2 | Snapshot files named `Snapshots/<X>Snapshot.swift` (type names unchanged). | W0a |
+| 3 | `SensorID: CodingKeyRepresentable`; `IconArc: CodingKeyRepresentable`. | W0a |
+| 4 | `ProcessSample.coalitionLeaderName: String?` — leader process name, or leader app display name when the residual row fell below threshold. | W0a / W1 |
+| 5 | `EnergyAttributor.estimatedIDs: Set<ProcessID>` filled by `watts(...)`; row/app `energyEstimated` derived from it (not from `usesSoCShareFallback`). | W1 |
+| 6 | `SMCReading.catalogMatched: Bool` (default false); `ThermalSnapshot.approximateMapping = !catalogMatched`. | W6b / W1 |
+| 7 | `UIVisibility.demand` emits `.processTable` only for `.overview`, `.memory`, `.processes` and when `inspectedApp != nil` (gates `ps` RSS). | W6a |
+| 8 | `ri_energy_nj` excludes GPU energy → per-row watts += IOReport GPU W × row AGX share (`g / max(100, Σg)`); step 3 SoC share is CPU-only; rows with GPU term > 10 % of total are estimated. | W1 |
+| 9 | Alert hold/window timers use monotonic uptime; trackers reset on sample gap > 2× nominal (sleep). `Date` kept for event timestamps. | W1 |
+
+Grouping rule 3 (§5.1) changed 2026-09-24: all bundle-less processes (any uid) are their own `.process` group.
