@@ -62,24 +62,20 @@ public struct TTTimeAxis: View, Equatable {
 
 /// `DateFormatter`s cached per (template, locale, time zone) — never built per render.
 enum AxisFormatters {
-    private final class Box: @unchecked Sendable {
-        var formatters: [String: DateFormatter] = [:]
-    }
-
-    private static let lock = OSAllocatedUnfairLock(uncheckedState: Box())
+    private static let lock = OSAllocatedUnfairLock<[String: DateFormatter]>(initialState: [:])
 
     static func format(_ dates: [Date], template: String, fixed: Bool, locale: Locale, timeZone: TimeZone) -> [String] {
         let key = "\(template)|\(fixed)|\(locale.identifier)|\(timeZone.identifier)"
-        return lock.withLockUnchecked { box in
+        return lock.withLock { formatters in
             let f: DateFormatter
-            if let cached = box.formatters[key] {
+            if let cached = formatters[key] {
                 f = cached
             } else {
                 f = DateFormatter()
                 f.locale = locale
                 f.timeZone = timeZone
                 if fixed { f.dateFormat = template } else { f.setLocalizedDateFormatFromTemplate(template) }
-                box.formatters[key] = f
+                formatters[key] = f
             }
             return dates.map(f.string(from:))
         }

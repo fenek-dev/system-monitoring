@@ -61,7 +61,7 @@ import Testing
 
     /// Every invalidate → prepare cycle (Network page revisit) re-arms the first-read signal, so the first sample()
     /// returns when that cycle's read completes (~10 ms), not after the full 200 ms wait.
-    @Test func reprepareFirstSampleDoesNotStall() throws {
+    @Test func reprepareFirstSampleDoesNotStall() async throws {
         let calls = OSAllocatedUnfairLock(initialState: 0)
         let s = Self.sensor(calls: calls)
         var ms: [Double] = []
@@ -73,7 +73,7 @@ import Testing
             #expect(r.reading.rssi == -63)
             s.invalidate()
             #expect(throws: SensorError.unavailable("Wi-Fi not prepared")) { try s.sample(SampleContext(demand: .wifi)) }
-            usleep(30_000) // let any in-flight read drain
+            try await Task.sleep(for: .milliseconds(30)) // let any in-flight read drain
         }
         #expect(calls.withLock { $0 } >= 5)
         #expect(ms.allSatisfy { $0 < 150 }, "first sample per cycle: \(ms) ms") // 200 ms = the stalled-wait bug

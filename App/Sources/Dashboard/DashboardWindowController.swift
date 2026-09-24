@@ -13,6 +13,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
     private var lights: TrafficLightsKeeper?
+    private var dialogs: ConfirmDialogHost?
 
     init(env: AppEnvironment, visibility: VisibilityTracker) {
         self.env = env
@@ -41,7 +42,9 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     func close() { window?.close() }
 
     private func makeWindow() -> NSWindow {
-        let root = DashboardRoot().telltaleEnvironment(env.context())
+        let dialogs = ConfirmDialogHost()
+        self.dialogs = dialogs
+        let root = DashboardRoot(dialogs: dialogs).telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: root)
         host.sizingOptions = []
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 860),
@@ -88,6 +91,8 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        dialogs?.cancelAll()                                    // pending confirm → cancel (async form → false)
+        dialogs = nil
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
         lights?.stop()

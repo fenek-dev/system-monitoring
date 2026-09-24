@@ -140,37 +140,6 @@ public struct TTIconShape: Shape {
     }
 }
 
-/// Icons as `NSImage`s for places that only accept images (macOS `Menu` labels keep only Image/Text). The image is
-/// vector-drawn at whatever scale it is displayed (drawing handler), pre-colored: the borderless menu button ignores
-/// tints on template images (a template rendered black in the row-action button). Cached per (name, size, stroke, color).
-@MainActor public enum TTIconImage {
-    private struct Key: Hashable {
-        let name: TTIconName, size: CGFloat, gridStroke: CGFloat, hex: UInt32
-    }
-
-    private static var cache: [Key: NSImage] = [:]
-
-    public static func colored(_ name: TTIconName, hex: UInt32, size: CGFloat = 16, gridStroke: CGFloat = TTStroke.icon) -> NSImage {
-        let key = Key(name: name, size: size, gridStroke: gridStroke, hex: hex)
-        if let hit = cache[key] { return hit }
-        let path = TTIconShape(name).path(in: CGRect(x: 0, y: 0, width: size, height: size))
-        let lineWidth = gridStroke * size / 16
-        let color = NSColor(hex: hex)
-        let image = NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
-            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            ctx.addPath(path.cgPath)
-            ctx.setStrokeColor(color.cgColor)
-            ctx.setLineWidth(lineWidth)
-            ctx.setLineCap(.round)
-            ctx.setLineJoin(.round)
-            ctx.strokePath()
-            return true
-        }
-        cache[key] = image
-        return image
-    }
-}
-
 /// An icon at `size` pt, stroke 1.5 in the 16 grid (so 1.5·size/16 pt), round caps and joins.
 public struct TTIcon: View, Equatable {
     public var name: TTIconName

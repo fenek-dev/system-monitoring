@@ -131,7 +131,7 @@ import Testing
         #expect(throws: SensorError.self) { try LatencyBox.burst(target: "not-an-ip", identifier: 1, firstSequence: 0).get() }
     }
 
-    @Test func probeRouteStates() throws {
+    @Test func probeRouteStates() async throws {
         var choice = RouterChoice.noRoute
         let probe = LatencyProbe(resolveRouter: { _ in choice })
         try probe.prepare()
@@ -143,14 +143,15 @@ import Testing
         let first = try probe.sample(SampleContext())
         #expect(W6cClock.uptimeNs() - t0 < 250_000_000) // doesn't wait for the burst
         #expect(first.reading == LatencyReading(target: "127.0.0.1"))
-        for _ in 0..<60 where probe.box.isInFlight { usleep(50_000) }
+        // Task.sleep, not usleep: a parked cooperative thread starves other suites' GCD work.
+        for _ in 0..<60 where probe.box.isInFlight { try await Task.sleep(for: .milliseconds(50)) }
         let r = try probe.sample(SampleContext()).reading
         #expect(r.target == "127.0.0.1" && r.lastRTTms != nil && r.lossFraction5m == 0)
         // Router change resets the window.
-        for _ in 0..<60 where probe.box.isInFlight { usleep(50_000) }
+        for _ in 0..<60 where probe.box.isInFlight { try await Task.sleep(for: .milliseconds(50)) }
         choice = .router("127.0.0.2")
         #expect(try probe.sample(SampleContext()).reading == LatencyReading(target: "127.0.0.2"))
-        for _ in 0..<60 where probe.box.isInFlight { usleep(50_000) }
+        for _ in 0..<60 where probe.box.isInFlight { try await Task.sleep(for: .milliseconds(50)) }
     }
 }
 

@@ -7,13 +7,12 @@ import UniformTypeIdentifiers
 /// 44 (inspector, radius 10). Bundle icon when available (cached, `NSWorkspace.icon(forFile:)`), else a letter
 /// tile: palette color by FNV-1a of the bundle id / executable name, uppercase first alphanumeric in white.
 /// Real icons only for proper app bundles with a non-generic icon (see `AppIconCache`). Snapshots use the letter tile
-/// (icons differ per machine) unless `\.ttAppIconsInSnapshots` is set.
+/// (icons differ per machine).
 public struct TTAppTile: View, Equatable {
     let identity: AppIdentity?
     let name: String
     let size: CGFloat
     @Environment(\.isSnapshot) private var isSnapshot
-    @Environment(\.ttAppIconsInSnapshots) private var iconsInSnapshots
 
     public init(identity: AppIdentity?, name: String, size: CGFloat = 20) {
         self.identity = identity
@@ -66,7 +65,7 @@ public struct TTAppTile: View, Equatable {
 
     public var body: some View {
         Group {
-            if !isSnapshot || iconsInSnapshots, let path = identity?.bundlePath, let icon = AppIconCache.icon(forPath: path) {
+            if !isSnapshot, let path = identity?.bundlePath, let icon = AppIconCache.icon(forPath: path) {
                 Image(nsImage: icon).resizable().interpolation(.high)
             } else {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -126,15 +125,17 @@ public struct TTAppTile: View, Equatable {
         return Data(bytes: data, count: 16 * 64)
     }
 
-    /// Generic system icon, or blank (all pixels near-white or transparent).
+    /// Generic: identical (16×16 raster) to a system generic app/executable/document icon, fully transparent, or a
+    /// blank placeholder (≥ 99.5 % of opaque pixels near-white). White-heavy real icons (a colored glyph on a white
+    /// squircle) pass.
     static func isGeneric(_ image: NSImage) -> Bool {
         guard let t = thumbnail(image) else { return true }
         if genericIcons.contains(t) { return true }
         var opaque = 0, whiteish = 0
         for i in stride(from: 0, to: t.count, by: 4) where t[i + 3] > 32 {
             opaque += 1
-            if t[i] > 235 && t[i + 1] > 235 && t[i + 2] > 235 { whiteish += 1 }
+            if t[i] > 245 && t[i + 1] > 245 && t[i + 2] > 245 { whiteish += 1 }
         }
-        return opaque == 0 || Double(whiteish) / Double(opaque) > 0.9
+        return opaque == 0 || Double(whiteish) / Double(opaque) >= 0.995
     }
 }

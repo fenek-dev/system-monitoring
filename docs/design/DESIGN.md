@@ -619,7 +619,7 @@ Elements, top to bottom:
 | 6 | Thermals row | sub "Nominal · 2,140 rpm"; sparkline 0–100 °C; value `62°C` | `ProcessInfo.thermalState` title-cased; average of fan RPM (SMC `F0Ac…`); SoC average from HID temperature sensors. No fans gives "Nominal · no fans" |
 | 7 | Divider | 1 pt `separator`, margin 4 vertical, 10 horizontal | |
 | 8 | Power row (compact) | icon `power`; "Power"; detail "82% · 5 h 40 m left"; value `18.6 W` | IOPowerSources percent and time remaining. Package W from IOReport Energy Model (CPU+GPU+ANE+DRAM+other). No battery gives detail "AC power" |
-| 9 | Disk row (compact) | icon `disk`; "Disk"; detail "R 142 · W 38.0 MB/s" (CHANGED from the design's "W 38 MB/s" by the §5.4 rate rule); value `382 GB` | IOBlockStorageDriver `Statistics` deltas; free = `volumeAvailableCapacityForImportantUsage` of "/" |
+| 9 | Disk row (compact) | icon `disk`; "Disk"; detail "R 142 · W 38.0 MB/s" (CHANGED from the design's "W 38 MB/s" by the §5.4 rate rule); value `382 GB` | IOBlockStorageDriver `Statistics` deltas; free = `volumeAvailableCapacity` of "/" (`VolumeInfo.availableBytes`; purgeable never added — CP2 ruling) |
 | 10 | Divider | as #7 | |
 | 11 | Top consumer | HStack gap 10, padding 8×10: tile 26; VStack flex of "Top consumer" `caption` `textSecondary`, name `body13`, detail `caption` `textSecondary` "212% CPU · 3.8 GB"; small secondary "Quit" | App group with the highest CPU (libsysmon, grouped by responsible PID). Quit is disabled for non-user-owned apps |
 | 12 | Divider | as #7 | |

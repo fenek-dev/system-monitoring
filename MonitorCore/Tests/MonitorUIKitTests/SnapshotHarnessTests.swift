@@ -84,6 +84,25 @@ import Testing
                        tolerance: 0.005, record: false, sourceLocation: loc)
     }
 
+    @Test func strictModeFailsOnMissingGoldenWithoutWriting() throws {
+        let (root, loc) = try scratchPackage()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let golden = root.appendingPathComponent("Tests/X/__Snapshots__/strict.png")
+        withKnownIssue {
+            verifySnapshot(Probe(), size: CGSize(width: 8, height: 4), named: "strict", path: .imageRenderer,
+                           tolerance: 0.005, record: false, strict: true, sourceLocation: loc)
+        }
+        #expect(!FileManager.default.fileExists(atPath: golden.path))
+        withKnownIssue {
+            verifySnapshot(Probe(), size: CGSize(width: 8, height: 4), named: "strict", path: .imageRenderer,
+                           tolerance: 0.005, record: true, strict: true, sourceLocation: loc)
+        }
+        #expect(!FileManager.default.fileExists(atPath: golden.path))
+        #expect(SnapshotMode.isStrict(["CI": "true"]))
+        #expect(SnapshotMode.isStrict(["TT_SNAPSHOT_STRICT": "1"]))
+        #expect(!SnapshotMode.isStrict([:]))
+    }
+
     @Test func mismatchFailsAndWritesArtifacts() throws {
         let (root, loc) = try scratchPackage()
         defer { try? FileManager.default.removeItem(at: root) }
