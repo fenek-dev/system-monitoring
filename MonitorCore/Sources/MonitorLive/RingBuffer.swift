@@ -34,6 +34,11 @@ public struct RingBuffer<Element>: RandomAccessCollection, MutableCollection {
         set { storage[physical(position)] = newValue }
     }
 
+    /// Base address of the backing storage (tests: detect copy-on-write reallocation).
+    var storageAddress: UnsafeRawPointer? {
+        storage.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+    }
+
     @inline(__always)
     private func physical(_ i: Int) -> Int {
         precondition(i >= 0 && i < storage.count, "RingBuffer index \(i) out of range 0..<\(storage.count)")

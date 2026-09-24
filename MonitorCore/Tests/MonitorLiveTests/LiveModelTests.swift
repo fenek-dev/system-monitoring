@@ -191,6 +191,28 @@ func frame(t: Double, cpuUsage: Double = 0.4, memUsed: UInt64 = 1_000, apps: [Ap
         #expect(obs.value == 1)
     }
 
+    @Test func idleCategoryChartStillScrolls() {
+        let model = LiveModel()
+        model.isPresenting = true
+        model.apply(frame(t: 0))
+        let chart = observe { _ = model.series(.cpuUsage) }
+        let snapshot = observe { _ = model.cpu; _ = model.version(.cpu) }
+        model.apply(frame(t: 1))                                        // same CPU snapshot, new time
+        #expect(chart.value == 1)
+        #expect(snapshot.value == 0)
+        #expect(model.series(.cpuUsage).count == 2)
+    }
+
+    @Test func appSeriesObserverFiresOnNewPoint() {
+        let model = LiveModel()
+        model.isPresenting = true
+        let apps = [app("a", cpu: 1)]
+        model.apply(frame(t: 0, apps: apps))
+        let chart = observe { _ = model.appSeries(AppKey(kind: .app, id: "a"), .cpu) }
+        model.apply(frame(t: 1, apps: apps))
+        #expect(chart.value == 1)
+    }
+
     private func app(_ id: String, cpu: Double?, kind: AppKey.Kind = .app, watts: Double? = nil) -> AppSample {
         liveApp(id, cpu: cpu, kind: kind, watts: watts)
     }

@@ -106,6 +106,52 @@ func liveApp(_ id: String, cpu: Double?, kind: AppKey.Kind = .app, watts: Double
         #expect(h.appSeries(AppKey(kind: .app, id: "c"), .cpu, window: .seconds(60)).map(\.value) == [25])
     }
 
+    @Test func appendDoesNotReallocateBuffers() {
+        var h = LiveHistory(capacity: 10, appCapacity: 10, maxTrackedApps: 64)
+        let apps = (0..<64).map { liveApp("app\($0)", cpu: Double(100 - $0)) }
+        h.append(liveFrame(t: 0, apps: apps))
+        let before = h.appStorageAddresses()
+        let systemBefore = h.systemStorageAddress
+        #expect(before.count == 64)
+        for t in 1...30 { h.append(liveFrame(t: Double(t), apps: apps)) }   // also wraps the rings
+        h.appendGap(at: Date(timeIntervalSince1970: 31))
+        #expect(h.appStorageAddresses() == before)
+        #expect(h.systemStorageAddress == systemBefore)
+    }
+
+    @Test func churnOfManyAppsStaysBounded() {
+        var h = LiveHistory(capacity: 300, appCapacity: 120, maxTrackedApps: 64)
+        let anchor = AppKey(kind: .app, id: "anchor")
+        for t in 0..<200 {
+            // anchor always first; 70 others rotate through a pool of 500 keys
+            var apps = [liveApp("anchor", cpu: 1_000)]
+            apps += (0..<70).map { liveApp("p\((t * 70 + $0) % 500)", cpu: Double(70 - $0)) }
+            h.append(liveFrame(t: Double(t), apps: apps))
+            #expect(h.trackedAppCount <= 64)
+        }
+        let s = h.appSeries(anchor, .cpu, window: .seconds(3_600))
+        #expect(s.count == 120)
+        #expect(s.allSatisfy { $0.value == 1_000 })
+    }
+
+    @Test func pauseGapReachesAppSeries() {
+        var h = LiveHistory()
+        let apps = [liveApp("a", cpu: 5)]
+        h.append(liveFrame(t: 0, apps: apps))
+        h.appendGap(at: Date(timeIntervalSince1970: 1))
+        h.append(liveFrame(t: 60, apps: apps))
+        #expect(h.appSeries(AppKey(kind: .app, id: "a"), .cpu, window: .seconds(120)).map(\.value) == [5, nil, 5])
+    }
+
+    @Test func usesEngineMetricsVector() {
+        var h = LiveHistory()
+        var a = liveApp("a", cpu: 5)
+        a.metrics[.cpu] = 5
+        a.metrics[.energy] = 2
+        h.append(liveFrame(t: 0, apps: [a]))
+        #expect(h.appSeries(AppKey(kind: .app, id: "a"), .energy, window: .seconds(60)).map(\.value) == [2])
+    }
+
     @Test func appSeriesCapacity() {
         var h = LiveHistory(capacity: 300, appCapacity: 3, maxTrackedApps: 64)
         for t in 0..<10 { h.append(liveFrame(t: Double(t), apps: [liveApp("a", cpu: Double(t))])) }
