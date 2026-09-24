@@ -93,14 +93,18 @@ public struct LiveProcessSampler: ProcessSampling {
 
     public func sample(pid: Int32, name: String) async -> ProcessSampleResult {
         let executable = executable, timeout = timeout, arguments = arguments, root = reportsRoot
-        // `run` blocks for 3–19 s; keep it on GCD, never on a cooperative-pool thread.
+        // `run` blocks for 3–19 s: give it a dedicated thread — never a cooperative-pool thread, and not a
+        // non-overcommit GCD worker (those can be starved while the pool is busy, delaying the timeout kill).
         return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            let thread = Thread {
                 Self.pruneReports(in: root)
                 let result = Self.run(executable: executable, timeout: timeout, arguments: arguments, pid: pid,
                                       name: name, root: root)
                 continuation.resume(returning: result)
             }
+            thread.name = "dev.telltale.sample"
+            thread.qualityOfService = .utility
+            thread.start()
         }
     }
 
