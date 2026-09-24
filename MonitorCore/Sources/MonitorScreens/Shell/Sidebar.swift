@@ -58,7 +58,7 @@ public struct Sidebar: View {
         case .gpu:
             return TTFormat.percent(live.gpu.usage)
         case .memory:
-            return TTFormat.bytes(live.memory.used)
+            return TTFormat.memory(live.memory.used, style: .headline)          // §5.3 headline: "45.5 GB"
         case .network:
             return TTFormat.rate(live.network.rxBps, units: units)
         case .thermals:
@@ -67,8 +67,10 @@ public struct Sidebar: View {
         case .power:
             return TTFormat.watts(live.power.packageWatts)
         case .disk:
-            guard let v = live.disk.bootVolume else { return TTFormat.bytes(nil) }
-            return TTFormat.bytes(v.availableImportantBytes ?? v.availableBytes) + " free"
+            // Ruling (CP2): free = available capacity (`availableBytes`, statfs/container free = diskutil);
+            // purgeable is separate. Same field and format as the Disk page's "Free space".
+            guard let v = live.disk.bootVolume else { return ShellFormat.freeSpace(nil) }   // "—"
+            return ShellFormat.freeSpace(v) + " free"                                      // §3.0 "{free} GB free"
         }
     }
 }

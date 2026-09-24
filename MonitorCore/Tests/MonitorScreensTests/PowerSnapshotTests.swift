@@ -12,10 +12,19 @@ import Testing
 @MainActor
 @Suite("PowerSnapshotTests", .enabled { await ScreenFixture.snapshotsAvailable })
 struct PowerSnapshotTests {
+    // collecting is identical to calm here (firstTick covers "Collecting…").
     @Test func calm() { assertScreen("power", scenario: .calm) }
     @Test func sensorsUnavailable() { assertScreen("power", scenario: .sensorsUnavailable) }
-    @Test func collecting() { assertScreen("power", scenario: .collecting) }
     @Test func restricted() { assertScreen("power", scenario: .restricted) }
+
+    /// Force Quit confirm (TTConfirmDialog over the page area).
+    @Test func forceQuitConfirm() {
+        let feedback = ProcessActionFeedback()
+        let fcp = AppIdentity(key: AppKey(kind: .app, id: "com.apple.FinalCut"), displayName: "Final Cut Pro")
+        feedback.requestForceQuit?(.app(fcp, pids: [812]))
+        assertSnapshot(PowerPage(selectedRowID: nil, feedback: feedback).screenEnvironment(.calm, page: .power),
+                       size: ScreenSize.pageContent, named: "power-forcequit-calm")
+    }
 
     /// First tick: one sample → chart "Collecting…", values already shown.
     @Test func firstTick() {
@@ -29,6 +38,27 @@ struct PowerSnapshotTests {
         ctx.processActions = ProcessActions(canControl: { _ in true })
         assertSnapshot(PowerPage(selectedRowID: "app:app:com.apple.FinalCut").telltaleEnvironment(ctx),
                        size: ScreenSize.pageContent, named: "power-selected-calm")
+    }
+
+    /// CP2: a MacBook whose battery sensor is unavailable keeps the battery layout with "—" + the reason
+    /// (never "No battery").
+    @Test func laptopBatterySensorUnavailable() {
+        let provider = MockDataProvider(scenario: .calm)
+        var device = provider.device
+        device.hasBattery = true
+        let live = LiveModel(device: device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.device = device
+            f.power.battery = nil
+            f.sensorHealth[.battery] = .unavailable("AppleSmartBattery not found")
+            live.apply(f)
+        }
+        live.isPresenting = true
+        let ctx = ShellContext(live: live, settings: ScreenCatalog.snapshotSettings(), history: provider.history(),
+                               isSnapshot: true, now: MockDataProvider.referenceDate)
+        assertSnapshot(PowerPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent,
+                       named: "power-battery-unavailable")
     }
 
     /// Desktop Mac: no battery → "No battery" card, drain "—", header without Wh.
@@ -53,6 +83,12 @@ struct PowerSnapshotTests {
     }
 }
 
+/// Records action calls (main-actor only).
+@MainActor final class PowerDiskCallLog {
+    var calls: [ProcessTarget] = []
+    var volumes: [String] = []
+}
+
 @MainActor
 @Suite("PowerPageLogicTests")
 struct PowerPageLogicTests {
@@ -63,11 +99,23 @@ struct PowerPageLogicTests {
     }
 
     @Test func subtitle() {
-        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(), lowPowerMode: false))
+        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(), lowPowerMode: false), hasBattery: true)
             == "On battery · 72.4 Wh · Low Power Mode off")
-        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(onAC: true), adapterWatts: 96, lowPowerMode: true))
+        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(onAC: true), adapterWatts: 96, lowPowerMode: true),
+                                   hasBattery: true)
             == "On power adapter · 96 W · 72.4 Wh · Low Power Mode on")
-        #expect(PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false)) == "On power adapter · Low Power Mode off")
+        #expect(PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false), hasBattery: false)
+            == "On power adapter · Low Power Mode off")
+        // Laptop with the battery sensor down: no power-source claim.
+        #expect(PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false), hasBattery: true) == "Low Power Mode off")
+    }
+
+    /// CP2: "No battery" only when the Mac has none; otherwise the battery sensor's reason.
+    @Test func batteryReason() {
+        #expect(PowerCopy.batteryReason(hasBattery: false, status: .ok) == "This Mac has no battery")
+        #expect(PowerCopy.batteryReason(hasBattery: true, status: .unavailable("AppleSmartBattery not found"))
+            == "AppleSmartBattery not found")
+        #expect(PowerCopy.batteryReason(hasBattery: true, status: .ok) == "Not reported by the battery")
     }
 
     @Test func drain() {
@@ -89,6 +137,10 @@ struct PowerPageLogicTests {
         #expect(PowerCopy.adapter(PowerSnapshot(battery: battery(), lowPowerMode: false)) == "Not connected")
         #expect(PowerCopy.adapter(PowerSnapshot(battery: battery(onAC: true), adapterWatts: 96, adapterName: "USB-C",
                                                 lowPowerMode: false)) == "96 W USB-C")
+        // Battery sensor down: adapter details still show; unknown state is "—" (never the battery's reason).
+        #expect(PowerCopy.adapter(PowerSnapshot(adapterWatts: 140, lowPowerMode: false)) == "140 W")
+        #expect(PowerCopy.adapter(PowerSnapshot(lowPowerMode: false)) == nil)
+        #expect(PowerCopy.adapter(PowerSnapshot(battery: battery(onAC: true), lowPowerMode: false)) == "Connected")
         #expect(PowerCopy.fillColor(percent: 82) == TTColor.battery)
         #expect(PowerCopy.fillColor(percent: 20) == TTColor.statusElevated)
         #expect(PowerCopy.fillColor(percent: 10) == TTColor.statusCritical)
@@ -102,6 +154,36 @@ struct PowerPageLogicTests {
         #expect(PowerChartScale.ceiling([[]]) == 1)
     }
 
+    /// Force Quit always confirms: request → pending dialog; Cancel clears; confirm runs forceQuit and toasts.
+    @Test func forceQuitConfirmFlow() async {
+        let feedback = ProcessActionFeedback()
+        let target = ProcessTarget.process(pid: 42, name: "ffmpeg", path: nil, uid: 501)
+        let log = PowerDiskCallLog()
+        let actions = ProcessActions(canControl: { _ in true },
+                                     forceQuit: { t in log.calls.append(t); return .done })
+        feedback.requestForceQuit?(target)
+        #expect(feedback.pending == .init(target: target, name: "ffmpeg"))
+        feedback.cancel()
+        #expect(feedback.pending == nil)
+        await feedback.confirm(using: actions)
+        #expect(log.calls.isEmpty)                                  // nothing pending → no action
+        feedback.requestForceQuit?(target)
+        await feedback.confirm(using: actions)
+        #expect(log.calls == [target])
+        #expect(feedback.pending == nil)
+        #expect(feedback.toast == "ffmpeg was force quit.")
+        feedback.onResult?(target, .notPermitted)
+        #expect(feedback.toast == "Not permitted to quit ffmpeg.")
+        feedback.onResult?(target, .cancelled)                       // cancelled keeps the previous toast
+        #expect(feedback.toast == "Not permitted to quit ffmpeg.")
+    }
+
+    /// Handlers are created once (stable environment values → row menus aren't invalidated per tick).
+    @Test func feedbackHandlersAreStable() {
+        let feedback = ProcessActionFeedback()
+        #expect(feedback.requestForceQuit != nil && feedback.onResult != nil)
+    }
+
     @Test func energyRowsFilterAndTargets() {
         let fcp = AppIdentity(key: AppKey(kind: .app, id: "fcp"), displayName: "Final Cut Pro")
         let idle = AppIdentity(key: AppKey(kind: .app, id: "idle"), displayName: "Idle")
@@ -112,8 +194,8 @@ struct PowerPageLogicTests {
             AppSample(identity: sleepy, energyWatts: 0, preventsSleep: true),
             AppSample(identity: AppIdentity(key: .other, displayName: "Other"), energyWatts: 3),
         ]
-        let rows = EnergyRows.apps(apps, averages: [fcp.key: 5.2], health: [:])
-        #expect(rows.map(\.name) == ["Final Cut Pro", "Sleepy"])
+        let rows = EnergyRows.apps(apps.reversed(), averages: [fcp.key: 5.2], health: [:])
+        #expect(rows.map(\.name) == ["Final Cut Pro", "Sleepy"])        // sorted by energy, descending
         #expect(rows[0].estimated && rows[0].average12h == 5.2 && rows[0].reason == nil)
         #expect(rows[0].target == .app(fcp, pids: []))
     }

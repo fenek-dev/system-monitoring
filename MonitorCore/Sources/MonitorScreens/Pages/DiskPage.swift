@@ -7,22 +7,35 @@ import SwiftUI
 /// DESIGN §3.11 Disk: stat strip (4) · Volumes · Throughput (span 2) + SSD health · Disk activity by process (flex).
 /// SMART/volumes are sampled only while this page is visible (`UIVisibility.demand` → `.smart` + `.volumes`).
 public struct DiskPage: View {
-    @Environment(LiveModel.self) private var live
+    @State private var feedback: ProcessActionFeedback
 
-    public init() {}
+    public init() { _feedback = State(initialValue: ProcessActionFeedback()) }
 
+    /// Tests/renders: inject the action feedback (pending Force Quit confirm, toast).
+    init(feedback: ProcessActionFeedback) { _feedback = State(initialValue: feedback) }
+
+    /// The root reads no live data (the subtitle lives in its own view), so it isn't re-evaluated per tick.
     public var body: some View {
-        DiskPageColumn {
+        SystemPageColumn {
             DiskStatStrip()
-            VolumesCard()
-            DiskGrid3Row(minHeight: 247) {
+            VolumesCard(feedback: feedback)
+            SystemGrid3Row(minHeight: 247) {
                 ThroughputCard()
                 SSDHealthCard()
             }
-            DiskActivityCard()
-                .frame(maxHeight: .infinity, alignment: .top)
+            DiskActivityCard(feedback: feedback)
         }
-        .pageHeader(subtitle: DiskCopy.subtitle(live.disk.smart))
+        .processActionFeedback(feedback)
+        .background(DiskHeaderSubtitle())
+    }
+}
+
+/// Sets the header subtitle from `live.disk.smart` (only this view re-evaluates when disk data changes).
+private struct DiskHeaderSubtitle: View {
+    @Environment(LiveModel.self) private var live
+
+    var body: some View {
+        Color.clear.pageHeader(subtitle: DiskCopy.subtitle(live.disk.smart))
     }
 }
 
@@ -48,6 +61,16 @@ enum DiskCopy {
     static func volumeDetail(_ v: VolumeInfo) -> String {
         [v.busLabel ?? (v.isInternal ? "Internal" : "External"), v.fsType, v.isEncrypted ? "encrypted" : nil]
             .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Ruling (CP2): free space = available capacity (`volumeAvailableCapacity` = statfs available / APFS container
+    /// free, as `diskutil` reports it); purgeable is never added to it and is shown separately.
+    static func freeBytes(_ v: VolumeInfo) -> UInt64 { v.availableBytes }
+
+    /// Free-space sub-line: "on Macintosh HD", plus "· 18 GB purgeable" when the system can free more.
+    static func freeDetail(_ v: VolumeInfo) -> String {
+        guard let p = v.purgeableBytes, p >= 1_000_000_000 else { return "on \(v.name)" }
+        return "on \(v.name) · \(TTFormat.storage(p, style: .capacity)) purgeable"
     }
 
     /// Used (incl. purgeable) = total − available; "612 GB of 994 GB".
@@ -101,46 +124,20 @@ enum DiskCopy {
     }
 
     static func wear(_ pct: Double?) -> String? { pct.map { "\(TTFormat.percent($0 / 100)) used" } }
-}
 
-// MARK: - Layout helpers
-
-private struct DiskPageColumn<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: TTSpace.gridGap) { content }
-            .padding(TTSpace.pagePadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(TTColor.bgWindow)
-    }
-}
-
-/// `grid3` row of span 2 + 1, stretched to the tallest cell (at least `minHeight`).
-private struct DiskGrid3Row: Layout {
-    let minHeight: CGFloat
-
-    static func widths(_ total: CGFloat) -> (CGFloat, CGFloat) {
-        let col = max(0, total - 2 * TTSpace.gridGap) / 3
-        return (2 * col + TTSpace.gridGap, col)
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let total = proposal.width ?? 1020
-        let (a, b) = Self.widths(total)
-        var h = minHeight
-        for (i, s) in subviews.prefix(2).enumerated() {
-            h = max(h, s.sizeThatFits(ProposedViewSize(width: i == 0 ? a : b, height: nil)).height)
+    /// Eject result toast: busy / not permitted are shown; success confirms.
+    static func ejectToast(name: String, result: ActionResult) -> String? {
+        switch result {
+        case .done: "\(name) ejected."
+        case .notPermitted: "Not permitted to eject \(name)."
+        case .failed(let message): "Couldn't eject \(name): \(message)"
+        case .cancelled: nil
         }
-        return CGSize(width: total, height: h)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let (a, b) = Self.widths(bounds.width)
-        for (i, s) in subviews.prefix(2).enumerated() {
-            s.place(at: CGPoint(x: i == 0 ? bounds.minX : bounds.minX + a + TTSpace.gridGap, y: bounds.minY),
-                    anchor: .topLeading, proposal: ProposedViewSize(width: i == 0 ? a : b, height: bounds.height))
-        }
+    /// Runs the eject and reports the result on `feedback`.
+    @MainActor static func eject(_ volume: VolumeInfo, actions: ProcessActions, feedback: ProcessActionFeedback) async {
+        feedback.show(ejectToast(name: volume.name, result: await actions.eject(volume)))
     }
 }
 
@@ -155,13 +152,14 @@ private struct DiskStatStrip: View {
         let boot = d.bootVolume
         TTStatStrip([
             .init(id: "read", label: "Read", value: d.readBps.map { TTFormat.diskRate($0) },
-                  detail: d.readIOPS.map { "\(TTFormat.iops($0)) IOPS" } ?? "\u{00A0}", tint: TTColor.disk,
+                  detail: d.readIOPS.map { "\(TTFormat.iops($0)) IOPS" } ?? SystemPageCopy.blankSub, tint: TTColor.disk,
                   unavailableReason: unavailableReason(.diskRead, health: h)),
             .init(id: "write", label: "Write", value: d.writeBps.map { TTFormat.diskRate($0) },
                   detail: d.writeIOPS.map { "\(TTFormat.iops($0)) IOPS" },
                   unavailableReason: unavailableReason(.diskWrite, health: h)),
-            .init(id: "free", label: "Free space", value: boot.map { TTFormat.storage($0.availableBytes, style: .capacity) },
-                  detail: boot.map { "on \($0.name)" },
+            .init(id: "free", label: "Free space",
+                  value: boot.map { TTFormat.storage(DiskCopy.freeBytes($0), style: .capacity) },
+                  detail: boot.map(DiskCopy.freeDetail),
                   unavailableReason: live.status(of: .volumes).reason ?? "Boot volume not found"),
             .init(id: "wear", label: "SSD wear", value: DiskCopy.wear(d.smart?.percentageUsed),
                   detail: d.smart?.dataWrittenBytes.map { "\(TTFormat.storage($0, style: .lifetime)) written" },
@@ -173,6 +171,7 @@ private struct DiskStatStrip: View {
 // MARK: - Volumes
 
 private struct VolumesCard: View {
+    let feedback: ProcessActionFeedback
     @Environment(LiveModel.self) private var live
 
     private static let columns = [GridItem(.flexible(), spacing: TTSpace.x32, alignment: .top),
@@ -188,7 +187,7 @@ private struct VolumesCard: View {
                     .frame(height: 44)
             } else {
                 LazyVGrid(columns: Self.columns, alignment: .leading, spacing: TTSpace.x12) {
-                    ForEach(volumes) { VolumeView(volume: $0) }
+                    ForEach(volumes) { VolumeView(volume: $0, feedback: feedback) }
                 }
             }
             TTLegend(items: [("Used", TTColor.disk), ("Purgeable", TTColor.diskPurgeable)])
@@ -198,6 +197,7 @@ private struct VolumesCard: View {
 
 private struct VolumeView: View {
     let volume: VolumeInfo
+    let feedback: ProcessActionFeedback
     @Environment(\.processActions) private var actions
 
     var body: some View {
@@ -205,7 +205,9 @@ private struct VolumeView: View {
         VStack(alignment: .leading, spacing: TTSpace.x8) {
             HStack(spacing: TTSpace.x10) {
                 TTIcon(.disk, size: 18)
-                VStack(alignment: .leading, spacing: 0) {
+                // −2: SwiftUI's line boxes (≈16.5 + 13.5) are taller than the design's (16 + 12); the reference
+                // row is 28, so the bar lands 85 below the card top.
+                VStack(alignment: .leading, spacing: -2) {
                     Text(volume.name).font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary).lineLimit(1)
                     Text(DiskCopy.volumeDetail(volume)).font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
                         .lineLimit(1)
@@ -215,8 +217,8 @@ private struct VolumeView: View {
                     .monospacedDigit().lineLimit(1)
                 if volume.isEjectable {
                     TTIconButton(.eject, label: "Eject \(volume.name)", variant: .filled) {
-                        let v = volume, actions = actions
-                        Task { @MainActor in _ = await actions.eject(v) }
+                        let v = volume, actions = actions, feedback = feedback
+                        Task { await DiskCopy.eject(v, actions: actions, feedback: feedback) }
                     }
                 }
             }
@@ -231,16 +233,23 @@ private struct ThroughputCard: View {
     @Environment(LiveModel.self) private var live
     @Environment(NavigationModel.self) private var nav
     @Environment(\.now) private var fixedNow
-    @Environment(\.historyProvider) private var history
+    @Environment(\.unitPreferences) private var units
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
     /// Live ceiling only grows during a session; re-evaluated on range change (DESIGN §5.10).
     @State private var ceiling: Double = 0
 
+    /// Environment units with bytes/s forced: the bits setting applies to network values only (§5.4).
+    private var diskUnits: UnitPreferences {
+        var u = units
+        u.networkRate = .bytes
+        return u
+    }
+
     var body: some View {
         let range = nav.range
         let end = fixedNow ?? live.lastUpdate ?? Date()
-        let read = points(.diskRead, range)
-        let write = points(.diskWrite, range)
+        let read = SystemRangeSeries.points(.diskRead, range: range, live: live, stored: stored)
+        let write = SystemRangeSeries.points(.diskWrite, range: range, live: live, stored: stored)
         let windowMax = (read + write).compactMap(\.value).max() ?? 0
         let scale = max(ceiling, TTFormat.niceRateCeiling(windowMax))
         let reason = unavailableReason(.diskRead, health: live.sensorHealth)
@@ -248,7 +257,7 @@ private struct ThroughputCard: View {
         TTCard(spacing: TTSpace.x10) {
             TTCardHeader("Throughput") {
                 TTLegend(items: [("Read", TTColor.disk), ("Write", TTColor.diskWrite),
-                                 ("scale \(TTFormat.rateScale(scale, units: UnitPreferences()))", .clear)])
+                                 ("scale \(TTFormat.rateScale(scale, units: diskUnits))", .clear)])
             }
             Group {
                 if let reason, empty {
@@ -265,32 +274,9 @@ private struct ThroughputCard: View {
             .frame(minHeight: 161, maxHeight: .infinity)
             TTTimeAxis(range: range, end: end)
         }
-        .frame(maxHeight: .infinity, alignment: .top)
         .onChange(of: scale) { _, new in if new > ceiling { ceiling = new } }
         .onChange(of: range) { ceiling = 0 }
-        .task(id: DiskRangeKey(range: range, end: end)) {
-            guard range != .live else {
-                if !stored.isEmpty { stored = [:] }
-                return
-            }
-            let result = try? await history.series([.diskRead, .diskWrite], range: range, end: end, bucket: nil)
-            if !Task.isCancelled { stored = result ?? [:] }
-        }
-    }
-
-    private func points(_ metric: HistoryMetric, _ range: HistoryRange) -> [SeriesPoint] {
-        range == .live ? live.series(metric) : (stored[metric] ?? [])
-    }
-}
-
-private struct DiskRangeKey: Hashable {
-    let range: HistoryRange
-    let slot: Int
-
-    init(range: HistoryRange, end: Date) {
-        self.range = range
-        let bucket = Double(range.displayBucket.components.seconds)
-        slot = range == .live ? 0 : Int(end.timeIntervalSince1970 / max(bucket, 1))
+        .rangeSeries([.diskRead, .diskWrite], range: range, end: end, into: $stored)
     }
 }
 
@@ -313,6 +299,8 @@ private struct SSDHealthCard: View {
                 }
             }
             if let s = smart {
+                // Spacer inside (not a card child) so the stretch adds no extra card gap.
+                VStack(spacing: 0) {
                 if DiskCopy.isStatusOnly(s) {
                     TTKeyValueList(rows: [.init("Status", DiskCopy.statusText(s.status),
                                                 unavailableReason: DiskCopy.smartUnavailable)])
@@ -333,12 +321,12 @@ private struct SSDHealthCard: View {
                     ])
                 }
                 Spacer(minLength: 0)
+                }
             } else {
                 TTEmptyState(.unavailable(live.status(of: .smart).reason ?? DiskCopy.smartUnavailable))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -350,41 +338,122 @@ struct DiskRow: Identifiable, Equatable {
     var identity: AppIdentity?
     var read: Double?
     var write: Double?
-    var readTotal: UInt64?
-    var writeTotal: UInt64?
+    /// Bytes since Telltale started (see `DiskSessionBaselines`).
+    var readSession: UInt64?
+    var writeSession: UInt64?
+    /// The process predates Telltale and was first seen later, so earlier session I/O is not included.
+    var sessionPartial: Bool
     var target: ProcessTarget
 
     var rate: Double { (read ?? 0) + (write ?? 0) }
 }
 
 enum DiskRows {
-    /// Processes with disk I/O this tick (restricted pids are counted in their coalition rows).
-    static func rows(_ processes: [ProcessSample], identity: (AppKey) -> AppIdentity?) -> [DiskRow] {
-        processes.compactMap { p in
-            guard (p.diskReadBps ?? 0) + (p.diskWriteBps ?? 0) > 0 else { return nil }
+    /// Processes with disk I/O this tick (restricted pids are counted in their coalition rows), by read + write.
+    static func rows(_ processes: [ProcessSample], identity: (AppKey) -> AppIdentity?,
+                     session: (ProcessSample) -> DiskSessionBaselines.Session) -> [DiskRow] {
+        let active = processes.filter { ($0.diskReadBps ?? 0) + ($0.diskWriteBps ?? 0) > 0 }
+        return SystemPageSort.descending(active.map { p in
+            let s = session(p)
             return DiskRow(id: "pid:\(p.id.pid):\(p.id.startTimeUs)", name: p.name, identity: identity(p.app),
-                           read: p.diskReadBps, write: p.diskWriteBps, readTotal: p.diskReadTotal,
-                           writeTotal: p.diskWriteTotal,
+                           read: p.diskReadBps, write: p.diskWriteBps, readSession: s.read, writeSession: s.write,
+                           sessionPartial: s.partial,
                            target: .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid))
-        }
+        }) { $0.rate }
+    }
+
+    /// Session total cell: storage headline style (§5.3, "18.4 GB", "578 MB"); 0 → "—" (idle, no tooltip).
+    static func sessionText(_ bytes: UInt64?) -> String? {
+        guard let bytes else { return nil }
+        return bytes == 0 ? TTFormat.unavailable : TTFormat.storage(bytes, style: .headline)
     }
 }
 
+/// "Read/Written (session)" = bytes since Telltale started. `ProcessSample.diskReadTotal/diskWriteTotal` are the
+/// process's lifetime `ri_diskio_bytes*` counters, so a process that started after Telltale counts in full, and
+/// one that predates Telltale is measured from the first time it is seen here (flagged `partial`).
+/// TODO(ICR 009): replace with engine-side `ProcessSample.diskReadSession/diskWriteSession` (baselined at engine
+/// start) once accepted; see docs/icr/009-W5b-disk-session-totals.md.
+@MainActor final class DiskSessionBaselines {
+    struct Session: Equatable {
+        var read: UInt64?
+        var write: UInt64?
+        var partial: Bool
+    }
+
+    static let shared = DiskSessionBaselines(launchUs: DiskSessionBaselines.ownStartUs)
+
+    /// Telltale's own `p_starttime` in µs (the unit of `ProcessID.startTimeUs`).
+    static let ownStartUs: UInt64? = {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let tv = info.kp_proc.p_starttime
+        return UInt64(max(0, tv.tv_sec)) * 1_000_000 + UInt64(max(0, tv.tv_usec))
+    }()
+
+    private let launchUs: UInt64?
+    private var baselines: [ProcessID: (read: UInt64, write: UInt64)] = [:]
+
+    init(launchUs: UInt64?) { self.launchUs = launchUs }
+
+    func session(_ p: ProcessSample) -> Session {
+        if let launchUs, p.id.startTimeUs >= launchUs {
+            return Session(read: p.diskReadTotal, write: p.diskWriteTotal, partial: false)
+        }
+        guard p.diskReadTotal != nil || p.diskWriteTotal != nil else { return Session(read: nil, write: nil, partial: false) }
+        let now = (read: p.diskReadTotal ?? 0, write: p.diskWriteTotal ?? 0)
+        var base = baselines[p.id] ?? now
+        // A counter that went backwards (a sensor glitch; ProcessID already includes the start time, so this is not
+        // pid reuse) rebases to the current value: the delta is clamped to 0, with no spike when it recovers.
+        if now.read < base.read { base.read = now.read }
+        if now.write < base.write { base.write = now.write }
+        baselines[p.id] = base
+        return Session(read: p.diskReadTotal.map { $0 - base.read }, write: p.diskWriteTotal.map { $0 - base.write },
+                       partial: true)
+    }
+
+    /// Records a baseline for every process seen for the first time (so later I/O counts from here), and drops the
+    /// baselines of every process not in `processes` (exited).
+    func observe(_ processes: [ProcessSample]) {
+        let live = Set(processes.map(\.id))
+        baselines = baselines.filter { live.contains($0.key) }
+        for p in processes where baselines[p.id] == nil && (p.diskReadTotal != nil || p.diskWriteTotal != nil) {
+            if let launchUs, p.id.startTimeUs >= launchUs { continue }
+            baselines[p.id] = (p.diskReadTotal ?? 0, p.diskWriteTotal ?? 0)
+        }
+    }
+
+    /// Test hook: whether a baseline is held for `id`.
+    func hasBaseline(_ id: ProcessID) -> Bool { baselines[id] != nil }
+}
+
 private struct DiskActivityCard: View {
+    let feedback: ProcessActionFeedback
     @Environment(LiveModel.self) private var live
+    @Environment(\.isSnapshot) private var isSnapshot
     @State private var selection: String?
+    /// Snapshots get a fresh store (deterministic regardless of test order) with launch at 0: mock processes'
+    /// disk totals are already session totals (Wm), so they count in full.
+    @State private var snapshotBaselines = DiskSessionBaselines(launchUs: 0)
 
     var body: some View {
-        let rows = DiskRows.rows(live.processes) { live.app($0)?.identity }
+        let baselines = isSnapshot ? snapshotBaselines : DiskSessionBaselines.shared
+        let rows = DiskRows.rows(live.processes, identity: { live.app($0)?.identity }, session: baselines.session)
         TTCard(spacing: TTSpace.x8) {
-            TTCardHeader("Disk activity by process")
-            TTTable(rows: rows, columns: Self.columns, selection: $selection,
-                    sort: .constant((column: "read", descending: true)),
-                    rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
-                    style: TTTableStyle(rowHeight: 32, emptyMessage: "No disk activity"))
-                .clipped()
+            TTCardHeader("Disk activity by process") { ProcessActionToast(feedback: feedback) }
+            SystemFittedRows(rowHeight: TTTableStyle.disk.rowHeight) { limit in
+                TTTable(rows: Array(rows.prefix(limit)), columns: Self.columns, selection: $selection,
+                        sort: .constant((column: "read", descending: true)),
+                        rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
+                        style: TTTableStyle(rowHeight: 32, emptyMessage: "No disk activity"))
+            }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .onChange(of: live.lastUpdate, initial: true) {
+            if !isSnapshot { DiskSessionBaselines.shared.observe(live.processes) }
+        }
     }
 
     /// DESIGN §3.11 template `minmax(0,2fr) 100 100 110 120 28`; fixed-sorted by read + write.
@@ -399,15 +468,21 @@ private struct DiskActivityCard: View {
             AnyView(MetricValue(TTFormat.diskRateCell(row.write), font: TTFont.body12))
         },
         .init(id: "readSession", title: "Read (session)", width: .fixed(110), alignment: .trailing) { row in
-            AnyView(MetricValue(row.readTotal.map { TTFormat.storage($0, style: .detail) },
-                                unavailableReason: "Not reported for this process", font: TTFont.body12))
+            AnyView(sessionCell(row.readSession, partial: row.sessionPartial))
         },
         .init(id: "writeSession", title: "Written (session)", width: .fixed(120), alignment: .trailing) { row in
-            AnyView(MetricValue(row.writeTotal.map { TTFormat.storage($0, style: .detail) },
-                                unavailableReason: "Not reported for this process", font: TTFont.body12))
+            AnyView(sessionCell(row.writeSession, partial: row.sessionPartial))
         },
         .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) { row in
             AnyView(TTRowActionsButton(target: row.target, name: row.name))
         },
     ]
+
+    static let partialHelp = "Counted since Telltale first saw this process; earlier I/O this session isn't included"
+
+    @ViewBuilder private static func sessionCell(_ bytes: UInt64?, partial: Bool) -> some View {
+        let text = DiskRows.sessionText(bytes)
+        MetricValue(text, unavailableReason: bytes == nil ? "Not reported for this process" : nil, font: TTFont.body12)
+            .helpIfPresent(partial && text != TTFormat.unavailable ? partialHelp : nil)
+    }
 }

@@ -42,11 +42,14 @@ import SwiftUI
 
     /// 18 frames at 30 fps (600 ms, ease-in-out) for one critical pulse; the caller then restores `image(for:)`.
     public static func pulseFrames(for state: AlertState, pointSize: CGFloat = 18) -> [NSImage] {
-        (0..<18).map { f in
-            let t = Double(f) / 17
-            let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
-            return image(for: state, pointSize: pointSize, pulse: eased)
-        }
+        pulseValues.map { image(for: state, pointSize: pointSize, pulse: $0) }
+    }
+
+    /// Eased pulse progress per frame: t = f/18 (f = 0…17), ease-in-out; frame 9 is the peak (0.5 → alpha 0.45,
+    /// dot 2.9); the caller restores the static image after the last frame.
+    nonisolated static let pulseValues: [Double] = (0..<18).map { f in
+        let t = Double(f) / 18
+        return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
     }
 
     /// y-down drawing (flipped image) with the §4.2 paint order and transparency layers.
@@ -54,7 +57,7 @@ import SwiftUI
                                  level: AlertLevel, template: Bool, paused: Bool, pulse: Double) {
         let s = rect.width / StatusGlyphGeometry.viewBox * 8 / 9
         let center = CGPoint(x: rect.midX, y: rect.midY)
-        let wave = sin(pulse * .pi)
+        let pulsed = StatusGlyphGeometry.pulse(pulse)
         let label: CGColor = template ? NSColor.black.cgColor : NSColor.labelColor.cgColor
         func path(_ arcs: [Int]) -> CGPath {
             var p = Path()
@@ -72,7 +75,7 @@ import SwiftUI
         if !template {
             for (arcs, hex) in [(groups.elevated, TTHex.statusElevated), (groups.critical, TTHex.statusCritical)] where !arcs.isEmpty {
                 cg.saveGState()
-                cg.setAlpha(hex == TTHex.statusCritical ? 1 - 0.55 * wave : 1)
+                cg.setAlpha(hex == TTHex.statusCritical ? pulsed.arcAlpha : 1)
                 cg.beginTransparencyLayer(auxiliaryInfo: nil)
                 cg.addPath(path(arcs))
                 cg.setStrokeColor(NSColor(hex: hex).cgColor)
@@ -81,8 +84,7 @@ import SwiftUI
                 cg.restoreGState()
             }
         }
-        var r = StatusGlyphGeometry.dotRadius(template ? .calm : level)
-        if !template && level == .critical { r += 0.8 * CGFloat(wave) }
+        var r = !template && level == .critical ? pulsed.dotRadius : StatusGlyphGeometry.dotRadius(template ? .calm : level)
         r *= s
         let dot: CGColor = switch template ? .calm : level {
         case .calm: label
