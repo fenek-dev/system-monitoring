@@ -164,7 +164,8 @@ private struct TemperaturesCard: View {
                 if let reason = ThermalChartData.unavailableReason(series, health: live.sensorHealth) {
                     SystemChartUnavailable(reason: reason)
                 } else {
-                    TTLineChart(series, yDomain: ThermalChartData.domain(series)) {
+                    let domain = ThermalChartData.domain(series)
+                    TTLineChart(series, yDomain: domain, yTicks: ThermalChartData.ticks(domain)) {
                         TTFormat.temperatureCompact($0, units: units)
                     }
                 }
@@ -191,6 +192,15 @@ enum ThermalChartData {
         guard let lowest else { return baseDomain }
         let lower = min(baseDomain.lowerBound, ((lowest.rounded(.down) - 5) / 10).rounded(.down) * 10)
         return lower...baseDomain.upperBound
+    }
+
+    /// Axis ticks for an extended domain (lower bound below 40): multiples of 20 inside the domain, top down
+    /// (e.g. 100/80/60/40/20 for 20…105). nil for the default 40…105, which keeps `TTLineChart`'s quarter labels
+    /// (105/89/72/56/40).
+    static func ticks(_ domain: ClosedRange<Double>) -> [Double]? {
+        guard domain.lowerBound < baseDomain.lowerBound else { return nil }
+        let top = (domain.upperBound / 20).rounded(.down) * 20
+        return Array(stride(from: top, through: domain.lowerBound, by: -20))
     }
 
     /// Missing readings are gaps: nil, non-finite and ≤ 0 °C samples (a sensor that reports nothing) become nil,
