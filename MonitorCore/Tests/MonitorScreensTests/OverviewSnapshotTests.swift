@@ -16,6 +16,30 @@ struct OverviewSnapshotTests {
         assertScreen("overview", scenario: scenario)
     }
 
+    /// M5 / DESIGN §5.10: Live rate ceilings only grow; a range switch starts over; stored ranges follow the window.
+    @Test func liveCeilingsOnlyGrow() {
+        let c = LiveCeilings()
+        #expect(c.ceiling("net", range: .live, 40) == 40)
+        #expect(c.ceiling("net", range: .live, 1) == 40)          // the spike scrolled out: scale stays
+        #expect(c.ceiling("other", range: .live, 2) == 2)         // keys are independent
+        #expect(c.ceiling("net", range: .hour, 5) == 5)           // stored range: the window's own ceiling
+        #expect(c.ceiling("net", range: .hour, 3) == 3)
+        #expect(c.ceiling("net", range: .live, 1) == 1)           // back to Live: a new session
+        #expect(c.domain("net", range: .live, 0...0.5) == 0...1)
+    }
+
+    /// M3: a missing headline value always has a reason; only a down sensor turns "Collecting…" off.
+    @Test func headlineReasonFallbacks() {
+        let live = ScreenFixture.live(.calm)
+        #expect(headlineReason(.cpuUsage, value: "37%", live: live).reason == nil)
+        let missing = headlineReason(.cpuUsage, value: nil, live: live)
+        #expect(missing.reason == "Not reported on this Mac" && !missing.sensorDown)
+        let down = headlineReason(.socTemp, value: nil, live: ScreenFixture.live(.sensorsUnavailable))
+        #expect(down.reason != nil && down.sensorDown)
+        let collecting = headlineReason(.netRx, value: nil, live: ScreenFixture.live(.collecting))
+        #expect(collecting.reason == "Collecting — rates need two samples")
+    }
+
     @Test func splitUnitRules() {
         #expect(splitUnit("15.1 GB") == ("15.1", "GB"))
         #expect(splitUnit("34%") == ("34", "%"))

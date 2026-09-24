@@ -48,6 +48,8 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
     let style: TTTableStyle
     let onDoubleClick: ((Row) -> Void)?
     let columnsVersion: Int
+    /// Cheap "has children" test; with it, `children` runs only for expanded rows.
+    let hasChildren: ((Row) -> Bool)?
     @State private var expanded: Set<Row.ID> = []
     @Environment(\.isSnapshot) private var isSnapshot
 
@@ -61,8 +63,10 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
     ///   settings) changes; rows are Equatable on their data, so without it such a change would leave stale cells.
     public init(rows: [Row], columns: [Column], selection: Binding<Row.ID?>, sort: Binding<(column: String, descending: Bool)>,
                 rowMenu: ((Row) -> AnyView)? = nil, children: ((Row) -> [Row])? = nil, style: TTTableStyle,
-                expandedByDefault: Set<Row.ID> = [], onDoubleClick: ((Row) -> Void)? = nil, columnsVersion: Int = 0) {
+                expandedByDefault: Set<Row.ID> = [], onDoubleClick: ((Row) -> Void)? = nil, columnsVersion: Int = 0,
+                hasChildren: ((Row) -> Bool)? = nil) {
         self.columnsVersion = columnsVersion
+        self.hasChildren = hasChildren
         self.rows = rows
         self.columns = columns
         _selection = selection
@@ -100,14 +104,23 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
         }.map(\.r)
     }
 
+    /// `hasChildren`: cheap test; when given, `children` is called only for expanded rows (M11).
     nonisolated static func lines(_ rows: [Row], key: ((Row) -> Double?)?, descending: Bool, children: ((Row) -> [Row])?,
-                                  expanded: Set<Row.ID>) -> [Line] {
+                                  expanded: Set<Row.ID>, hasChildren: ((Row) -> Bool)? = nil) -> [Line] {
         var out: [Line] = []
         out.reserveCapacity(rows.count)
         for (i, row) in sorted(rows, key: key, descending: descending).enumerated() {
-            let kids = children?(row) ?? []
-            let open = !kids.isEmpty && expanded.contains(row.id)
-            out.append(Line(row: row, depth: 0, parity: i % 2, hasChildren: !kids.isEmpty, isExpanded: open))
+            let kids: [Row]
+            let has: Bool
+            if let hasChildren {
+                has = hasChildren(row)
+                kids = has && expanded.contains(row.id) ? children?(row) ?? [] : []
+            } else {
+                kids = children?(row) ?? []
+                has = !kids.isEmpty
+            }
+            let open = has && !kids.isEmpty && expanded.contains(row.id)
+            out.append(Line(row: row, depth: 0, parity: i % 2, hasChildren: has, isExpanded: open))
             if open {
                 for kid in sorted(kids, key: key, descending: descending) {
                     out.append(Line(row: kid, depth: 1, parity: i % 2, hasChildren: false, isExpanded: false))
@@ -164,8 +177,9 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
 
     public var body: some View {
         let lines = style.sortsRows
-            ? Self.lines(rows, key: activeColumn?.sortKey, descending: sort.descending, children: children, expanded: expanded)
-            : Self.lines(rows, key: nil, descending: true, children: children, expanded: expanded)
+            ? Self.lines(rows, key: activeColumn?.sortKey, descending: sort.descending, children: children, expanded: expanded,
+                         hasChildren: hasChildren)
+            : Self.lines(rows, key: nil, descending: true, children: children, expanded: expanded, hasChildren: hasChildren)
         GeometryReader { geo in
             let widths = Self.columnWidths(columns.map(\.width), available: geo.size.width - 2 * TTSpace.tableRowInset,
                                            gap: TTSpace.tableCellGap)

@@ -151,6 +151,8 @@ private struct PowerByComponentCard: View {
     @Environment(NavigationModel.self) private var nav
     @Environment(\.now) private var fixedNow
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
+    /// Live scale only grows during a session (DESIGN §5.10, M5).
+    @State private var ceilings = LiveCeilings()
 
     private static let metrics: [HistoryMetric] = [.cpuWatts, .gpuWatts, .aneWatts, .dramWatts]
 
@@ -175,7 +177,8 @@ private struct PowerByComponentCard: View {
                 if stacked.isEmpty, let reason = unavailableReason(.cpuWatts, health: live.sensorHealth) {
                     SystemChartUnavailable(reason: reason)
                 } else {
-                    TTStackedArea(stacked, yDomain: 0...PowerChartScale.ceiling(stacked.map(\.points)))
+                    TTStackedArea(stacked, yDomain: 0...ceilings.ceiling("stack", range: range,
+                                                                         PowerChartScale.ceiling(stacked.map(\.points))))
                 }
             }
             .frame(minHeight: 160, maxHeight: .infinity)
@@ -353,6 +356,7 @@ private struct EnergyImpactCard: View {
     @Environment(\.now) private var fixedNow
     @State private var selection: String?
     @State private var averages: [AppKey: Double] = [:]
+    @State private var rankCache = RankCache<EnergyRow>()
     let feedback: ProcessActionFeedback
 
     init(selection: String? = nil, feedback: ProcessActionFeedback) {
@@ -362,8 +366,9 @@ private struct EnergyImpactCard: View {
 
     var body: some View {
         let health = live.sensorHealth
-        let rows = EnergyRows.apps(live.apps, averages: averages, health: health)
-        let children = childMap(rows, health: health)
+        // M11: ranked once per (apps, health, 12 h averages) change; child rows built only for rows the table
+        // shows (and only when it asks: expanded parents), not for every process of every app each tick.
+        let rows = rankCache.rows(version: rowsVersion) { EnergyRows.apps(live.apps, averages: averages, health: health) }
         let sleepReason = sleepUnavailableReason
         let end = fixedNow ?? live.lastUpdate ?? Date()
         TTCard(spacing: TTSpace.x8) {
@@ -380,23 +385,35 @@ private struct EnergyImpactCard: View {
                 TTTable(rows: Array(rows.prefix(limit)), columns: columns(sleepReason: sleepReason),
                         selection: $selection, sort: .constant((column: "energy", descending: true)),
                         rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
-                        children: { children[$0.id] ?? [] },
-                        style: TTTableStyle(emptyMessage: "No app energy use"))
+                        children: { childRows($0, health: health) },
+                        style: TTTableStyle(emptyMessage: "No app energy use"),
+                        hasChildren: { hasChildRows($0) })
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .task(id: Int(end.timeIntervalSince1970 / 60)) { await loadAverages(end: end) }
     }
 
-    /// Child process rows for apps with more than one process (Processes Apps-mode disclosure).
-    private func childMap(_ rows: [EnergyRow], health: [SensorID: SensorStatus]) -> [String: [EnergyRow]] {
-        var children: [String: [EnergyRow]] = [:]
-        for row in rows {
-            guard case .app(let identity, _) = row.target else { continue }
-            let procs = live.processes(of: identity.key)
-            if procs.count > 1 { children[row.id] = procs.map { EnergyRows.process($0, identity: identity, health: health) } }
-        }
-        return children
+    /// Version of the ranked rows' inputs (`RankCache`).
+    private var rowsVersion: Int {
+        var h = Hasher()
+        h.combine(live.appsVersion)
+        h.combine(live.healthVersion)
+        h.combine(averages)
+        return h.finalize()
+    }
+
+    private func hasChildRows(_ row: EnergyRow) -> Bool {
+        guard case .app(let identity, _) = row.target else { return false }
+        return live.processes(of: identity.key).count > 1
+    }
+
+    /// Child process rows for an app with more than one process (Processes Apps-mode disclosure); called by the
+    /// table per shown row.
+    private func childRows(_ row: EnergyRow, health: [SensorID: SensorStatus]) -> [EnergyRow] {
+        guard case .app(let identity, _) = row.target else { return [] }
+        let procs = live.processes(of: identity.key)
+        return procs.count > 1 ? procs.map { EnergyRows.process($0, identity: identity, health: health) } : []
     }
 
     private var sleepUnavailableReason: String? {

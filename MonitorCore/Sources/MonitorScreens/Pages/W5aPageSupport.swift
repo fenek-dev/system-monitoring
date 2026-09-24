@@ -455,6 +455,16 @@ extension ProcessSample {
 extension AppSample {
     /// An app group made only of the ICR-13 exited-processes row.
     var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy(\.isExitedResidual) }
+
+    /// "Estimated" CPU marker, the same rule as the Processes table (M4): an exited-only group, a group whose value
+    /// includes an ICR-13 exited share, or one with coalition-provenance members.
+    @MainActor func cpuIsEstimated(_ live: LiveModel) -> Bool {
+        isExitedResidualOnly || exitedResidual != nil
+            || live.processes(of: identity.key).contains { $0.provenance == .coalition }
+    }
+
+    /// "Estimated" energy marker (Processes rule, M4): energy attributed by estimate or including an exited share.
+    var energyIsEstimated: Bool { energyEstimated || exitedResidual != nil || isExitedResidualOnly }
 }
 
 /// Name cell for an ICR-13 row: tile + italic `textSecondary` name.

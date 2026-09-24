@@ -66,9 +66,10 @@ struct GPUStatStrip: View {
                   unavailableReason: unavailableReason(.gpuWatts, health: h) ?? "Not reported by IOReport"),
             .init(id: "memory", label: "GPU memory",
                   value: TTFormat.memory(g.allocatedMemory, style: .headline), detail: "allocated from unified memory",
-                  unavailableReason: "Not reported by IOAccelerator"),
+                  // M12: the gpuClients sensor's own reason first (e.g. "Disabled after a crash").
+                  unavailableReason: live.status(of: .gpuClients).reason ?? "Not reported by IOAccelerator"),
             .init(id: "cores", label: "Cores", value: TTFormat.count(g.coreCount ?? live.device.gpuCores),
-                  unavailableReason: "GPU core count not reported"),
+                  unavailableReason: live.status(of: .gpuClients).reason ?? "GPU core count not reported"),
         ]
     }
 }
@@ -109,6 +110,8 @@ struct GPUUtilizationCard: View {
 struct GPUNeuralEngineCard: View {
     let flexes: Bool
     @Environment(LiveModel.self) private var live
+    /// Live scale only grows during a session (DESIGN §5.10, M5).
+    @State private var ceilings = LiveCeilings()
 
     var body: some View {
         let w = live.gpu.aneWatts
@@ -126,7 +129,8 @@ struct GPUNeuralEngineCard: View {
                         Text(w < 0.05 ? "idle" : "active").font(TTFont.body12).foregroundStyle(TTColor.textSecondary)
                     }
                 }
-                TTAreaChart(s[.aneWatts], color: TTColor.power, yDomain: W5a.autoDomain(s[.aneWatts], minimum: 1),
+                TTAreaChart(s[.aneWatts], color: TTColor.power,
+                            yDomain: ceilings.domain("ane", range: s.range, W5a.autoDomain(s[.aneWatts], minimum: 1)),
                             fillOpacity: TTChartFill.ane, lineWidth: TTStroke.spark,
                             showsCollecting: w != nil || unavailableReason(.aneWatts, health: live.sensorHealth) == nil)
                     .equatable()

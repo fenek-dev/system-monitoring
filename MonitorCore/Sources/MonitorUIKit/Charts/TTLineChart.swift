@@ -15,7 +15,8 @@ public struct TTLineChart: View, Equatable {
 
     struct Mark: Identifiable, Equatable, Sendable {
         let id: Int
-        let run: String
+        /// Series index << 20 | run index: one Int per gap-free run (no String per mark per tick, M11).
+        let run: Int
         let time: Date
         let value: Double
         let seriesIndex: Int
@@ -49,7 +50,7 @@ public struct TTLineChart: View, Equatable {
             if let l = pts.last?.time { maxT = max(maxT ?? l, l) }
             for (ri, run) in ChartSegments.runs(pts).enumerated() {
                 for i in run {
-                    marks.append(Mark(id: marks.count, run: "\(s.id)#\(ri)", time: pts[i].time,
+                    marks.append(Mark(id: marks.count, run: si << 20 | ri, time: pts[i].time,
                                       value: pts[i].value!, seriesIndex: si))
                 }
             }

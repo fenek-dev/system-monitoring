@@ -346,6 +346,7 @@ struct OverviewTopProcessesCard: View {
 
     private func columns(_ health: [SensorID: SensorStatus]) -> [TTTable<AppSample>.Column] {
         let units = units
+        let live = live
         return [
             .init(id: "name", title: "Process", width: .fraction(2.2, min: 0)) { a in
                 a.isExitedResidualOnly ? AnyView(ExitedNameCell(identity: a.identity, name: a.name))
@@ -353,7 +354,7 @@ struct OverviewTopProcessesCard: View {
             },
             .init(id: "cpu", title: "CPU", width: .fraction(1, min: 0), alignment: .trailing, sortKey: \.cpuPercent) {
                 metricCell(TTFormat.cpuPercent($0.cpuPercent), reason: unavailableReason(.cpu, $0, health: health),
-                           estimated: $0.isExitedResidualOnly)
+                           estimated: $0.cpuIsEstimated(live))
             },
             .init(id: "gpu", title: "GPU", width: .fraction(1, min: 0), alignment: .trailing) {
                 metricCell(TTFormat.cpuPercent($0.gpuPercent), reason: unavailableReason(.gpu, $0, health: health))
@@ -367,7 +368,7 @@ struct OverviewTopProcessesCard: View {
             },
             .init(id: "energy", title: "Energy impact", width: .fraction(1, min: 0), alignment: .trailing) {
                 metricCell(TTFormat.appWatts($0.energyWatts), reason: unavailableReason(.energy, $0, health: health),
-                           estimated: $0.energyEstimated)
+                           estimated: $0.energyIsEstimated)
             },
             .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) { a in
                 a.isExitedResidualOnly ? AnyView(EmptyView()) : AnyView(TTRowActionsButton(target: a.target, name: a.name))

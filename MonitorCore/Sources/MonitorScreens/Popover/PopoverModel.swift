@@ -35,7 +35,8 @@ enum PopoverModel {
         var sensorDown = false
     }
 
-    static func row(_ c: MonitorModel.Category, live: LiveModel, units: UnitPreferences) -> Row {
+    static func row(_ c: MonitorModel.Category, live: LiveModel, units: UnitPreferences,
+                    ceilings: LiveCeilings = LiveCeilings()) -> Row {
         let health = live.sensorHealth
         let reason = unavailableReason(c.headlineMetric, health: health)
         let stress = c.iconArc.flatMap { live.alert.paused ? nil : live.alert.arcs[$0] } ?? .calm
@@ -65,7 +66,7 @@ enum PopoverModel {
             r.subtitle = live.network.txBps.map { TTFormat.rate($0, units: units, direction: .up) }
             r.value = TTFormat.rate(live.network.rxBps, units: units)
             r.points = live.chartSeries(.netRx)
-            r.domain = W5a.rateDomain(r.points)
+            r.domain = ceilings.domain("netRx", range: .live, W5a.rateDomain(r.points))
         case .thermals:
             r.subtitle = thermalSubtitle(live.thermals, device: live.device, stressed: stress != .calm)
             r.value = TTFormat.temperature(live.thermals.socAverage, units: units)
