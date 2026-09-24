@@ -319,6 +319,64 @@ struct ProcessTableObservableTests {
         #expect(m.countLabel == "9 of 612 shown")
     }
 
+    @Test func tiesAreStableAcrossTicksWhateverTheInputOrder() {
+        // Same-name helpers with equal / nil CPU: the order must not depend on the frame's input order.
+        let helper = AppKey(kind: .app, id: "com.example.Helper")
+        func tick(_ reversed: Bool) -> [ProcessRow] {
+            var ps = (0..<6).map { i in
+                PT.proc(Int32(5000 + i), "Helper", app: helper, cpu: i % 2 == 0 ? 0.0 : nil)
+            }
+            if reversed { ps.reverse() }
+            let m = ProcessTableModel()
+            m.update(processes: ps, apps: PT.group(ps), health: [:], processCount: nil, mode: .processes)
+            return m.lines
+        }
+        let a = tick(false).map(\.pid), b = tick(true).map(\.pid)
+        #expect(a == b)
+        #expect(a == [5000, 5002, 5004, 5001, 5003, 5005])                 // 0.0 before nil, then by pid
+    }
+
+    @Test func expansionSurvivesUpdates() {
+        let m = loaded()
+        m.setExpanded(PT.docker, true)
+        var t = PT.table()
+        t.processes[0].cpuPercent = 1
+        t.apps = PT.group(t.processes, names: [PT.docker: "Docker Desktop"])
+        m.update(processes: t.processes, apps: t.apps, health: [:], processCount: 612, mode: .apps)
+        #expect(m.expanded == [PT.docker])
+        #expect(m.lines.contains { $0.name == "com.docker.backend" })
+    }
+
+    @Test func coalitionGroupShowsNoPID() {
+        let out = ProcessTableModel.build(PT.input())
+        let coalition = out.lines.first { $0.name == "suggestd" }!
+        #expect(coalition.pid == nil)
+        #expect(coalition.user == "root")
+    }
+
+    @Test func moveFromCollapsedChildStepsFromItsParent() {
+        let m = loaded()
+        let backend = NavigationModel.ProcessSelection.process(ProcessID(pid: 2604, startTimeUs: 1))
+        #expect(m.moved(backend, by: 1) == .app(PT.mds))                   // row after Docker Desktop
+        #expect(m.moved(backend, by: -1) == .app(PT.docker))               // its parent
+    }
+
+    @Test func ownerRuleForRowMenuMatchesInspector() {
+        let m = loaded(.processes)
+        let xcode = m.lines.first { $0.name == "Xcode" }!.target!
+        let mds = m.lines.first { $0.name == "mds_stores" }!.target!
+        #expect(m.ownerAllows(xcode))
+        #expect(!m.ownerAllows(mds))
+    }
+
+    @Test func inspectedAppOnlyWhileDetailExpanded() {
+        let m = loaded(.processes)
+        let backend = m.lines.first { $0.name == "com.docker.backend" }
+        #expect(ProcessTableModel.inspectedApp(row: backend, detailExpanded: true) == PT.docker)
+        #expect(ProcessTableModel.inspectedApp(row: backend, detailExpanded: false) == nil)
+        #expect(ProcessTableModel.inspectedApp(row: nil, detailExpanded: true) == nil)
+    }
+
     @Test func mockCalmScenarioBuilds() {
         let live = LiveModel.mock(.calm)
         let m = ProcessTableModel()

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import MonitorLive
 import MonitorModel
 import MonitorUIKit
@@ -22,12 +23,21 @@ public struct ProcessesPage: View {
 
     public init() {}
 
+    static let signposter = OSSignposter(subsystem: "dev.telltale", category: "Processes")
+
+    /// `processActions` with the owner rule ANDed into `canControl`, so the row menu (`TTRowActionsMenu`) and the
+    /// inspector enable exactly the same targets.
+    private var ownedActions: ProcessActions {
+        var a = actions
+        let base = actions.canControl
+        let table = table
+        a.canControl = { target in table.ownerAllows(target) && base(target) }
+        return a
+    }
+
     public var body: some View {
         @Bindable var table = table
-        let _ = table.update(from: live, mode: nav.processesMode)
-        let _ = coordinator.actions = actions
         let selectedRow = table.row(for: nav.selection)
-        let _ = inspector.record(selectedRow, at: live.lastUpdate)
         let availability = selectedRow.map {
             ProcessTableModel.availability(for: $0, serviceCanControl: $0.target.map(actions.canControl) ?? false)
         } ?? ProcessActionAvailability(canQuit: false, canForceQuit: false, disabledHelp: nil)
@@ -50,6 +60,7 @@ public struct ProcessesPage: View {
                 .focused($searchFocused)
                 .accessibilityLabel("Search processes")
         }
+        .environment(\.processActions, ownedActions)
         .environment(\.requestForceQuit, { [coordinator] target in coordinator.requestForceQuit(target) })
         .environment(\.onProcessActionResult, { [coordinator] target, result in
             coordinator.report(target, result, force: false)
@@ -72,13 +83,15 @@ public struct ProcessesPage: View {
             var t = Transaction()
             t.disablesAnimations = true
             withTransaction(t) {
+                refresh()
                 detailExpanded = detailOnAppear ?? (nav.selection != nil)
                 if expandOnAppear, case .app(let key)? = nav.selection { table.setExpanded(key, true) }
             }
         }
-        .onChange(of: live.appsVersion) {
-            if nav.selection != nil, table.validated(nav.selection) == nil { nav.selection = nil }
-        }
+        .onChange(of: live.appsVersion) { refresh() }
+        .onChange(of: live.sensorHealth) { refresh() }
+        .onChange(of: nav.processesMode) { refresh() }
+        .onChange(of: nav.selection) { recordSelection() }
         .task(id: coordinator.toast?.id) {
             guard let id = coordinator.toast?.id else { return }
             try? await Task.sleep(for: ProcessActionCoordinator.toastDuration)
@@ -176,6 +189,21 @@ public struct ProcessesPage: View {
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
+    }
+
+    /// One frame: rebuild the table (signposted: ARCHITECTURE §7 apply budget, advisory ≤ 16 ms), drop a vanished
+    /// selection, feed the inspector's process ring.
+    private func refresh() {
+        coordinator.actions = actions
+        let state = Self.signposter.beginInterval("apply")
+        table.update(from: live, mode: nav.processesMode)
+        Self.signposter.endInterval("apply", state)
+        if nav.selection != nil, table.validated(nav.selection) == nil { nav.selection = nil }
+        recordSelection()
+    }
+
+    private func recordSelection() {
+        inspector.record(table.row(for: nav.selection), at: live.lastUpdate)
     }
 
     private func toggleDetail() { detailExpanded.toggle() }

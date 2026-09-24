@@ -96,11 +96,13 @@ struct AppInspector: View {
             Button("Quit") { if let t = row.target { onQuit(t) } }
                 .buttonStyle(.tt(.regularSecondary))
                 .disabled(!availability.canQuit)
-                .help(availability.disabledHelp ?? "Quit \(row.name)")
+                .help("Quit \(row.name)")
+                .disabledTooltip(availability.canQuit ? nil : availability.disabledHelp)
             Button("Force Quit…") { if let t = row.target { onForceQuit(t) } }
                 .buttonStyle(.tt(.regularDestructive))
                 .disabled(!availability.canForceQuit)
-                .help(availability.disabledHelp ?? "Force quit \(row.name)")
+                .help("Force quit \(row.name)")
+                .disabledTooltip(availability.canForceQuit ? nil : availability.disabledHelp)
             InspectorMenuButton(target: row.target, name: row.name)
             TTIconButton(detailExpanded ? .chevronDown : .chevronRight,
                          label: detailExpanded ? "Hide details" : "Show details", variant: .header) {
@@ -108,6 +110,16 @@ struct AppInspector: View {
             }
         }
         .fixedSize()
+    }
+}
+
+private extension View {
+    /// `.help` does not show on disabled controls; for those ("Owned by root") an enabled, hit-testable overlay
+    /// carries the tooltip. Only added while disabled, so it never swallows clicks.
+    func disabledTooltip(_ text: String?) -> some View {
+        overlay {
+            if let text { Color.clear.contentShape(Rectangle()).help(text) }
+        }
     }
 }
 

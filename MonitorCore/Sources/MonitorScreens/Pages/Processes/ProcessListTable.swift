@@ -107,13 +107,8 @@ struct ProcessListTable: View {
         ForEach(lines) { row in
             let selected = row.id.selection != nil && row.id.selection == selection
             ProcessTableRow(row: row, nameWidth: nameWidth, selected: selected, showsDisclosure: showsDisclosure,
-                            units: units)
+                            units: units, onToggle: onToggle)
                 .equatable()
-                .environment(\.ttRowDepth, row.depth)
-                .environment(\.ttRowDisclosure, row.hasChildren
-                    ? TTRowDisclosure(hasChildren: true, isExpanded: row.isExpanded,
-                                      toggle: { [appKey = row.appKey] in onToggle(appKey) })
-                    : nil)
                 .contentShape(Rectangle())
                 .onTapGesture { if let s = row.id.selection { onSelect(s) } }
                 .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleClick(row) })
@@ -132,6 +127,8 @@ struct ProcessTableRow: View, Equatable {
     let selected: Bool
     let showsDisclosure: Bool
     let units: UnitPreferences
+    /// Not part of `==`: a new closure each frame must not re-evaluate unchanged rows.
+    let onToggle: (AppKey) -> Void
     @State private var hovering = false
 
     nonisolated static func == (a: Self, b: Self) -> Bool {
@@ -175,7 +172,7 @@ struct ProcessTableRow: View, Equatable {
 
     @ViewBuilder private func cells(_ widths: [CGFloat]) -> some View {
         MetricValue(row.pid.map { String($0) },
-                    unavailableReason: row.rowKind == .process && row.pid == nil ? "Coalition residual row" : nil,
+                    unavailableReason: row.pid == nil ? "Coalition row: no single leader process" : nil,
                     font: TTFont.body12)
             .frame(width: widths[0], alignment: .trailing)
         Text(row.user ?? "")
@@ -199,7 +196,52 @@ struct ProcessTableRow: View, Equatable {
                     .help("Owned by another user; counted in the coalition row")
             }
         } else {
-            TTNameCell(identity: row.identity, name: row.name, kind: row.kindLabel, disclosure: showsDisclosure)
+            // DESIGN §2.20/§3.12 name cell (same metrics as `TTNameCell`): disclosure slot 12 + 6, tile 20 (child: 16,
+            // name 28 right of the parent's), name (keeps its width), kind label (shrinks first: the " · N processes"
+            // part drops before any truncation).
+            HStack(spacing: 0) {
+                if showsDisclosure {
+                    disclosure.frame(width: 12).padding(.trailing, TTSpace.x6)
+                }
+                if row.depth > 0 {
+                    Color.clear.frame(width: 20 + 8 + 28 - 16 - 8)
+                    TTAppTile(identity: row.identity, name: row.name, size: 16).padding(.trailing, TTSpace.x8)
+                } else {
+                    TTAppTile(identity: row.identity, name: row.name, size: 20).padding(.trailing, TTSpace.x8)
+                }
+                Text(row.name).lineLimit(1).truncationMode(.tail).layoutPriority(1)
+                if let kind = row.kindLabel, row.depth == 0 {
+                    ViewThatFits(in: .horizontal) {
+                        Text(kind).lineLimit(1).fixedSize()
+                        Text(Self.shortKind(kind)).lineLimit(1)
+                    }
+                    .font(TTFont.caption)
+                    .foregroundStyle(TTColor.textTertiary)
+                    .padding(.leading, TTSpace.x8)
+                    .help(kind)
+                }
+            }
+        }
+    }
+
+    /// "App · 7 processes" → "App".
+    nonisolated static func shortKind(_ kind: String) -> String {
+        kind.components(separatedBy: " · ").first ?? kind
+    }
+
+    @ViewBuilder private var disclosure: some View {
+        if row.hasChildren && row.depth == 0 {
+            Button { onToggle(row.appKey) } label: {
+                TTIcon(.chevronRight, size: 10)
+                    .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
+                    .animation(.easeInOut(duration: 0.15), value: row.isExpanded)
+                    .frame(width: 12, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(row.isExpanded ? "Collapse" : "Expand")
+        } else {
+            Color.clear
         }
     }
 

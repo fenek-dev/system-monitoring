@@ -36,6 +36,26 @@ public enum ProcessRowID: Hashable, Sendable {
         }
     }
 
+    /// Total order used as the last sort tiebreak (apps by key, processes by pid then start time).
+    public func precedes(_ other: ProcessRowID) -> Bool {
+        switch (self, other) {
+        case let (.process(a), .process(b)):
+            return a.pid != b.pid ? a.pid < b.pid : a.startTimeUs < b.startTimeUs
+        case let (.app(a), .app(b)), let (.restricted(a), .restricted(b)):
+            return a.description < b.description
+        default:
+            return rank < other.rank
+        }
+    }
+
+    private var rank: Int {
+        switch self {
+        case .app: 0
+        case .process: 1
+        case .restricted: 2
+        }
+    }
+
     /// The navigation selection for this row (nil for the summary line, which is not selectable).
     public var selection: NavigationModel.ProcessSelection? {
         switch self {
@@ -168,6 +188,8 @@ public struct ProcessTableOutput: Equatable, Sendable {
     public var responsible: [AppKey: ProcessID] = [:]
     /// Process id → its group.
     public var appOf: [ProcessID: AppKey] = [:]
+    /// Action targets of rows that pass the owner rule.
+    public var ownedTargets: Set<ProcessTarget> = []
 }
 
 /// Quit / Force Quit enablement (DESIGN §2.25, §3.12: disabled for root and other users, tooltip "Owned by {user}").
@@ -189,9 +211,8 @@ public final class ProcessTableModel {
     public var descending = true { didSet { if descending != oldValue { rebuild() } } }
     public var query = "" { didSet { if query != oldValue { rebuild() } } }
     public private(set) var expanded: Set<AppKey> = []
-    /// Not observed: views call `update(from:mode:)` in `body` (it reads the tracked `appsVersion`), so the
-    /// rebuild happens lazily once per frame without invalidating the view that triggered it.
-    @ObservationIgnored public private(set) var output = ProcessTableOutput()
+    /// Rebuilt once per frame (`update`, from the page's `onChange(of: appsVersion)`) or input change.
+    public private(set) var output = ProcessTableOutput()
     /// Rebuild counter (tests; ARCHITECTURE §7 "sort/filter once per frame").
     @ObservationIgnored public private(set) var buildCount = 0
 
@@ -259,8 +280,25 @@ public final class ProcessTableModel {
     public func moved(_ selection: NavigationModel.ProcessSelection?, by delta: Int) -> NavigationModel.ProcessSelection? {
         let ids = output.lines.compactMap(\.id.selection)
         guard !ids.isEmpty else { return selection }
-        guard let selection, let i = ids.firstIndex(of: selection) else { return delta > 0 ? ids.first : ids.last }
-        return ids[min(max(i + delta, 0), ids.count - 1)]
+        guard let selection else { return delta > 0 ? ids.first : ids.last }
+        if let i = ids.firstIndex(of: selection) { return ids[min(max(i + delta, 0), ids.count - 1)] }
+        // A child hidden in a collapsed group (or filtered out): step from its visible parent.
+        if case .process(let p) = selection, let app = output.appOf[p],
+           let i = ids.firstIndex(of: .app(app)) {
+            return ids[min(max(i + (delta > 0 ? delta : delta + 1), 0), ids.count - 1)]
+        }
+        return delta > 0 ? ids.first : ids.last
+    }
+
+    /// Targets the owner rule allows (every member owned by the current user, none synthetic). The page ANDs this
+    /// into `processActions.canControl` so the row menu and the inspector agree.
+    public func ownerAllows(_ target: ProcessTarget) -> Bool { output.ownedTargets.contains(target) }
+
+    /// The app whose connections the engine should sample (ICR-10): the selected row's group, and only while the
+    /// inspector detail is expanded.
+    public nonisolated static func inspectedApp(row: ProcessRow?, detailExpanded: Bool) -> AppKey? {
+        guard detailExpanded, let row, row.rowKind != .restrictedSummary else { return nil }
+        return row.appKey
     }
 
     /// Apps → Processes selects the app's responsible process; Processes → Apps selects the process's app.
@@ -343,7 +381,6 @@ public extension ProcessTableModel {
                 for var kid in kidsByKey[top.appKey] ?? [] {
                     kid.depth = 1
                     kid.parity = i % 2
-                    kid.kindLabel = kid.rowKind == .restrictedSummary ? nil : kid.kindLabel
                     out.index[kid.id] = kid
                     if open { out.lines.append(kid) }
                 }
@@ -371,6 +408,7 @@ public extension ProcessTableModel {
             }
             out.countLabel = "\(rows.count.formatted()) of \(input.processCount.formatted()) shown"
         }
+        out.ownedTargets = Set(out.index.values.compactMap { $0.ownedByCurrentUser ? $0.target : nil })
         out.emptyMessage = query.isEmpty ? "No processes" : "No processes match “\(input.query.trimmingCharacters(in: .whitespaces))”"
         return out
     }
@@ -386,21 +424,23 @@ public extension ProcessTableModel {
                                          disabledHelp: serviceCanControl ? nil : "Not permitted")
     }
 
-    /// Stable order: value (nil last), then name, then id.
+    /// Deterministic order independent of input order: value (nil last), then name, then row id (pid).
     nonisolated static func sorted(_ rows: [ProcessRow], by column: ProcessColumn, descending: Bool) -> [ProcessRow] {
-        rows.enumerated().sorted { a, b in
-            let x = a.element.value(column).flatMap { $0.isFinite ? $0 : nil }
-            let y = b.element.value(column).flatMap { $0.isFinite ? $0 : nil }
+        rows.sorted { a, b in
+            let x = a.value(column).flatMap { $0.isFinite ? $0 : nil }
+            let y = b.value(column).flatMap { $0.isFinite ? $0 : nil }
             switch (x, y) {
             case let (x?, y?) where x != y: return descending ? x > y : x < y
             case (.some, nil): return true
             case (nil, .some): return false
             default:
-                let n = a.element.name.localizedStandardCompare(b.element.name)
-                if n != .orderedSame { return n == .orderedAscending }
-                return a.offset < b.offset
+                if a.name != b.name {
+                    let n = a.name.localizedStandardCompare(b.name)
+                    if n != .orderedSame { return n == .orderedAscending }
+                }
+                return a.id.precedes(b.id)
             }
-        }.map(\.element)
+        }
     }
 
     // MARK: Row builders
@@ -549,7 +589,8 @@ public extension ProcessTableModel {
             id: .app(key), rowKind: .app, depth: 0, parity: 0, name: app.identity.displayName,
             kindLabel: count > 1 ? "\(base) · \(count.formatted()) processes" : base,
             identity: AppIdentity(key: key, displayName: app.identity.displayName, bundlePath: path),
-            pid: responsible?.pid, user: responsible?.user ?? members.first?.user,
+            // Coalition groups have no known leader PID: "—" rather than an arbitrary member (ruling).
+            pid: coalitionOnly ? nil : responsible?.pid, user: responsible?.user ?? members.first?.user,
             uid: responsible?.uid ?? members.first?.uid,
             provenance: members.allSatisfy { $0.provenance != .measured } && !members.isEmpty ? .coalition : .measured,
             cpu: app.cpuPercent, gpu: app.gpuPercent, memory: app.memory,
