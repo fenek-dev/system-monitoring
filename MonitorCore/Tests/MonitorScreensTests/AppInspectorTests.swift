@@ -124,7 +124,8 @@ struct AppInspectorActionTests {
     }
 
     /// The live runner's timeout path, with a stub executable (`/bin/sleep`) instead of `sample`.
-    @Test func liveSamplerTimesOutAndKills() async throws {
+    /// Nonisolated: the elapsed-time bound must not include the main-actor backlog of a full parallel run.
+    @Test nonisolated func liveSamplerTimesOutAndKills() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("tt-samples-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let slow = LiveProcessSampler(executable: URL(fileURLWithPath: "/bin/sleep"), timeout: 0.3,
