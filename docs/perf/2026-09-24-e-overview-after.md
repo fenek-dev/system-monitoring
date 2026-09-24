@@ -14,6 +14,6 @@ Build: per section (Debug = scripts/build.sh, Release = perf.sh --release); prob
   - frame intervals mode=interactive n=60 median=1.00 p95=1.06 max=1.07 s
   - frame intervals mode=interactive n=60 median=1.00 p95=1.06 max=1.10 s
 
-> Agent E note: commit e32b57b+minors (Overview hotspots). Window visible the whole run (1 visibility change =
+> Agent E note: built at 65298cd (U-I1, U-I2, Overview hotspots, M2/M3/M7/M13/M14). Window visible the whole run (1 visibility change =
 > launch). Compare against e-overview-before with its occlusion caveat; a clean A/B was not possible on the shared
 > machine (the window stayed off-screen in every later attempt, baseline and after alike).
