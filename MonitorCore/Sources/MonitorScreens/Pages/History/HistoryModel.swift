@@ -38,7 +38,10 @@ public struct HistoryWindow: Equatable, Sendable {
         case .live, .hour:
             let count = Int((Double(range.duration?.components.seconds ?? 60) / bucket).rounded())
             let end = (now.timeIntervalSince1970 / bucket).rounded(.up) * bucket
-            return HistoryWindow(range: range, start: Date(timeIntervalSince1970: end - bucket * Double(count)),
+            // Store buckets are labelled by their start (1H: last bucket starts at end − 15 s); Live points are the
+            // samples themselves, the newest at `now` → the last slot.
+            let span = range == .live ? Double(count - 1) : Double(count)
+            return HistoryWindow(range: range, start: Date(timeIntervalSince1970: end - bucket * span),
                                  bucket: bucket, count: count, latest: count - 1)
         case .day, .week, .month:
             let days = range == .day ? 1 : (range == .week ? 7 : 30)

@@ -71,7 +71,8 @@ public struct HistoryPage: View {
         guard model.range == .live, let t = live.lastUpdate ?? fixedNow else { return }
         var series: [HistoryMetric: [SeriesPoint]] = [:]
         for m in HistoryModel.laneMetrics { series[m] = live.series(m) }
-        model.applyLive(series: series, now: fixedNow ?? t, apps: live.apps)
+        // Live follows the ring buffers' own clock (the newest sample), even with a pinned `now` in snapshots.
+        model.applyLive(series: series, now: t, apps: live.apps)
     }
 
     private func publishScrub() {
@@ -105,6 +106,7 @@ private struct HistoryTimelineCard: View {
     @Environment(\.unitPreferences) private var units
     @Environment(\.timeZone) private var timeZone
     @Environment(\.locale) private var locale
+    @Environment(\.historyPersistent) private var historyPersistent
 
     static let labelWidth: CGFloat = 170
     static let eventsHeight: CGFloat = 30
@@ -123,7 +125,7 @@ private struct HistoryTimelineCard: View {
                 }
             }
             .frame(minHeight: 20)
-            if case .failed(let error) = model.loadState {
+            if let error = storeError {
                 TTErrorState("History is unavailable.", detail: error)
                     .frame(height: Self.eventsHeight + 6 * Self.laneHeight)
             } else {
@@ -140,6 +142,16 @@ private struct HistoryTimelineCard: View {
             }
             .padding(.leading, Self.labelWidth + TTSpace.x8)
         }
+    }
+
+    /// DESIGN §3.15 "Store error" / ARCHITECTURE §6: a failed query, or a store that could not be opened
+    /// (`historyPersistent == false`, in-memory fallback) on the stored ranges. Live still draws from the ring.
+    private var storeError: String? {
+        if case .failed(let error) = model.loadState { return error }
+        if !historyPersistent && model.range != .live {
+            return "The history database could not be opened; nothing is kept after Telltale quits."
+        }
+        return nil
     }
 
     private func legendKinds(_ window: HistoryWindow) -> [HistoryBandKind] {
@@ -262,6 +274,13 @@ private struct HistoryChartColumn: View {
         }
     }
 
+    /// Center of chip + "+n" kept inside the chart width.
+    static func groupCenter(_ chip: HistoryChip, width: CGFloat) -> CGFloat {
+        let extra = chip.hidden > 0 ? HistoryChip.plusWidth + TTSpace.x4 : 0
+        let total = chip.width + extra
+        return min(max(chip.x + extra / 2, total / 2), max(width - total / 2, total / 2))
+    }
+
     private func chips(_ window: HistoryWindow, width: CGFloat) -> some View {
         let tz = timeZone
         let font = NSFont.systemFont(ofSize: 11)
@@ -285,8 +304,7 @@ private struct HistoryChartColumn: View {
                 }
             }
             .fixedSize()
-            .position(x: chip.x + (chip.hidden > 0 ? (HistoryChip.plusWidth + TTSpace.x4) / 2 : 0),
-                      y: TTSpace.x4 + HistoryChip.height / 2)
+            .position(x: Self.groupCenter(chip, width: width), y: TTSpace.x4 + HistoryChip.height / 2)
         }
     }
 }

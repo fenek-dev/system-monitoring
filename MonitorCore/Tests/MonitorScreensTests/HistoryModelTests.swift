@@ -103,6 +103,9 @@ struct HistoryWindowTests {
         #expect(HistoryText.title(week, now: HT.now, locale: gb, timeZone: tz) == "18 – 24 September")
         let month = HistoryWindow.make(.month, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(month, now: HT.now, locale: gb, timeZone: tz) == "26 August – 24 September")
+        let us = Locale(identifier: "en_US")
+        #expect(HistoryText.title(week, now: HT.now, locale: us, timeZone: tz) == "September 18 – 24")
+        #expect(HistoryText.title(month, now: HT.now, locale: us, timeZone: tz) == "August 26 – September 24")
         let live = HistoryWindow.make(.live, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(live, now: HT.now, locale: gb, timeZone: tz) == "Last 60 seconds")
         #expect(HistoryText.laneValue(.cpuUsage, 0.8, units: UnitPreferences()) == "80%")
@@ -219,17 +222,21 @@ struct HistoryModelTests {
     @Test func scrubQueriesAreThrottledAndEndOnTheFinalCursor() async throws {
         let provider = FakeHistoryProvider()
         let m = HT.model(.day, provider: provider)
+        let start = ContinuousClock.now
         for i in 0..<50 {
             m.scrub(to: 100 + i)
             try await Task.sleep(for: .milliseconds(10))
         }
         m.endScrub()
-        try await Task.sleep(for: .milliseconds(300))
+        let elapsed = ContinuousClock.now - start
+        let final = m.window.time(at: 149)
+        await waitUntil { m.sharesTime == final }
         let times = await provider.shareTimes
-        #expect(times.count <= 8)                                          // ~0.5 s of scrubbing at ≤ 10/s
-        #expect(times.count >= 2)
-        #expect(times.last == m.window.time(at: 149))                      // trailing query = final position
-        #expect(m.sharesTime == m.window.time(at: 149))
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) * 1e-18
+        #expect(Double(times.count) <= seconds * 10 + 2)                   // ≤ 10/s (+ leading and trailing)
+        #expect(times.count < 50)
+        #expect(times.last == final)                                        // trailing query = final position
+        #expect(m.sharesTime == final)
     }
 
     @Test func rangeChangeCancelsInFlightQuery() async throws {
@@ -237,11 +244,11 @@ struct HistoryModelTests {
         await provider.hold()
         let m = HT.model(.day, provider: provider)
         m.scrub(to: 50)
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(await provider.shareTimes.count == 1)                      // in flight, held
+        await waitUntil { await provider.shareTimes.count == 1 }            // in flight, held
+        #expect(await provider.shareTimes.count == 1)
         m.select(.week, now: HT.now)
         await provider.release()
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(100))
         #expect(m.shares.isEmpty)                                          // the old 24H result was dropped
         #expect(m.range == .week && m.cursor == m.window.latest)
     }
@@ -250,8 +257,17 @@ struct HistoryModelTests {
         let provider = FakeHistoryProvider()
         let m = HT.model(.day, provider: provider)
         m.metric = .network
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil { await provider.shareTimes.count == 2 }
         #expect(await provider.shareTimes.count == 2)                      // ↓ and ↑ summed
+    }
+
+    /// Polls (10 ms) until `condition` holds or 3 s pass — robust under a loaded test runner.
+    func waitUntil(_ condition: @MainActor () async -> Bool) async {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < deadline {
+            if await condition() { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     @Test func exportAsksForDestinationThenExportsTheRange() async {

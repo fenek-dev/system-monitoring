@@ -53,6 +53,11 @@ struct HistorySnapshotTests {
                        named: "history-error")
     }
 
+    @Test func notPersistent() {
+        assertSnapshot(Self.dashboard(.calm) { $0.historyPersistent = false }, size: ScreenSize.dashboard,
+                       named: "history-not-persistent")
+    }
+
     static func dashboard(_ scenario: MockScenario, configure: (inout ShellContext) -> Void) -> some View {
         var ctx = ScreenFixture.context(scenario, page: .history)
         configure(&ctx)

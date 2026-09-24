@@ -32,8 +32,13 @@ public enum HistoryText {
             let sameMonth = cal.component(.month, from: first) == cal.component(.month, from: now)
             let dayOnly = formatter("d", locale, timeZone)
             let dayMonth = formatter("dMMMM", locale, timeZone)
-            let lhs = sameMonth ? dayOnly.string(from: first) : dayMonth.string(from: first)
-            return "\(lhs) – \(dayMonth.string(from: now))"
+            // Locale order: "18 – 24 September" (day first) / "September 18 – 24" (month first).
+            let dayFirst = dayMonth.string(from: now).first?.isNumber ?? true
+            if sameMonth {
+                return dayFirst ? "\(dayOnly.string(from: first)) – \(dayMonth.string(from: now))"
+                    : "\(dayMonth.string(from: first)) – \(dayOnly.string(from: now))"
+            }
+            return "\(dayMonth.string(from: first)) – \(dayMonth.string(from: now))"
         }
     }
 
