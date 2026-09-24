@@ -118,7 +118,25 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     // MARK: HistoryProvider
 
     public func series(_ metrics: [HistoryMetric], range: HistoryRange, end: Date, bucket: Duration?) async throws
-        -> [HistoryMetric: [SeriesPoint]] { [:] }
+        -> [HistoryMetric: [SeriesPoint]] {
+        guard !metrics.isEmpty else { return [:] }
+        let level = Level.forRange(range)
+        let buckets = Self.buckets(range: range, end: end, bucket: bucket, level: level)
+        let window = buckets.window(end: end)
+        let cols = metrics.map(\.rawValue)
+        let rows = try await writer.read { db in
+            try Queries.systemBuckets(db, cols: cols, level: level, window: window, width: buckets.width)
+        }
+        var result: [HistoryMetric: [SeriesPoint]] = [:]
+        for (i, metric) in metrics.enumerated() { result[metric] = Queries.points(buckets, rows, column: i) }
+        return result
+    }
+
+    /// Display buckets: `bucket` (default `range.displayBucket`), never finer than the level's resolution.
+    static func buckets(range: HistoryRange, end: Date, bucket: Duration?, level: Level) -> Buckets {
+        let width = max((bucket ?? range.displayBucket).milliseconds, level.resolutionMs)
+        return Buckets(end: end, duration: range.span, width: width)
+    }
 
     public func appSeries(_ app: AppKey, _ metrics: [AppMetric], range: HistoryRange, end: Date, bucket: Duration?)
         async throws -> [AppMetric: [SeriesPoint]] { [:] }
