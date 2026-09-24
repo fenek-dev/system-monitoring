@@ -6,9 +6,9 @@ import MonitorModel
 /// arrays, so a query over any window is cheap regardless of how far back it reaches (<20 ms budget).
 ///
 /// The daily shape (quiet overnight, a recurring workday rhythm) and the four named bumps are lifted
-/// from `docs/design/artboards/History.dc.html`'s own generator (`__hist`): an Xcode build ~14:30, a
-/// Final Cut Pro export ~12:30, a Dropbox sync ~09:10, and Docker Desktop memory growth ~16:05 — replayed
-/// every day (dampened on weekends) rather than once, so any point in the range has something to show.
+/// from `docs/design/artboards/History.dc.html`'s own generator (`__hist`'s `jumps`): "Xcode build"
+/// ~14:30, "FCP export" ~12:30, "Dropbox sync" ~09:10, and "Swap +2.1 GB" ~16:05 — replayed every day
+/// (dampened on weekends) rather than once, so any point in the range has something to show.
 struct HistorySignal {
     let seed: UInt64
     let end: Date
@@ -80,6 +80,9 @@ struct HistorySignal {
         case .memWired: return demo(.mem, metricSeed: 4) * 0.15 * 1_073_741_824
         case .memCompressed: return demo(.mem, metricSeed: 4) * 0.10 * 1_073_741_824
         case .memPressure: return demo(.press, metricSeed: 5) / 100
+        case .memPressureLevel:                                   // ICR-12: MemoryPressureLevel.rawValue
+            let p = demo(.press, metricSeed: 5) / 100
+            return p >= 0.9 ? 4 : (p >= 0.7 ? 2 : 1)
         case .swapUsed: return demo(.swap, metricSeed: 6) * 1_073_741_824
         case .netRx: return demo(.netd, metricSeed: 7) * 1_000_000
         case .netTx: return demo(.netu, metricSeed: 8) * 1_000_000
@@ -135,7 +138,7 @@ struct HistorySignal {
     struct Bump { var label: String; var kind: HistoryEvent.Kind; var minute: Int; var widthMinutes: Double }
     static let bumps: [Bump] = [
         Bump(label: "Xcode build", kind: .runawayApp, minute: 870, widthMinutes: 12.5),
-        Bump(label: "Final Cut Pro export", kind: .appEpisode, minute: 750, widthMinutes: 30),
+        Bump(label: "FCP export", kind: .appEpisode, minute: 750, widthMinutes: 30),
         Bump(label: "Dropbox sync", kind: .appEpisode, minute: 550, widthMinutes: 25),
         Bump(label: "Swap +2.1 GB", kind: .swapGrowth, minute: 965, widthMinutes: 40),
     ]

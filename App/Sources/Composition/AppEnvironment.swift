@@ -56,7 +56,8 @@ final class AppEnvironment {
     /// Environment for a new hosting view (popover, dashboard, settings).
     func context() -> ShellContext {
         ShellContext(live: runtime.live, navigation: navigation, settings: settings, history: runtime.history,
-                     processActions: processActions, appCommands: commands)
+                     processActions: processActions, appCommands: commands,
+                     historyPersistent: runtime.historyPersistent)
     }
 
     static func defaultDataDirectory() -> URL {

@@ -9,6 +9,9 @@ public enum HistoryMetric: String, CaseIterable, Sendable, Codable {
     case socTemp, cpuPTemp, cpuETemp, gpuTemp, ssdTemp, batteryTemp, fan1RPM, fan2RPM
     case packageWatts, cpuWatts, gpuWatts, aneWatts, dramWatts, systemWatts, batteryPercent
     case thermalPressure
+    /// ICR-12: `MemoryPressureLevel.rawValue` (1 normal, 2 warning, 4 critical). Rollups store the time-weighted
+    /// average; consumers map a bucket value v to a level: v > 2.5 → critical, v > 1.0 → warning, else normal.
+    case memPressureLevel
 
     /// Sensors that can produce this metric (any one suffices); used by `unavailableReason`.
     public var sources: [SensorID] {
@@ -16,7 +19,7 @@ public enum HistoryMetric: String, CaseIterable, Sendable, Codable {
         case .cpuUsage, .cpuUser, .cpuSystem, .cpuPCluster, .cpuECluster, .loadAvg1: [.hostCPU]
         case .gpuUsage: [.soc, .gpuClients]
         case .gpuFrequency: [.soc]
-        case .memUsed, .memApp, .memWired, .memCompressed, .memPressure, .swapUsed: [.memory]
+        case .memUsed, .memApp, .memWired, .memCompressed, .memPressure, .swapUsed, .memPressureLevel: [.memory]
         case .netRx, .netTx: [.interfaces]
         case .netLatency: [.latency]
         case .diskRead, .diskWrite, .diskReadIOPS, .diskWriteIOPS: [.diskIO]

@@ -93,8 +93,11 @@ enum DemoApps {
                 netRxBps: kbs(6), netTxBps: kbs(2), diskReadBps: kbs(40), diskWriteBps: kbs(60),
                 energyWatts: 0.22, jitterSeed: 1105
             ),
+            // Its own row in Processes mode (Processes.dc.html lists "com.docker.backend" by name); groups
+            // under "Docker Desktop" in Apps mode via `DemoApps.group`, which names the group after the
+            // first member (the main process above).
             DemoApp(
-                key: AppKey(kind: .app, id: "com.docker.docker"), displayName: "Docker Desktop",
+                key: AppKey(kind: .app, id: "com.docker.docker"), displayName: "com.docker.backend",
                 bundlePath: "/Applications/Docker.app", pid: 502, user: "arthur", isCurrentUser: true,
                 threads: 35, cpuTimeNs: 3 * 3_600 * 1_000_000_000,
                 provenance: .measured, baseCPU: 9.8, baseGPU: 0, memoryBytes: gb(dockerBackendMemGB),

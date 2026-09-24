@@ -24,7 +24,7 @@ struct ShellVisibilityTests {
         i.dashboardOpen = true
         i.page = .cpu
         #expect(i.visibility == UIVisibility(dashboardVisible: true, page: .cpu))
-        #expect(i.visibility.demand.contains(.perCore))           // exact table: MonitorModel (ICR-7)
+        #expect(i.visibility.demand == .perCore)                  // ICR-7: CPU page, no inspected app
     }
 
     @Test func occludedOrMiniaturizedDashboardIsBackground() {
@@ -38,18 +38,21 @@ struct ShellVisibilityTests {
         #expect(i.visibility.mode == .background)
     }
 
-    @Test func inspectedAppOnlyOnProcessesWithAppSelection() {
+    @Test func inspectedAppOnlyOnVisibleProcessesPage() {       // ICR-10
         let key = AppKey(kind: .app, id: "com.apple.Safari")
         var i = VisibilityInputs()
         i.dashboardOpen = true
-        i.selection = .app(key)
+        i.inspectedApp = key
         i.page = .overview
         #expect(i.visibility.inspectedApp == nil)
         i.page = .processes
         #expect(i.visibility.inspectedApp == key)
         #expect(i.visibility.demand.contains(.connections))
-        i.selection = .process(ProcessID(pid: 1, startTimeUs: 0))
-        #expect(i.visibility.inspectedApp == nil)
+        i.dashboardMiniaturized = true                          // not visible → no connections
+        #expect(i.visibility.inspectedApp == nil && !i.visibility.demand.contains(.connections))
+        i.dashboardMiniaturized = false
+        i.inspectedApp = nil                                    // inspector collapsed
+        #expect(i.visibility.inspectedApp == nil && !i.visibility.demand.contains(.connections))
     }
 
     @Test func trackerEmitsOnlyDistinctValues() {

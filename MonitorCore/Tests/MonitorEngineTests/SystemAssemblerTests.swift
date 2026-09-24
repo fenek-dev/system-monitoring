@@ -99,6 +99,7 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         let all = assemble(&sa, RawTick(uptimeNs: 3 * sec, memory: fresh(m, 3 * sec)))
         #expect(all.metrics[.memUsed] == Double(4_200 * page))   // regression: not Double(bitPattern:)
         #expect(all.metrics[.swapUsed] == Double(1 << 30))
+        #expect(all.metrics[.memPressureLevel] == 2)                // ICR-12: MemoryPressureLevel.warning.rawValue
         let s = all.memory
         #expect(s.total == 24 << 30)
         #expect(s.appMemory == 3_000 * page)
@@ -187,11 +188,24 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         #expect(d.rxBps == 500 && d.txBps == 50)
     }
 
-    @Test(.disabled("waiting for W6d: BlockDriverCounter.isDiskImage (ICR); flip countsTowardDiskTotals then"))
-    func diskImageDriversAreExcludedFromTotals() {
+    @Test func diskImageDriversAreExcludedFromTotals() {
         // With a disk image mounted, its driver (disk4, isDiskImage) and the physical disk both report the I/O;
-        // totals must count the physical disk only.
-        #expect(SystemAssembler.countsTowardDiskTotals(BlockDriverCounter(bsdName: "disk4")) == false)
+        // totals must count the physical disk only (ICR-11).
+        var sa = SystemAssembler()
+        func r(_ k: UInt64) -> DiskIOReading {
+            DiskIOReading(drivers: [
+                BlockDriverCounter(bsdName: "disk0", isInternal: true, readOps: k, writeOps: k,
+                                   readBytes: 4_096 * k, writeBytes: 8_192 * k),
+                BlockDriverCounter(bsdName: "disk4", isInternal: false, readOps: k, writeOps: k,
+                                   readBytes: 4_096 * k, writeBytes: 8_192 * k, isDiskImage: true),
+            ])
+        }
+        _ = assemble(&sa, RawTick(uptimeNs: sec, diskIO: fresh(r(10), sec)))
+        let s = assemble(&sa, RawTick(uptimeNs: 2 * sec, diskIO: fresh(r(20), 2 * sec))).disk
+        #expect(s.readBps == 40_960 && s.writeBps == 81_920)          // disk0 only, not doubled
+        #expect(s.readIOPS == 10 && s.writeIOPS == 10)
+        #expect(SystemAssembler.countsTowardDiskTotals(BlockDriverCounter(bsdName: "disk4", isDiskImage: true)) == false)
+        #expect(SystemAssembler.countsTowardDiskTotals(BlockDriverCounter(bsdName: "disk0")))
     }
 
     // MARK: Thermals

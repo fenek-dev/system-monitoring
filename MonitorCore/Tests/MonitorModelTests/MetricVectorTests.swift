@@ -21,6 +21,18 @@ import Testing
         #expect(v[.netRx] == nil)
     }
 
+    @Test func memPressureLevelRoundTripsByRawValue() throws {        // ICR-12
+        var v = SystemMetrics()
+        v[.memPressureLevel] = Double(MemoryPressureLevel.critical.rawValue)
+        #expect(try encodeToDictionary(v) == ["memPressureLevel": 4])
+        let back = try JSONDecoder().decode(SystemMetrics.self, from: JSONEncoder().encode(v))
+        #expect(back[.memPressureLevel] == 4)
+        #expect(HistoryMetric.memPressureLevel.sources == [.memory])
+        // Older rows without the key decode as missing, not 0.
+        let old = try JSONDecoder().decode(SystemMetrics.self, from: Data(#"{"memPressure":0.3}"#.utf8))
+        #expect(old[.memPressureLevel] == nil)
+    }
+
     @Test func encodesAsKeyedObjectByRawValue() throws {
         var v = SystemMetrics()
         v[.cpuUsage] = 0.42

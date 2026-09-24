@@ -16,7 +16,7 @@ import Testing
     final class Starts {
         var map: [Int32: UInt64] = [100: 5_000]
         var calls = 0
-        func lookup(_ pid: Int32) -> UInt64? {
+        func lookup(_ pid: Int32, _ uniquePID: UInt64?) -> UInt64? {
             calls += 1
             return map[pid]
         }
@@ -112,7 +112,7 @@ import Testing
     @Test func unknownStartTimeIsPidZero() {
         var t = NStatFlowTable()
         t.add(1)
-        t.update(1, with: Self.s(pid: 777, upid: 55, rx: 5, tx: 5)) { _ in nil }
+        t.update(1, with: Self.s(pid: 777, upid: 55, rx: 5, tx: 5)) { _, _ in nil }
         t.remove(1)
         #expect(t.reading(endpoints: false) { _ in nil }.closedBytes[ProcessID(pid: 777, startTimeUs: 0)] == ByteCounts(rx: 5, tx: 5))
     }
@@ -143,6 +143,24 @@ import Testing
         #expect(t.unresolvedCount == 0)
         let f = t.reading(endpoints: false) { _ in nil }.flows
         #expect(f.count == 1 && f[0].rxBytes == 600 && f[0].process.pid == 100)
+    }
+
+    @Test func helperQueriesForTheBox() {
+        var t = NStatFlowTable()
+        let st = Starts()
+        t.add(1)
+        #expect(t.needsStartTime(1, uniquePID: 1))
+        #expect(!t.needsStartTime(9, uniquePID: 1)) // unknown source
+        t.update(1, with: Self.s(rx: 1, tx: 1, endpoints: NStatEndpoints(interfaceIndex: 11)), startTime: st.lookup)
+        #expect(!t.needsStartTime(1, uniquePID: 1)) // resolved
+        t.add(2)
+        #expect(!t.needsStartTime(2, uniquePID: 1)) // uniqueProcessID cached
+        #expect(t.needsStartTime(2, uniquePID: nil))
+        #expect(t.interfaceIndexes() == [11])
+        t.remove(1)
+        #expect(t.pruneCandidates() == [ProcessID(pid: 100, startTimeUs: 5_000)])
+        t.update(2, with: Self.s(rx: 1, tx: 1), startTime: st.lookup)
+        #expect(t.pruneCandidates().isEmpty) // process has a live flow again
     }
 
     @Test func effectivePIDOnlyWhenDelegated() {
@@ -195,6 +213,34 @@ import Testing
         #expect(r.closedBytes[dead] == nil)
         #expect(r.closedBytes[alive] == ByteCounts(rx: 1, tx: 1))
         #expect(t.deadSinceCount == 0)
+    }
+
+    /// `(pid, 0)` entries: liveness by pid would match a reused pid forever, so they expire 10 min after their last
+    /// fold regardless of `isAlive`; a new fold restarts the clock.
+    @Test func loosePidZeroEntriesExpire() {
+        var t = NStatFlowTable()
+        func fold(_ id: UInt64, pid: Int32 = 777) {
+            t.add(id)
+            t.update(id, with: Self.s(pid: pid, upid: nil, rx: 5, tx: 5)) { _, _ in nil }
+            t.remove(id)
+        }
+        fold(1)
+        let loose = ProcessID(pid: 777, startTimeUs: 0)
+        let sentinel = ProcessID(pid: 778, startTimeUs: W6cProcess.exitedStartTimeUs)
+        t.add(2)
+        t.update(2, with: Self.s(pid: 778, upid: 9, rx: 1, tx: 1)) { _, _ in W6cProcess.exitedStartTimeUs }
+        t.remove(2)
+        #expect(t.pruneCandidates().isEmpty) // no liveness syscalls for loose keys
+        t.prune(nowNs: 0) { _ in true } // "alive" by pid: ignored
+        t.prune(nowNs: 9 * Self.minute) { _ in true }
+        fold(3) // new bytes at 9 min → clock restarts for (777, 0)
+        t.prune(nowNs: 10 * Self.minute) { _ in true }
+        var r = t.reading(endpoints: false) { _ in nil }
+        #expect(r.closedBytes[loose] == ByteCounts(rx: 10, tx: 10))
+        #expect(r.closedBytes[sentinel] == nil) // 10 min since first seen
+        t.prune(nowNs: 20 * Self.minute) { _ in true }
+        r = t.reading(endpoints: false) { _ in nil }
+        #expect(r.closedBytes.isEmpty)
     }
 
     @Test func processWithLiveFlowIsNeverPrunedAndRevivalResetsClock() {

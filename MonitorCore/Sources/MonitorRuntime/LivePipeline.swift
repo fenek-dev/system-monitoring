@@ -25,6 +25,7 @@ import os
     private var commandTask: Task<Void, Never>?
     private var frameTask: Task<Void, Never>?
     private var recordTask: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
     private var state = State.idle
     /// Frames already in flight when sampling pauses must not flip the model back to live.
     private(set) var paused = false
@@ -113,16 +114,22 @@ import os
     /// Stops the engine (its closing episode events still reach the store), drains every record batch into the
     /// store, then `HistoryStore.shutdown()` (cancels and awaits maintenance, final flush). All of it runs off the
     /// MainActor, so the caller's 3 s MainActor timeout (TerminationController) can fire meanwhile.
+    /// Repeated calls (e.g. ⌘Q while a SIGTERM shutdown runs) await the same shutdown.
     func shutdown() async {
-        guard state != .shutDown else { return }
+        if let shutdownTask { return await shutdownTask.value }
         let started = state == .running
         state = .shutDown
         commands.finish()
-        let t0 = ContinuousClock.now
-        await Self.stopAndFlush(engine: engine, store: store, commandTask: commandTask,
-                                recordTask: started ? recordTask : nil)
+        let (engine, store, commandTask) = (self.engine, self.store, self.commandTask)
+        let recordTask = started ? self.recordTask : nil
+        let task = Task {
+            let t0 = ContinuousClock.now
+            await Self.stopAndFlush(engine: engine, store: store, commandTask: commandTask, recordTask: recordTask)
+            Self.log.notice("runtime shutdown in \(Int((ContinuousClock.now - t0) / .milliseconds(1))) ms")
+        }
+        shutdownTask = task
+        await task.value
         frameTask?.cancel()
-        Self.log.notice("runtime shutdown in \(Int((ContinuousClock.now - t0) / .milliseconds(1))) ms")
     }
 
     // MARK: Off-MainActor work (nonisolated async runs on the global executor)

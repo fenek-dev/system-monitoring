@@ -29,7 +29,10 @@ enum VolumeParser {
             bsdName: raw.bsdName,
             fsType: raw.fsType,
             busLabel: raw.busLabel,
-            isInternal: raw.isInternal ?? true,
+            // Unknown -> not internal: an unresolved volume (e.g. a network share the FFI layer
+            // deliberately didn't probe further, or a resource-values gap) should never be
+            // mislabeled as the trusted "internal" case.
+            isInternal: raw.isInternal ?? false,
             isEjectable: raw.isEjectable ?? false,
             isEncrypted: raw.isEncrypted ?? false,
             totalBytes: raw.totalBytes ?? 0,

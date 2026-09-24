@@ -1,4 +1,6 @@
+import CoreWLAN
 import Foundation
+import os
 import Testing
 @testable import MonitorModel
 @testable import MonitorSensors
@@ -46,6 +48,49 @@ import Testing
     }
 }
 
+/// Hermetic: fake 10 ms read, no CoreWLAN.
+@Suite struct WiFiSensorCycleTests {
+    static func sensor(calls: OSAllocatedUnfairLock<Int>) -> WiFiSensor {
+        let box = WiFiBox {
+            calls.withLock { $0 += 1 }
+            usleep(10_000)
+            return .success(WiFiParseTests.assoc)
+        }
+        return WiFiSensor(box: box) { true }
+    }
+
+    /// Every invalidate → prepare cycle (Network page revisit) re-arms the first-read signal, so the first sample()
+    /// returns when that cycle's read completes (~10 ms), not after the full 200 ms wait.
+    @Test func reprepareFirstSampleDoesNotStall() throws {
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let s = Self.sensor(calls: calls)
+        var ms: [Double] = []
+        for _ in 0..<5 {
+            try s.prepare()
+            let t = W6cClock.uptimeNs()
+            let r = try s.sample(SampleContext(demand: .wifi))
+            ms.append(W6cFixture.ms(W6cClock.uptimeNs() - t))
+            #expect(r.reading.rssi == -63)
+            s.invalidate()
+            #expect(throws: SensorError.unavailable("Wi-Fi not prepared")) { try s.sample(SampleContext(demand: .wifi)) }
+            usleep(30_000) // let any in-flight read drain
+        }
+        #expect(calls.withLock { $0 } >= 5)
+        #expect(ms.allSatisfy { $0 < 150 }, "first sample per cycle: \(ms) ms") // 200 ms = the stalled-wait bug
+    }
+
+    @Test func noInterfaceIsUnavailable() {
+        let s = WiFiSensor(box: WiFiBox { .success(WiFiParseTests.assoc) }) { false }
+        #expect(throws: SensorError.unavailable("No Wi-Fi interface")) { try s.prepare() }
+    }
+
+    @Test func readFailureSurfaces() throws {
+        let s = WiFiSensor(box: WiFiBox { .failure(.unavailable("No Wi-Fi interface")) }) { true }
+        try s.prepare()
+        #expect(throws: SensorError.unavailable("No Wi-Fi interface")) { try s.sample(SampleContext(demand: .wifi)) }
+    }
+}
+
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh WiFiSmokeTests` (capture: `TELLTALE_CAPTURE=1`).
 @Suite(.enabled(if: W6cFixture.hardwareTests), .serialized)
 struct WiFiSmokeTests {
@@ -71,12 +116,34 @@ struct WiFiSmokeTests {
 
     @Test func captureFixtures() throws {
         guard W6cFixture.capture else { return }
-        let s = WiFiSensor()
-        try s.prepare()
+        let i = try #require(CWWiFiClient.shared().interface())
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try FileManager.default.createDirectory(at: W6cFixture.sourceURL(""), withIntermediateDirectories: true)
-        try enc.encode(try s.fields()).write(to: W6cFixture.sourceURL("wifi_fields.json"))
+        try enc.encode(WiFiBox.fields(i)).write(to: W6cFixture.sourceURL("wifi_fields.json"))
+    }
+
+    /// Real CoreWLAN across invalidate → prepare cycles: every cycle yields a reading (a cold read slower than the
+    /// 200 ms first-sample budget may throw `.transient` once; the next sample then has it).
+    @Test func reprepareCycles() throws {
+        let s = WiFiSensor()
+        var ms: [Double] = []
+        for _ in 0..<3 {
+            try s.prepare()
+            let t = W6cClock.uptimeNs()
+            let first = try? s.sample(SampleContext(demand: .wifi))
+            ms.append(W6cFixture.ms(W6cClock.uptimeNs() - t))
+            var r = first?.reading
+            for _ in 0..<40 where r == nil {
+                usleep(50_000)
+                r = (try? s.sample(SampleContext(demand: .wifi)))?.reading
+            }
+            #expect(r?.interface.hasPrefix("en") == true)
+            s.invalidate()
+            #expect(throws: SensorError.self) { try s.sample(SampleContext(demand: .wifi)) }
+        }
+        print("W6c wifi re-prepare first sample(): \(ms.map { String(format: "%.1f", $0) }) ms " +
+              "(read cost \(String(format: "%.1f", W6cFixture.ms(s.box.lastReadCostNs))) ms)")
     }
 
     @Test func matchesSystemProfiler() throws {
@@ -84,18 +151,27 @@ struct WiFiSmokeTests {
         let t0 = W6cClock.uptimeNs()
         try s.prepare()
         let prepMs = W6cFixture.ms(W6cClock.uptimeNs() - t0)
-        let r = try s.sample(SampleContext()).reading
+        let first = try s.sample(SampleContext(demand: .wifi))
+        let r = first.reading
         let p = try Self.profiler()
         var ms: [Double] = []
+        var readMs: [Double] = []
+        var captured = first.capturedNs
         for _ in 0..<30 {
             let t = W6cClock.uptimeNs()
-            _ = try s.sample(SampleContext())
+            let x = try s.sample(SampleContext(demand: .wifi))
             ms.append(W6cFixture.ms(W6cClock.uptimeNs() - t))
+            #expect(x.capturedNs >= captured) // last completed read, never older
+            captured = x.capturedNs
+            usleep(30_000)
+            readMs.append(W6cFixture.ms(s.box.lastReadCostNs))
         }
+        #expect(s.cadence.requires == .wifi)
         print("W6c wifi: \(r)")
         print("W6c wifi profiler: \(p)")
-        print(String(format: "W6c wifi bench: prepare %.1f ms; sample() p50 %.2f p95 %.2f ms", prepMs,
-                     W6cFixture.percentile(ms, 0.5), W6cFixture.percentile(ms, 0.95)))
+        print(String(format: "W6c wifi bench: prepare %.1f ms; sample() p50 %.3f p95 %.3f ms; off-queue read p50 %.2f p95 %.2f ms",
+                     prepMs, W6cFixture.percentile(ms, 0.5), W6cFixture.percentile(ms, 0.95),
+                     W6cFixture.percentile(readMs, 0.5), W6cFixture.percentile(readMs, 0.95)))
         guard p.channel != nil else {
             #expect(r.rssi == nil) // not associated
             return

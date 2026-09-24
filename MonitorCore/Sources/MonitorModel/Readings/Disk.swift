@@ -3,6 +3,11 @@ import Foundation
 public struct BlockDriverCounter: Sendable, Codable, Hashable {
     public var bsdName: String?, isInternal: Bool
     public var readOps, writeOps, readBytes, writeBytes: UInt64
+    /// True for a mounted disk image's driver (ICR 001/11, W6d): its reported I/O duplicates activity
+    /// already counted on the physical driver backing the image file, so a system-wide disk-I/O total
+    /// should exclude it rather than double-count. Additive: defaults to `false` when decoding a
+    /// recorded fixture from before this field existed.
+    public var isDiskImage: Bool
 
     public init(
         bsdName: String? = nil,
@@ -10,7 +15,8 @@ public struct BlockDriverCounter: Sendable, Codable, Hashable {
         readOps: UInt64 = 0,
         writeOps: UInt64 = 0,
         readBytes: UInt64 = 0,
-        writeBytes: UInt64 = 0
+        writeBytes: UInt64 = 0,
+        isDiskImage: Bool = false
     ) {
         self.bsdName = bsdName
         self.isInternal = isInternal
@@ -18,6 +24,19 @@ public struct BlockDriverCounter: Sendable, Codable, Hashable {
         self.writeOps = writeOps
         self.readBytes = readBytes
         self.writeBytes = writeBytes
+        self.isDiskImage = isDiskImage
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bsdName = try c.decodeIfPresent(String.self, forKey: .bsdName)
+        isInternal = try c.decode(Bool.self, forKey: .isInternal)
+        readOps = try c.decode(UInt64.self, forKey: .readOps)
+        writeOps = try c.decode(UInt64.self, forKey: .writeOps)
+        readBytes = try c.decode(UInt64.self, forKey: .readBytes)
+        writeBytes = try c.decode(UInt64.self, forKey: .writeBytes)
+        // decodeIfPresent + default: a fixture recorded before ICR 001/11 has no "isDiskImage" key.
+        isDiskImage = try c.decodeIfPresent(Bool.self, forKey: .isDiskImage) ?? false
     }
 }
 

@@ -166,7 +166,7 @@ enum Commands {
         }
         await engine.stop()
         do {
-            let data = try FixtureFormat.encoder.encode(ticks)
+            let data = try RawTick.fixtureEncoder.encode(ticks)        // W1's shared fixture format
             write(data, to: path)
         } catch {
             print("encode failed: \(error)")
@@ -222,8 +222,14 @@ enum Commands {
 
     static func crash(_ id: SensorID, _ o: ProbeOptions) async {
         print("crash drill: SensorFactory.live.crashing(\(id.rawValue)) — expect abort() in its first prepare()")
+        // Visibility that makes the engine request this sensor: interactive (some never run in background) plus the
+        // sensor's `requires` demand (e.g. temperatures → Thermals page).
+        let requires = ProbeSensor.all(SensorFactory.live.make([])).first { $0.id == id }?.cadence.requires ?? []
+        let visibility = ProbeOptions.visibility(page: o.page, demand: requires.union(o.demand), mode: .interactive)
+        print("visibility: mode \(visibility.mode) page \(visibility.page?.rawValue ?? "-") demand \(ProbeOptions.describe(visibility.demand))")
         fflush(stdout)
         let engine = SamplingEngine(factory: SensorFactory.live.crashing(id), disabled: o.disabled, canary: .none)
+        await engine.setVisibility(visibility)
         _ = await engine.sampleOnceRaw()
         print("no crash: \(id.rawValue) was never prepared (disabled or not requested in this mode)")
     }
@@ -263,9 +269,4 @@ enum Commands {
 
 func pad(_ s: String, _ n: Int) -> String {
     s.count >= n ? s : s + String(repeating: " ", count: n - s.count)
-}
-
-/// `[RawTick]` fixture coding: W1's shared format (`MonitorEngine/Fixtures/FixtureCoding.swift`).
-enum FixtureFormat {
-    static var encoder: JSONEncoder { RawTick.fixtureEncoder }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import MonitorSensors
+import MonitorModel
 
 @Suite struct DiskIOParseTests {
     private func loadFixture(_ name: String) throws -> [String: Any] {
@@ -39,5 +40,35 @@ import Testing
         let huge = NSNumber(value: UInt64.max - 1)
         let counters = DiskIOParser.parseStatistics(["Bytes (Read)": huge])
         #expect(counters.readBytes == UInt64.max - 1)
+    }
+
+    // MARK: - BlockDriverCounter.isDiskImage (ICR 001/11: additive, decodeIfPresent)
+
+    @Test func blockDriverCounterDecodesOldFixtureWithoutIsDiskImageKeyAsFalse() throws {
+        // A DiskIOReading fixture recorded before ICR 001/11 - "isDiskImage" didn't exist yet.
+        let oldJSON = Data("""
+        {"bsdName":"disk0","isInternal":true,"readOps":120191932,"writeOps":150107541,
+         "readBytes":1402699673600,"writeBytes":3126319808512}
+        """.utf8)
+        let counter = try JSONDecoder().decode(BlockDriverCounter.self, from: oldJSON)
+        #expect(counter.isDiskImage == false)
+        #expect(counter.bsdName == "disk0")
+        #expect(counter.readOps == 120_191_932)
+    }
+
+    @Test func blockDriverCounterDecodesIsDiskImageWhenPresent() throws {
+        let json = Data("""
+        {"bsdName":"disk7","isInternal":false,"readOps":0,"writeOps":0,
+         "readBytes":0,"writeBytes":0,"isDiskImage":true}
+        """.utf8)
+        let counter = try JSONDecoder().decode(BlockDriverCounter.self, from: json)
+        #expect(counter.isDiskImage == true)
+    }
+
+    @Test func blockDriverCounterRoundTripsIsDiskImageThroughEncodeDecode() throws {
+        let original = BlockDriverCounter(bsdName: "disk7", isInternal: false, isDiskImage: true)
+        let decoded = try JSONDecoder().decode(BlockDriverCounter.self, from: JSONEncoder().encode(original))
+        #expect(decoded == original)
+        #expect(decoded.isDiskImage)
     }
 }
