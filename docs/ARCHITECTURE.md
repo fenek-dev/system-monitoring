@@ -1428,3 +1428,4 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 | 9 | Alert hold/window timers use monotonic uptime; trackers reset on sample gap > 2× nominal (sleep). `Date` kept for event timestamps. | W1 |
 
 Grouping rule 3 (§5.1) changed 2026-09-24: all bundle-less processes (any uid) are their own `.process` group.
+| 10 | `NavigationModel.inspectedApp` + `VisibilityInputs.inspectedApp`; set by Processes page only while the inspector detail is expanded (process selection → its app). | W4 / W5c |
