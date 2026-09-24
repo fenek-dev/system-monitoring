@@ -104,24 +104,83 @@ public enum HistoryText {
     }
 
     /// Note for the events overlapping the cursor bucket (≤ 3 lines), else "Nothing unusual in this window."
-    public static func note(_ events: [HistoryEvent], at time: Date, bucket: TimeInterval, now: Date) -> String {
+    /// Design copy: "CPU spike from an Xcode build. SoC reached 88°C; thermal pressure went to Fair."
+    /// - openEnd: end used for ongoing events (the window's newest bucket, never the ticking clock).
+    /// - socPeak: SoC temperature peak over an interval (°C), for the thermal sentence.
+    public static func note(_ events: [HistoryEvent], at time: Date, bucket: TimeInterval, openEnd: Date,
+                            units: UnitPreferences = UnitPreferences(),
+                            socPeak: (DateInterval) -> Double? = { _ in nil }) -> String {
         let slot = DateInterval(start: time, duration: max(bucket, 1))
         let hits = events.filter { e in
-            let end = max(e.end ?? now, e.start.addingTimeInterval(1))
+            let end = max(e.end ?? openEnd, e.start.addingTimeInterval(1))
             return DateInterval(start: e.start, end: end).intersects(slot)
         }
         guard !hits.isEmpty else { return "Nothing unusual in this window." }
-        let sentences = hits.sorted { $0.level != $1.level ? $0.level > $1.level : $0.start < $1.start }.map { e in
+        let ordered = hits.sorted { a, b in
+            // Culprit first (the design reads "CPU spike …. SoC reached …"), then by severity and time.
+            let ra = a.kind == .runawayApp ? 0 : 1, rb = b.kind == .runawayApp ? 0 : 1
+            if ra != rb { return ra < rb }
+            return a.level != b.level ? a.level > b.level : a.start < b.start
+        }
+        let sentences = ordered.map { e -> String in
             switch e.kind {
-            case .thermalPressure: "Thermal pressure went to \(pressureName(e))."
-            case .memoryPressure: "Memory pressure reached \(e.level == .critical ? "Critical" : "Warning")."
-            case .runawayApp: "CPU spike from \(e.app.map { $0.displayName } ?? eventTitle(e))."
-            case .appEpisode, .swapGrowth: "\(eventTitle(e))."
-            case .samplingPaused: "Sampling was paused."
-            case .systemSleep: "The Mac was asleep."
+            case .thermalPressure:
+                let end = max(e.end ?? openEnd, e.start.addingTimeInterval(1))
+                if let peak = socPeak(DateInterval(start: e.start, end: end)) {
+                    return "SoC reached \(TTFormat.temperature(peak, units: units)); thermal pressure went to \(pressureName(e))."
+                }
+                return "Thermal pressure went to \(pressureName(e))."
+            case .memoryPressure: return "Memory pressure reached \(e.level == .critical ? "Critical" : "Warning")."
+            case .runawayApp:
+                if !e.label.isEmpty { return "CPU spike from \(article(e.label)) \(e.label)." }
+                return "CPU spike from \(e.app?.displayName ?? "an app")."
+            case .appEpisode, .swapGrowth: return "\(eventTitle(e))."
+            case .samplingPaused: return "Sampling was paused."
+            case .systemSleep: return "The Mac was asleep."
             }
         }
         return sentences.joined(separator: " ")
+    }
+
+    /// "a"/"an" by the first letter's sound ("an Xcode build").
+    static func article(_ phrase: String) -> String {
+        guard let c = phrase.first?.lowercased().first else { return "a" }
+        return "aeiox".contains(c) ? "an" : "a"
+    }
+
+    /// ARCHITECTURE §6 banner when the store could not be opened (in-memory history keeps working).
+    public static func persistenceBanner(persistent: Bool) -> String? {
+        persistent ? nil : "History isn’t being saved — the history database could not be opened; this session is kept in memory only."
+    }
+
+    /// Axis labels for stored ranges, positioned by `window.fraction` (DESIGN §2.12): 24H `00:00 … 24:00` every 4 h,
+    /// 7D the 7 day starts as short weekdays (today last), 30D 5 day starts `d MMM` a week apart ending today.
+    /// Live/1H: nil (relative `TTTimeAxis`).
+    public static func axisLabels(_ window: HistoryWindow, calendar: Calendar, locale: Locale)
+        -> [(text: String, fraction: Double)]? {
+        func f(_ format: String) -> DateFormatter {
+            let d = DateFormatter()
+            d.locale = locale
+            d.timeZone = calendar.timeZone
+            d.dateFormat = format
+            return d
+        }
+        func day(_ i: Int) -> Date { calendar.date(byAdding: .day, value: i, to: window.start) ?? window.start }
+        switch window.range {
+        case .live, .hour:
+            return nil
+        case .day:
+            return (0...6).map { k in
+                let t = window.start.addingTimeInterval(Double(k) * 4 * 3_600)
+                return (String(format: "%02d:00", k * 4), k == 6 ? 1 : window.fraction(of: t))
+            }
+        case .week:
+            let wd = f("EEE")
+            return (0..<7).map { i in (wd.string(from: day(i)), window.fraction(of: day(i))) }
+        case .month:
+            let dm = f("d MMM")
+            return [1, 8, 15, 22, 29].map { i in (dm.string(from: day(i)), window.fraction(of: day(i))) }
+        }
     }
 }
 
@@ -199,9 +258,9 @@ public struct HistoryChip: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Band kinds shown on the lanes and in the legend.
+/// Band kinds shown on the lanes and in the legend (DESIGN §3.13; ICR-12 memory levels).
 public enum HistoryBandKind: Hashable, Sendable, CaseIterable {
-    case fair, serious, critical, memory, paused
+    case fair, serious, critical, memory, memoryCritical, paused
 
     public var legend: String {
         switch self {
@@ -209,6 +268,7 @@ public enum HistoryBandKind: Hashable, Sendable, CaseIterable {
         case .serious: "Thermal pressure: Serious"
         case .critical: "Thermal pressure: Critical"
         case .memory: "Memory pressure"
+        case .memoryCritical: "Memory pressure: Critical"
         case .paused: "Paused"
         }
     }
@@ -217,7 +277,7 @@ public enum HistoryBandKind: Hashable, Sendable, CaseIterable {
         switch self {
         case .fair, .memory: TTColor.statusElevated.opacity(0.14)
         case .serious: TTColor.statusElevated.opacity(0.22)
-        case .critical: TTColor.statusCritical.opacity(0.14)
+        case .critical, .memoryCritical: TTColor.statusCritical.opacity(0.14)
         case .paused: TTColor.fillTrack
         }
     }
@@ -225,7 +285,7 @@ public enum HistoryBandKind: Hashable, Sendable, CaseIterable {
     public var swatch: Color {
         switch self {
         case .fair, .serious, .memory: TTColor.statusElevatedSwatch
-        case .critical: TTColor.statusCriticalSwatch
+        case .critical, .memoryCritical: TTColor.statusCriticalSwatch
         case .paused: TTColor.fillTrack
         }
     }
@@ -238,10 +298,18 @@ public enum HistoryBandKind: Hashable, Sendable, CaseIterable {
             case "Critical": return .critical
             default: return .fair
             }
-        case .memoryPressure: return .memory
+        case .memoryPressure: return e.level == .critical ? .memoryCritical : .memory
         case .samplingPaused, .systemSleep: return .paused
         default: return nil
         }
+    }
+
+    /// ICR-12 `memPressureLevel` bucket average: > 2.5 critical, > 1.0 warning.
+    public static func memory(level: Double?) -> HistoryBandKind? {
+        guard let level else { return nil }
+        if level > 2.5 { return .memoryCritical }
+        if level > 1.0 { return .memory }
+        return nil
     }
 }
 
@@ -250,14 +318,40 @@ public struct HistoryBand: Equatable, Sendable {
     public var x0: CGFloat
     public var x1: CGFloat
 
-    public static func layout(_ events: [HistoryEvent], window: HistoryWindow, width: CGFloat, now: Date) -> [HistoryBand] {
-        events.compactMap { e in
+    /// Thermal/paused bands from events; memory bands from the ICR-12 level series when it has values (runs of
+    /// warning/critical buckets), else from memory-pressure events. `openEnd` closes ongoing events.
+    public static func layout(_ events: [HistoryEvent], memoryLevels: [Double?], window: HistoryWindow, width: CGFloat,
+                              openEnd: Date) -> [HistoryBand] {
+        let useSeries = memoryLevels.contains { $0 != nil }
+        var out: [HistoryBand] = events.compactMap { e in
             guard let kind = HistoryBandKind.of(e) else { return nil }
-            let end = e.end ?? now
+            if useSeries && (kind == .memory || kind == .memoryCritical) { return nil }
+            let end = e.end ?? openEnd
             guard end > window.start, e.start < window.end else { return nil }
             let x0 = CGFloat(window.fraction(of: e.start)) * width
             let x1 = CGFloat(window.fraction(of: end)) * width
             return HistoryBand(kind: kind, x0: x0, x1: max(x1, x0 + 1))
         }
+        if useSeries, window.count > 1 {
+            let step = width / CGFloat(window.count - 1)
+            var runStart: Int?
+            var runKind: HistoryBandKind?
+            func close(_ end: Int) {
+                guard let s = runStart, let k = runKind else { return }
+                let x0 = max(0, CGFloat(s) * step - step / 2), x1 = min(width, CGFloat(end) * step + step / 2)
+                out.append(HistoryBand(kind: k, x0: x0, x1: max(x1, x0 + 1)))
+            }
+            for i in 0..<min(memoryLevels.count, window.count) {
+                let k = HistoryBandKind.memory(level: memoryLevels[i])
+                if k != runKind {
+                    close(i - 1)
+                    runStart = k == nil ? nil : i
+                    runKind = k
+                }
+            }
+            close(min(memoryLevels.count, window.count) - 1)
+        }
+        return out
     }
 }
+

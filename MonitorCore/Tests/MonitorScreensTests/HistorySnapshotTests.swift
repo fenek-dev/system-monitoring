@@ -26,8 +26,17 @@ struct FailingHistoryProvider: HistoryProvider {
 struct EventsAddingProvider: HistoryProvider {
     let base: MockHistoryProvider
     let extra: [HistoryEvent]
+    /// ICR-12 `memPressureLevel` overrides: (interval, level).
+    var memoryLevels: [(DateInterval, Double)] = []
     func series(_ metrics: [HistoryMetric], range: HistoryRange, end: Date, bucket: Duration?) async throws -> [HistoryMetric: [SeriesPoint]] {
-        try await base.series(metrics, range: range, end: end, bucket: bucket)
+        var out = try await base.series(metrics, range: range, end: end, bucket: bucket)
+        if let pts = out[.memPressureLevel], !memoryLevels.isEmpty {
+            out[.memPressureLevel] = pts.map { p in
+                guard let hit = memoryLevels.first(where: { $0.0.contains(p.time) }) else { return p }
+                return SeriesPoint(time: p.time, value: hit.1)
+            }
+        }
+        return out
     }
     func appSeries(_ app: AppKey, _ metrics: [AppMetric], range: HistoryRange, end: Date, bucket: Duration?) async throws -> [AppMetric: [SeriesPoint]] {
         try await base.appSeries(app, metrics, range: range, end: end, bucket: bucket)
@@ -52,59 +61,74 @@ struct EventsAddingProvider: HistoryProvider {
 @Suite("History snapshots")
 @MainActor
 struct HistorySnapshotTests {
-    @Test func calm() { assertScreen("history", scenario: .calm) }
-    @Test func collecting() { assertScreen("history", scenario: .collecting) }
-    @Test func sensorsUnavailable() { assertScreen("history", scenario: .sensorsUnavailable) }
-    @Test func thermalFair() { assertScreen("history", scenario: .thermalFair) }
+    @Test func calm() async { await Self.check("history-calm", .calm) }
+    @Test func collecting() async { await Self.check("history-collecting", .collecting) }
+    @Test func sensorsUnavailable() async { await Self.check("history-sensorsUnavailable", .sensorsUnavailable) }
+    @Test func thermalFair() async { await Self.check("history-thermalFair", .thermalFair) }
 
-    @Test func live() {
-        assertSnapshot(Self.dashboard(.calm) { $0.navigation.historyRange = .live }, size: ScreenSize.dashboard,
-                       named: "history-live-calm")
+    @Test func live() async {
+        await Self.check("history-live-calm", .calm) { $0.navigation.historyRange = .live }
     }
 
-    /// Cursor scrubbed back to the Final Cut Pro export; 7D range.
-    @Test func scrubbedWeek() {
-        assertSnapshot(Self.dashboard(.calm) { ctx in
-            ctx.navigation.historyRange = .week
-            ctx.navigation.historyScrub = MockDataProvider.referenceDate.addingTimeInterval(-2 * 86_400 - 7_200)
-        }, size: ScreenSize.dashboard, named: "history-week-scrubbed-calm")
+    /// 7D with the cursor scrubbed back two days (axis day starts, chips, "At" time).
+    @Test func scrubbedWeek() async {
+        await Self.check("history-week-scrubbed-calm", .calm, scrub: -2 * 86_400 - 7_200) {
+            $0.navigation.historyRange = .week
+        }
     }
 
-    @Test func emptyHistory() {
-        assertSnapshot(Self.dashboard(.calm) { $0.history = EmptyHistoryProvider() }, size: ScreenSize.dashboard,
-                       named: "history-empty")
+    @Test func month() async {
+        await Self.check("history-month-calm", .calm) { $0.navigation.historyRange = .month }
     }
 
-    @Test func storeError() {
-        assertSnapshot(Self.dashboard(.calm) { $0.history = FailingHistoryProvider() }, size: ScreenSize.dashboard,
-                       named: "history-error")
+    @Test func emptyHistory() async {
+        await Self.check("history-empty", .calm) { $0.history = EmptyHistoryProvider() }
     }
 
-    /// Thermal Fair + memory bands with legend, a paused band, and the cursor scrubbed into the thermal episode.
-    @Test func bandsAndLegend() {
+    @Test func storeError() async {
+        await Self.check("history-error", .calm) { $0.history = FailingHistoryProvider() }
+    }
+
+    /// Thermal Fair + memory (critical: red) bands with legend; cursor in the thermal episode (SoC note).
+    @Test func bandsAndLegend() async {
         let now = MockDataProvider.referenceDate
         let thermal = HistoryEvent(kind: .thermalPressure, start: now.addingTimeInterval(-3 * 3_600),
                                    end: now.addingTimeInterval(-2 * 3_600), level: .elevated,
                                    peak: Double(ThermalPressure.fair.rawValue), label: "Thermal: Fair")
         let memory = HistoryEvent(kind: .memoryPressure, start: now.addingTimeInterval(-6 * 3_600),
-                                  end: now.addingTimeInterval(-5.5 * 3_600), level: .elevated, label: "Memory: Warning")
-        let provider = EventsAddingProvider(base: MockDataProvider(scenario: .calm).history(), extra: [thermal, memory])
-        assertSnapshot(Self.dashboard(.calm) { ctx in
-            ctx.history = provider
-            ctx.navigation.historyScrub = now.addingTimeInterval(-2.5 * 3_600)
-        }, size: ScreenSize.dashboard, named: "history-bands-calm")
+                                  end: now.addingTimeInterval(-5.5 * 3_600), level: .critical, label: "Memory: Critical")
+        let provider = EventsAddingProvider(
+            base: MockDataProvider(scenario: .calm).history(), extra: [thermal, memory],
+            memoryLevels: [(DateInterval(start: now.addingTimeInterval(-6 * 3_600), duration: 1_800), 4),
+                           (DateInterval(start: now.addingTimeInterval(-5.5 * 3_600), duration: 1_800), 2)])
+        await Self.check("history-bands-calm", .calm, scrub: -2.5 * 3_600) { $0.history = provider }
     }
 
-    @Test func notPersistent() {
-        assertSnapshot(Self.dashboard(.calm) { $0.historyPersistent = false }, size: ScreenSize.dashboard,
-                       named: "history-not-persistent")
+    /// Store could not be opened: banner over the working (in-memory) history (ruling b).
+    @Test func notPersistent() async {
+        await Self.check("history-not-persistent", .calm) { $0.historyPersistent = false }
     }
 
-    static func dashboard(_ scenario: MockScenario, configure: (inout ShellContext) -> Void) -> some View {
+    /// Renders the dashboard on History with a model pre-loaded from the context's provider (snapshots have no
+    /// run-loop wait for async loads). `scrub`: seconds from the reference date for the cursor.
+    static func check(_ name: String, _ scenario: MockScenario, scrub: TimeInterval? = nil,
+                      sourceLocation: SourceLocation = #_sourceLocation,
+                      configure: (inout ShellContext) -> Void = { _ in }) async {
         var ctx = ScreenFixture.context(scenario, page: .history)
         configure(&ctx)
-        return DashboardRoot()
+        let range = ctx.navigation.historyRange
+        var seed: HistoryModel?
+        if range != .live {
+            let now = ctx.now ?? MockDataProvider.referenceDate
+            let m = HistoryModel(range: range, now: now, provider: ctx.history, calendar: HT.london)
+            m.select(range, now: now, restoring: scrub.map { now.addingTimeInterval($0) })
+            await m.load()
+            seed = m
+        }
+        let view = DashboardRoot()
+            .environment(\.historyModelSeed, seed)
             .frame(width: ScreenSize.dashboard.width, height: ScreenSize.dashboard.height)
             .telltaleEnvironment(ctx)
+        assertSnapshot(view, size: ScreenSize.dashboard, named: name, sourceLocation: sourceLocation)
     }
 }

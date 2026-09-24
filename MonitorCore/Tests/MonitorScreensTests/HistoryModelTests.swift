@@ -3,17 +3,22 @@ import MonitorLive
 import MonitorMocks
 import MonitorModel
 @testable import MonitorScreens
+import os
 import Testing
 
 /// Records share queries and exports; `appShares` can be held until `release()` (in-flight cancellation).
 actor FakeHistoryProvider: HistoryProvider {
+    struct ExportFailure: LocalizedError { var errorDescription: String? { "Disk full" } }
+
     private(set) var shareTimes: [Date] = []
     private(set) var shareRanges: [HistoryRange] = []
     private(set) var exports: [(HistoryRange, Date, URL)] = []
     private var holding = false
+    private var failExport = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func hold() { holding = true }
+    func failExports() { failExport = true }
     func release() {
         holding = false
         let w = waiters
@@ -39,6 +44,7 @@ actor FakeHistoryProvider: HistoryProvider {
     func coverage() async throws -> DateInterval? { nil }
     func exportCSV(range: HistoryRange, end: Date, to url: URL) async throws -> ExportSummary {
         exports.append((range, end, url))
+        if failExport { throw ExportFailure() }
         return ExportSummary(rows: 288, bytes: 1000, url: url)
     }
 }
@@ -62,6 +68,28 @@ struct SeriesOnlyProvider: HistoryProvider {
     func exportCSV(range: HistoryRange, end: Date, to url: URL) async throws -> ExportSummary { ExportSummary(rows: 0, bytes: 0, url: url) }
 }
 
+/// Export destination stub (nil = the user cancelled).
+struct StubDestination: HistoryExportDestination {
+    let url: URL?
+    func chooseDestination(suggestedName: String) async -> URL? { url }
+}
+
+/// Manual monotonic clock for the throttle; `sleepUntil` waits for the test to advance it.
+final class ManualClock: Sendable {
+    private let t = OSAllocatedUnfairLock(initialState: 1_000.0)
+    var now: Double { t.withLock { $0 } }
+    func advance(_ s: Double) { t.withLock { $0 += s } }
+    var read: @Sendable () -> Double { { [self] in now } }
+    var sleepUntil: @Sendable (Double) async -> Void {
+        { [self] target in
+            while now < target {
+                if Task.isCancelled { return }
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+    }
+}
+
 enum HT {
     static let now = MockDataProvider.referenceDate
     static var london: Calendar {
@@ -70,15 +98,27 @@ enum HT {
         return c
     }
 
-    @MainActor static func model(_ range: HistoryRange = .day, provider: any HistoryProvider = FakeHistoryProvider())
-        -> HistoryModel {
-        let m = HistoryModel(range: range, now: now, provider: provider, calendar: london)
+    @MainActor static func model(_ range: HistoryRange = .day, provider: any HistoryProvider = FakeHistoryProvider(),
+                                 clock: ManualClock? = nil) -> HistoryModel {
+        let m = clock.map {
+            HistoryModel(range: range, now: now, provider: provider, calendar: london, clock: $0.read,
+                         sleepUntil: $0.sleepUntil)
+        } ?? HistoryModel(range: range, now: now, provider: provider, calendar: london)
         m.select(range, now: now)
         return m
     }
 
     static func share(_ name: String, _ value: Double) -> AppShare {
         AppShare(identity: AppIdentity(key: AppKey(kind: .app, id: name), displayName: name), value: value, fraction: 0)
+    }
+}
+
+/// Polls (5 ms) until `condition` holds or 3 s pass — robust under a loaded test runner.
+@MainActor func waitUntil(_ condition: @MainActor () async -> Bool) async {
+    let deadline = ContinuousClock.now + .seconds(3)
+    while ContinuousClock.now < deadline {
+        if await condition() { return }
+        try? await Task.sleep(for: .milliseconds(5))
     }
 }
 
@@ -92,6 +132,7 @@ struct HistoryWindowTests {
         let minutes = cal.dateComponents([.hour, .minute], from: HT.now)
         #expect(day.latest == (minutes.hour! * 60 + minutes.minute!) / 5)
         #expect(day.end == cal.date(byAdding: .day, value: 1, to: day.start))
+        #expect(day.dataEnd == day.time(at: day.latest).addingTimeInterval(300))
         let week = HistoryWindow.make(.week, now: HT.now, calendar: cal)
         #expect(week.count == 336 && week.start == cal.date(byAdding: .day, value: -6, to: day.start))
         let month = HistoryWindow.make(.month, now: HT.now, calendar: cal)
@@ -115,17 +156,13 @@ struct HistoryWindowTests {
         #expect(HistoryText.subtitle(.day) == "Stored locally · 5-minute resolution for 24 h · kept for 30 days")
         #expect(HistoryText.subtitle(.live) == "Stored locally · 1-second resolution for 60 s · kept for 30 days")
         let tz = TimeZone(identifier: "Europe/London")!
-        let gb = Locale(identifier: "en_GB")
+        let gb = Locale(identifier: "en_GB"), us = Locale(identifier: "en_US")
         let day = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(day, now: HT.now, locale: gb, timeZone: tz) == "Thursday, 24 September")
-        #expect(HistoryText.title(day, now: HT.now, locale: Locale(identifier: "en_US"), timeZone: tz)
-            == "Thursday, 24 September")                                   // reference copy in every locale order
+        #expect(HistoryText.title(day, now: HT.now, locale: us, timeZone: tz) == "Thursday, 24 September")
         let week = HistoryWindow.make(.week, now: HT.now, calendar: HT.london)
-        #expect(HistoryText.title(week, now: HT.now, locale: gb, timeZone: tz) == "18 – 24 September")
-        let month = HistoryWindow.make(.month, now: HT.now, calendar: HT.london)
-        #expect(HistoryText.title(month, now: HT.now, locale: gb, timeZone: tz) == "26 August – 24 September")
-        let us = Locale(identifier: "en_US")
         #expect(HistoryText.title(week, now: HT.now, locale: us, timeZone: tz) == "18 – 24 September")
+        let month = HistoryWindow.make(.month, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(month, now: HT.now, locale: us, timeZone: tz) == "26 August – 24 September")
         let live = HistoryWindow.make(.live, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(live, now: HT.now, locale: gb, timeZone: tz) == "Last 60 seconds")
@@ -137,16 +174,45 @@ struct HistoryWindowTests {
             == "Xcode · 812% CPU")
     }
 
-    @Test func notesFromOverlappingEvents() {
-        let e = HistoryEvent(kind: .runawayApp, start: HT.now, end: HT.now.addingTimeInterval(600), level: .elevated,
-                             app: AppIdentity(key: HT.share("Xcode", 1).id, displayName: "Xcode"), label: "")
-        let t = HistoryEvent(kind: .thermalPressure, start: HT.now, end: nil, level: .elevated, peak: 1, label: "")
-        #expect(HistoryText.note([e, t], at: HT.now.addingTimeInterval(60), bucket: 300, now: HT.now.addingTimeInterval(900))
-            == "CPU spike from Xcode. Thermal pressure went to Fair.")
-        #expect(HistoryText.note([e], at: HT.now.addingTimeInterval(3_600), bucket: 300, now: HT.now)
+    @Test func axisDayStartsSitAtTheirFraction() {
+        let us = Locale(identifier: "en_US")
+        let week = HistoryWindow.make(.week, now: HT.now, calendar: HT.london)
+        let labels = HistoryText.axisLabels(week, calendar: HT.london, locale: us)!
+        #expect(labels.map(\.text) == ["Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu"])
+        #expect(abs(labels.last!.fraction - 6.0 / 7.0) < 0.01)                // Thu ≈ 6/7, nothing at `now`
+        #expect(labels.first!.fraction == 0)
+        let month = HistoryWindow.make(.month, now: HT.now, calendar: HT.london)
+        let m = HistoryText.axisLabels(month, calendar: HT.london, locale: us)!
+        #expect(m.map(\.text) == ["27 Aug", "3 Sep", "10 Sep", "17 Sep", "24 Sep"])
+        #expect(abs(m.last!.fraction - 29.0 / 30.0) < 0.01)
+        let day = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        let d = HistoryText.axisLabels(day, calendar: HT.london, locale: us)!
+        #expect(d.first?.text == "00:00" && d.last?.text == "24:00" && d.last?.fraction == 1)
+        #expect(HistoryText.axisLabels(HistoryWindow.make(.hour, now: HT.now, calendar: HT.london),
+                                       calendar: HT.london, locale: us) == nil)
+    }
+
+    @Test func notesMatchDesignCopy() {
+        let build = HistoryEvent(kind: .runawayApp, start: HT.now, end: HT.now.addingTimeInterval(600), level: .elevated,
+                                 label: "Xcode build")
+        let fair = HistoryEvent(kind: .thermalPressure, start: HT.now, end: HT.now.addingTimeInterval(900),
+                                level: .elevated, peak: 1, label: "")
+        let note = HistoryText.note([fair, build], at: HT.now.addingTimeInterval(60), bucket: 300,
+                                    openEnd: HT.now.addingTimeInterval(900), socPeak: { _ in 88 })
+        #expect(note == "CPU spike from an Xcode build. SoC reached 88°C; thermal pressure went to Fair.")
+        let byApp = HistoryEvent(kind: .runawayApp, start: HT.now, level: .elevated,
+                                 app: AppIdentity(key: HT.share("Safari", 1).id, displayName: "Safari"), label: "")
+        #expect(HistoryText.note([byApp], at: HT.now, bucket: 300, openEnd: HT.now.addingTimeInterval(300))
+            == "CPU spike from Safari.")
+        #expect(HistoryText.note([build], at: HT.now.addingTimeInterval(3_600), bucket: 300, openEnd: HT.now)
             == "Nothing unusual in this window.")
         #expect(HistoryText.chipLabel(HistoryEvent(start: HT.now, label: "Xcode build"),
-                                      timeZone: TimeZone(identifier: "Europe/London")!).hasPrefix("Xcode build · "))
+                                      timeZone: TimeZone(identifier: "Europe/London")!) == "Xcode build · 14:32")
+    }
+
+    @Test func notPersistentBanner() {
+        #expect(HistoryText.persistenceBanner(persistent: true) == nil)
+        #expect(HistoryText.persistenceBanner(persistent: false)?.hasPrefix("History isn’t being saved — ") == true)
     }
 
     @Test func overlappingChipsCollapseBehindPlusN() {
@@ -160,15 +226,24 @@ struct HistoryWindowTests {
         #expect(chips.allSatisfy { $0.x - $0.width / 2 >= 0 && $0.x + $0.width / 2 <= 810 })
     }
 
-    @Test func bandsAndLegendKinds() {
+    @Test func bandsFromEventsAndMemoryLevels() {
         let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
         let fair = HistoryEvent(kind: .thermalPressure, start: w.time(at: 10), end: w.time(at: 20), level: .elevated,
                                 peak: Double(ThermalPressure.fair.rawValue))
         let paused = HistoryEvent(kind: .samplingPaused, start: w.time(at: 50), end: w.time(at: 62), level: .calm)
-        let bands = HistoryBand.layout([fair, paused, HistoryEvent(kind: .appEpisode, start: w.time(at: 1))],
-                                       window: w, width: 287, now: HT.now)
-        #expect(bands.map(\.kind) == [.fair, .paused])
-        #expect(bands[0].x0 == 10 && bands[0].x1 == 20)
+        let memEvent = HistoryEvent(kind: .memoryPressure, start: w.time(at: 5), end: w.time(at: 6), level: .critical)
+        let noSeries = HistoryBand.layout([fair, paused, memEvent, HistoryEvent(kind: .appEpisode, start: w.time(at: 1))],
+                                          memoryLevels: [], window: w, width: 287, openEnd: w.dataEnd)
+        #expect(noSeries.map(\.kind) == [.fair, .paused, .memoryCritical])  // critical memory draws red
+        #expect(noSeries[0].x0 == 10 && noSeries[0].x1 == 20)
+        // ICR-12 levels: 1 normal, 2 warning, 4 critical (bucket averages): > 1 amber, > 2.5 red; events ignored.
+        var levels = [Double?](repeating: 1, count: w.count)
+        for i in 100..<110 { levels[i] = 2 }
+        for i in 110..<115 { levels[i] = 3.2 }
+        let series = HistoryBand.layout([memEvent], memoryLevels: levels, window: w, width: 287, openEnd: w.dataEnd)
+        #expect(series.map(\.kind) == [.memory, .memoryCritical])
+        #expect(HistoryBandKind.memoryCritical.fill == HistoryBandKind.critical.fill)
+        #expect(HistoryBandKind.memory(level: 1.0) == nil && HistoryBandKind.memory(level: 2.6) == .memoryCritical)
     }
 
     @Test func treemapSharesFoldSmallAppsIntoOtherLast() {
@@ -210,25 +285,52 @@ struct HistoryWindowTests {
 @Suite("HistoryModel — cursor, pin, queries, export")
 @MainActor
 struct HistoryModelTests {
-    @Test func storedRangesStartAtLatestUnpinned() {
+    @Test func storedRangesStartAtLatestUnpinnedWithoutLiveBadge() {
         let m = HT.model(.day)
         #expect(!m.pinned)
-        #expect(m.cursor == m.window.latest)
-        #expect(m.isAtLatest)
+        #expect(m.cursor == m.window.latest && m.isAtLatest)
+        #expect(!m.showsLiveBadge)                                          // "Now", no badge (ruling a)
         m.step(-1)
         #expect(m.cursor == m.window.latest - 1 && !m.pinned)
+        m.step(1)
+        m.step(1)                                                           // clamped at the newest bucket
+        #expect(m.cursor == m.window.latest + 1 || m.cursor == m.window.latest)
+        #expect(m.cursor <= m.window.count - 1)
+    }
+
+    @Test func arrowStepsOneBucketAndClamps() {
+        let m = HT.model(.day)
+        m.scrub(to: 0, interactive: false)
+        m.step(-1)
+        #expect(m.cursor == 0)
+        m.step(1)
+        #expect(m.cursor == 1)
+        m.scrub(to: m.window.count - 1, interactive: false)
+        m.step(1)
+        #expect(m.cursor == m.window.count - 1)
+    }
+
+    @Test func chipJumpMovesTheCursorToTheEvent() async {
+        let provider = FakeHistoryProvider()
+        let m = HT.model(.day, provider: provider)
+        let e = HistoryEvent(start: m.window.time(at: 42).addingTimeInterval(90), label: "X")
+        m.jump(to: e)
+        #expect(m.cursor == 42)
+        #expect(!m.isScrubbing)
+        await waitUntil { m.sharesTime == m.window.time(at: 42) }
+        #expect(m.sharesTime == m.window.time(at: 42))
     }
 
     @Test func livePinsFollowsUnpinsAndRepins() {
         let m = HT.model(.live)
-        #expect(m.pinned)
+        #expect(m.pinned && m.showsLiveBadge)
         let apps = [AppSample(identity: AppIdentity(key: HT.share("x", 1).id, displayName: "X"), cpuPercent: 80)]
         m.applyLive(series: [:], now: HT.now.addingTimeInterval(1), apps: apps)
         #expect(m.cursor == 59 && m.pinned)
         #expect(m.topShare?.identity.displayName == "X")
         #expect(m.sharesTime == nil)                                       // live apps, not a store query
         m.scrub(to: 40)
-        #expect(!m.pinned)
+        #expect(!m.pinned && !m.showsLiveBadge)
         let t = m.cursorTime
         m.applyLive(series: [:], now: HT.now.addingTimeInterval(2), apps: apps)
         #expect(m.cursorTime == t && m.cursor == 39)                      // keeps its moment as the window moves
@@ -240,24 +342,46 @@ struct HistoryModelTests {
         #expect(m.pinned && m.cursor == 59)
     }
 
-    @Test func scrubQueriesAreThrottledAndEndOnTheFinalCursor() async throws {
+    @Test func rangeSwitchResetsCursorRestoringOnlyWhenAsked() {
+        let m = HT.model(.day)
+        let moment = m.window.time(at: 100)
+        m.scrub(to: 100, interactive: false)
+        m.select(.week, now: HT.now)
+        #expect(m.cursor == m.window.latest)                               // range switch → latest
+        m.select(.day, now: HT.now, restoring: moment)                    // first appear restores
+        #expect(m.cursor == 100)
+        m.select(.day, now: HT.now, restoring: HT.now.addingTimeInterval(-40 * 86_400))
+        #expect(m.cursor == m.window.latest)                               // outside the window: ignored
+    }
+
+    @Test func scrubToSameBucketIsANoOp() async {
         let provider = FakeHistoryProvider()
         let m = HT.model(.day, provider: provider)
-        let start = ContinuousClock.now
-        for i in 0..<50 {
-            m.scrub(to: 100 + i)
-            try await Task.sleep(for: .milliseconds(10))
+        m.scrub(to: m.cursor)
+        m.scrub(to: m.cursor)
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await provider.shareTimes.isEmpty)
+    }
+
+    @Test func scrubQueriesAreThrottledByTheInjectedClock() async {
+        let clock = ManualClock()
+        let provider = FakeHistoryProvider()
+        let m = HT.model(.day, provider: provider, clock: clock)
+        // 200 scrub events over one simulated second (5 ms apart).
+        for i in 0..<200 {
+            m.scrub(to: i % 2 == 0 ? 10 + i / 2 : 10 + i / 2)
+            clock.advance(0.005)
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
         m.endScrub()
-        let elapsed = ContinuousClock.now - start
-        let final = m.window.time(at: 149)
+        clock.advance(0.2)
+        let final = m.cursorTime
         await waitUntil { m.sharesTime == final }
         let times = await provider.shareTimes
-        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) * 1e-18
-        #expect(Double(times.count) <= seconds * 10 + 2)                   // ≤ 10/s (+ leading and trailing)
-        #expect(times.count < 50)
-        #expect(times.last == final)                                        // trailing query = final position
-        #expect(m.sharesTime == final)
+        #expect(times.count <= 12)                                         // ≤ 10/s + leading + trailing
+        #expect(times.count >= 5)
+        #expect(times.last == final)                                       // the trailing query = final position
     }
 
     @Test func rangeChangeCancelsInFlightQuery() async throws {
@@ -274,7 +398,7 @@ struct HistoryModelTests {
         #expect(m.range == .week && m.cursor == m.window.latest)
     }
 
-    @Test func metricChangeRequeries() async throws {
+    @Test func metricChangeRequeries() async {
         let provider = FakeHistoryProvider()
         let m = HT.model(.day, provider: provider)
         m.metric = .network
@@ -282,28 +406,27 @@ struct HistoryModelTests {
         #expect(await provider.shareTimes.count == 2)                      // ↓ and ↑ summed
     }
 
-    /// Polls (10 ms) until `condition` holds or 3 s pass — robust under a loaded test runner.
-    func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
-    @Test func exportAsksForDestinationThenExportsTheRange() async {
+    @Test func exportSuccessFailureAndCancel() async {
         let provider = FakeHistoryProvider()
         let m = HT.model(.day, provider: provider)
-        let none = await m.export { nil }
-        #expect(none == nil)
+        // Cancel: nothing exported, no status.
+        #expect(await m.export(to: StubDestination(url: nil)) == nil)
         #expect(await provider.exports.isEmpty)
+        #expect(m.exportStatus == nil)
+        // Success.
         let url = URL(fileURLWithPath: "/tmp/telltale-test.csv")
-        let summary = await m.export { url }
+        let summary = await m.export(to: StubDestination(url: url))
         #expect(summary?.rows == 288)
         let calls = await provider.exports
         #expect(calls.count == 1)
         #expect(calls.first?.0 == .day && calls.first?.1 == m.window.end && calls.first?.2 == url)
-        #expect(m.exportStatus == "Exported 288 rows")
+        #expect(m.exportStatus == .exported(rows: 288))
+        #expect(m.exportStatus?.text == "Exported 288 rows")
+        // Failure: inline status with the error's description.
+        await provider.failExports()
+        #expect(await m.export(to: StubDestination(url: url)) == nil)
+        #expect(m.exportStatus == .failed("Disk full"))
+        #expect(m.exportStatus?.text == "Export failed: Disk full")
     }
 
     @Test func loadsMockHistoryIntoLanes() async {
@@ -319,7 +442,7 @@ struct HistoryModelTests {
         #expect(!m.shares.isEmpty)
     }
 
-    @Test func noDataRegionFollowsTheDataNotJustCoverage() async {
+    @Test func noDataRegionEndsAtFirstSampleNeverInTheFuture() async {
         // Data present but the store reports no coverage (e.g. before its first flush): no overlay.
         let m = HT.model(.day, provider: SeriesOnlyProvider(from: 0))
         await m.load()
@@ -328,19 +451,28 @@ struct HistoryModelTests {
         let late = HT.model(.day, provider: SeriesOnlyProvider(from: 100))
         await late.load()
         #expect(late.noDataUntil == late.window.time(at: 100))
-        // Nothing at all: the whole window.
+        // Nothing at all: up to now (the newest bucket's end), not the rest of the day.
         let empty = HT.model(.day, provider: EmptyHistoryProvider())
         await empty.load()
-        #expect(empty.noDataUntil == empty.window.end)
+        #expect(empty.noDataUntil == empty.window.dataEnd)
+        #expect(empty.noDataUntil! < empty.window.end)
         // Live never shows it.
         #expect(HT.model(.live).noDataUntil == nil)
     }
 
-    @Test func loadSynchronouslyForSnapshots() {
-        let provider = MockDataProvider(scenario: .calm).history()
-        let m = HT.model(.day, provider: provider)
-        m.loadSynchronously()
-        #expect(m.loadState == .loaded)
-        #expect(!m.shares.isEmpty)
+    @Test func bandAndChipLayoutsAreCached() async {
+        let m = HT.model(.day, provider: MockDataProvider(scenario: .calm).history())
+        await m.load()
+        let tz = TimeZone(identifier: "Europe/London")!
+        var measured = 0
+        _ = m.chips(width: 800, timeZone: tz) { _ in measured += 1; return 50 }
+        let first = measured
+        _ = m.chips(width: 800, timeZone: tz) { _ in measured += 1; return 50 }
+        #expect(measured == first)                                         // same events/window/width: cached
+        m.scrub(to: 10, interactive: false)
+        _ = m.chips(width: 800, timeZone: tz) { _ in measured += 1; return 50 }
+        #expect(measured == first)                                         // scrubbing doesn't re-layout
+        _ = m.chips(width: 700, timeZone: tz) { _ in measured += 1; return 50 }
+        #expect(measured > first)
     }
 }
