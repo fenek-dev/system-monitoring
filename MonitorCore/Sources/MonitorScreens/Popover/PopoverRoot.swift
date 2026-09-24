@@ -148,7 +148,8 @@ struct PopoverHeader: View {
         let paused = live.isPausedPhase
         let ops = PopoverActions(commands: commands, actions: actions, live: live)
         HStack(spacing: 10) {
-            PopoverGlyph(state: alert)
+            TTStatusGlyph(state: alert, size: 20, template: false)
+                .frame(width: 20, height: 20)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Telltale").font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary).cssLine(13)
                 HStack(spacing: 6) {
