@@ -70,6 +70,13 @@ import Testing
         #expect(TTPopoverRow.page(.power) == .power)
     }
 
+    @Test func popoverMemoryMetricIsByteValue() {
+        // Guards against `map(Double.init)`, which on UInt64? resolves to Double(bitPattern:).
+        var a = AppSample(identity: AppIdentity(key: AppKey(kind: .app, id: "M"), displayName: "M"))
+        a.memory = 4_294_967_296
+        #expect(TTPopoverRow.metricValue(a, .memory) == 4_294_967_296)
+    }
+
     @Test func sidebarValues() {
         #expect(!TTSidebarItem.hasValue(.overview) && !TTSidebarItem.hasValue(.processes) && !TTSidebarItem.hasValue(.history))
         #expect(TTSidebarItem.hasValue(.cpu) && TTSidebarItem.hasValue(.disk))
