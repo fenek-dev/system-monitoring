@@ -9,10 +9,16 @@ public enum LivePhase: Sendable, Equatable {
     case collecting(since: Date), live, paused(since: Date)
 }
 
+/// How much of each frame `LiveModel` publishes: nothing (UI closed), the overlay's totals, or everything.
+public enum LivePresentation: Sendable {
+    case none, overlay, full
+}
+
 /// UI-facing live state. One `apply` per tick (ARCHITECTURE §5.7, §7):
 /// - `alert`, `phase`, `samplingInterval`, `sensorHealth` (+ `healthVersion`) and the ring buffers always update
 ///   (status item, Settings › Sensors);
-/// - everything else updates only while `isPresenting`, and each property is assigned only when it changed;
+/// - at `.overlay` presentation only `cpu`, `gpu`, `memory` (+ their counters), `lastUpdate` and the series update;
+/// - at `.full` everything else updates too, and each property is assigned only when it changed;
 /// - per-category version counters let a page depend on one category; ring buffers and derived caches are
 ///   `@ObservationIgnored` and tracked through those counters.
 @MainActor @Observable
@@ -26,7 +32,7 @@ public final class LiveModel {
     public private(set) var sensorHealth: [SensorID: SensorStatus] = [:]
     public private(set) var healthVersion = 0
 
-    // Updated only while presenting
+    // Updated only while presenting (cpu, gpu, memory, lastUpdate at `.overlay` too)
     public private(set) var device: DeviceInfo
     public private(set) var cpu = CPUSnapshot()
     public private(set) var gpu = GPUSnapshot()
@@ -49,11 +55,11 @@ public final class LiveModel {
     public private(set) var diskVersion = 0
     public private(set) var appsVersion = 0
 
-    private var presenting = false
-    /// Bumped (while presenting) whenever the ring buffers got a new point or gap. `series`/`appSeries` read it
-    /// in addition to the category counter, so charts scroll even when a category's snapshot is unchanged
-    /// (idle disk, constant power), while snapshot observers of that category stay quiet.
-    private var seriesVersion = 0
+    private var level: LivePresentation = .none
+    /// Bumped (while presenting, overlay included) whenever the ring buffers got a new point or gap.
+    /// `series`/`appSeries` read it in addition to the category counter, so charts scroll even when a category's
+    /// snapshot is unchanged (idle disk, constant power), while snapshot observers of that category stay quiet.
+    private(set) var seriesVersion = 0
 
     @ObservationIgnored private var history: LiveHistory
     @ObservationIgnored private var latestFrame: SystemFrame?
@@ -68,18 +74,33 @@ public final class LiveModel {
         self.history = LiveHistory(capacity: historyCapacity, appCapacity: appHistoryCapacity, maxTrackedApps: 64)
     }
 
-    /// While false, only `alert`, `phase`, `samplingInterval`, `sensorHealth` and the ring buffers change.
-    /// Switching it on applies the latest frame and bumps every counter (the ring buffers moved meanwhile).
-    public var isPresenting: Bool {
-        get { presenting }
+    /// At `.none` only `alert`, `phase`, `samplingInterval`, `sensorHealth` and the ring buffers change.
+    /// Moving to `.full` applies the latest frame and bumps every counter (the ring buffers moved meanwhile);
+    /// moving from `.none` to `.overlay` does the same for cpu, gpu and memory.
+    public var presentation: LivePresentation {
+        get { level }
         set {
-            guard newValue != presenting else { return }
-            presenting = newValue
-            if newValue, let f = latestFrame {
+            guard newValue != level else { return }
+            let old = level
+            level = newValue
+            guard let f = latestFrame else { return }
+            switch (old, newValue) {
+            case (_, .full):
                 present(f, forceBump: true)
                 seriesVersion += 1
+            case (.none, .overlay):
+                presentTotals(f, forceBump: true)
+                seriesVersion += 1
+            default:
+                break
             }
         }
+    }
+
+    /// `presentation == .full`; setting it picks `.full` or `.none`.
+    public var isPresenting: Bool {
+        get { presentation == .full }
+        set { presentation = newValue ? .full : .none }
     }
 
     // MARK: - Apply
@@ -99,10 +120,12 @@ public final class LiveModel {
             set(\.phase, .collecting(since: frame.wallTime))    // first frame after wake/unpause has no rates
         }
 
-        if presenting {
-            present(frame, forceBump: false)
-            if appended { seriesVersion += 1 }
+        switch level {
+        case .none: return
+        case .overlay: presentTotals(frame, forceBump: false)
+        case .full: present(frame, forceBump: false)
         }
+        if appended { seriesVersion += 1 }
     }
 
     public func setPaused(_ paused: Bool, at: Date) {
@@ -111,7 +134,7 @@ public final class LiveModel {
             set(\.phase, .paused(since: at))
             set(\.samplingInterval, nil)
             a = AlertState(pulseToken: alert.pulseToken, paused: true)
-            if history.appendGap(at: at), presenting { seriesVersion += 1 }
+            if history.appendGap(at: at), level != .none { seriesVersion += 1 }
         } else {
             if case .paused = phase { set(\.phase, .collecting(since: at)) }
             a.paused = false
@@ -207,11 +230,17 @@ public final class LiveModel {
 
     // MARK: - Private
 
-    private func present(_ f: SystemFrame, forceBump: Bool) {
-        set(\.device, f.device)
+    /// The overlay's categories: cpu, gpu, memory and `lastUpdate`.
+    private func presentTotals(_ f: SystemFrame, forceBump: Bool) {
         if set(\.cpu, f.cpu) || forceBump { cpuVersion += 1 }
         if set(\.gpu, f.gpu) || forceBump { gpuVersion += 1 }
         if set(\.memory, f.memory) || forceBump { memoryVersion += 1 }
+        set(\.lastUpdate, f.wallTime)
+    }
+
+    private func present(_ f: SystemFrame, forceBump: Bool) {
+        set(\.device, f.device)
+        presentTotals(f, forceBump: forceBump)
         if set(\.network, f.network) || forceBump { networkVersion += 1 }
         if set(\.thermals, f.thermals) || forceBump { thermalsVersion += 1 }
         if set(\.power, f.power) || forceBump { powerVersion += 1 }
@@ -226,7 +255,6 @@ public final class LiveModel {
         }
         if processesChanged || appsChanged || forceBump { appsVersion += 1 }
         set(\.connections, f.connections)
-        set(\.lastUpdate, f.wallTime)
     }
 
     /// Assigns only when the value changed; returns whether it did.

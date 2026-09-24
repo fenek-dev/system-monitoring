@@ -27,6 +27,9 @@ public actor SamplingEngine {
     private let makeResolver: @Sendable () -> any AppResolving
     private let interactiveInterval: Duration
     private let backgroundInterval: Duration
+    private let overlayInterval: Duration
+    /// Sample clock for tick contexts (test seam); the loop's deadlines always use the real uptime.
+    private let uptime: @Sendable () -> UInt64
     private let recordBuilder: RecordBuilder
 
     private var slots: Slots?
@@ -39,6 +42,8 @@ public actor SamplingEngine {
     private var forceSample = true
     /// Next scheduled tick on the uptime grid (deadline-based: no drift; overruns skip to the next slot).
     private var nextDeadlineNs: UInt64?
+    /// Sample-clock time of the last emitted record (any mode); nil after a baseline reset. Paces overlay records.
+    private var lastRecordNs: UInt64?
     private var stopped = false
     private var loop: Task<Void, Never>?
     private var sleeper: Task<Void, Never>?
@@ -49,19 +54,23 @@ public actor SamplingEngine {
                 recordConfig: RecordConfig = .init(), canary: CrashCanary = .standard) {
         self.init(factory: factory, disabled: disabled, alertConfig: alertConfig, recordConfig: recordConfig,
                   canary: canary, resolver: { BundleAppResolver() },
-                  interactiveInterval: SamplingMode.interactive.interval!, backgroundInterval: SamplingMode.background.interval!)
+                  interactiveInterval: SamplingMode.interactive.interval!, backgroundInterval: SamplingMode.background.interval!,
+                  overlayInterval: SamplingMode.overlay.interval!)
     }
 
-    /// Test/probe seam: resolver and loop intervals.
+    /// Test/probe seam: resolver, loop intervals and the sample clock.
     init(factory: SensorFactory, disabled: Set<SensorID> = [], alertConfig: AlertConfig = .init(),
          recordConfig: RecordConfig = .init(), canary: CrashCanary = .none,
-         resolver: @escaping @Sendable () -> any AppResolving, interactiveInterval: Duration, backgroundInterval: Duration) {
+         resolver: @escaping @Sendable () -> any AppResolving, interactiveInterval: Duration, backgroundInterval: Duration,
+         overlayInterval: Duration = .seconds(1), uptime: @escaping @Sendable () -> UInt64 = { SamplingEngine.uptimeNs() }) {
+        self.uptime = uptime
         self.factory = factory
         self.disabled = disabled
         self.canary = canary
         self.makeResolver = resolver
         self.interactiveInterval = interactiveInterval
         self.backgroundInterval = backgroundInterval
+        self.overlayInterval = overlayInterval
         self.recordBuilder = RecordBuilder(config: recordConfig)
         self.alerts = AlertEngine(config: alertConfig)
         self.episodes = EventDetector()
@@ -107,7 +116,8 @@ public actor SamplingEngine {
     public func setVisibility(_ v: UIVisibility) {
         let old = visibility
         visibility = v
-        if (v.mode == .interactive && old.mode != .interactive) || !v.demand.isSubset(of: old.demand) {
+        // Any move to a faster mode (interactive, or overlay from background) samples at once.
+        if (v.mode != old.mode && v.mode != .background) || !v.demand.isSubset(of: old.demand) {
             forceSample = true
         }
         if v != old { sleeper?.cancel() }
@@ -178,6 +188,12 @@ public actor SamplingEngine {
         return (tick, frame)
     }
 
+    /// Test hook: one tick in the current mode, with the record batch the loop would yield.
+    func sampleOnceBatch() -> (frame: SystemFrame, batch: RecordBatch) {
+        let (_, frame, batch) = takeSample(mode: currentMode == .paused ? .interactive : currentMode)
+        return (frame, batch)
+    }
+
     /// Per-sensor cost (probe `--bench`).
     public func sensorCosts() -> [SensorID: (last: UInt64, mean: UInt64, p95: UInt64)] {
         slots?.all.reduce(into: [:]) { $0[$1.sensorID] = $1.costNs } ?? [:]
@@ -192,6 +208,7 @@ public actor SamplingEngine {
         case .interactive: interactiveInterval
         case .background: backgroundInterval
         case .paused: nil
+        case .overlay: overlayInterval
         }
     }
 
@@ -232,7 +249,7 @@ public actor SamplingEngine {
         if slots == nil { slots = Slots(factory.make(disabled), canary: canary) }
         if assembler == nil { assembler = FrameAssembler(resolver: makeResolver()) }
 
-        let now = Self.uptimeNs()
+        let now = uptime()
         let wall = Date()
         var demand = visibility.demand
         if (alerts.state.arcs[.memory] ?? .calm) >= .elevated { demand.insert(.memoryAlert) }
@@ -246,13 +263,45 @@ public actor SamplingEngine {
                                                  nominalInterval: interval(mode))
         frame.alert = state
         frame.events = alertEvents + episodes.update(frame)
-        let record = RecordBatch(record: recordBuilder.record(from: frame), events: frame.events)
-        return (tick, frame, record)
+        let record: HistoryRecord?
+        if mode == .overlay {
+            record = overlayRecordInterval(now: now, processesFresh: tick.processes.isFresh, mode: mode)
+                .map { recordBuilder.record(from: frame, interval: $0) }
+        } else {
+            record = recordBuilder.record(from: frame)
+        }
+        if record != nil { lastRecordNs = now }
+        let batch = RecordBatch(record: record, events: frame.events)
+        return (tick, frame, batch)
+    }
+
+    /// Overlay (R3): history volume matches background mode — one record per ~5 s, independent of the process
+    /// sensor. A record is due at `since ≥ 5 s − tick/2` and taken on a tick where the process table was fresh
+    /// (aligned with its 5-s cadence); at `since ≥ 5 s + tick` it is overdue and taken regardless (failing,
+    /// backing-off or disabled process sensor). Each overlay row stores ONE 1-s sample weighted as 5 s
+    /// (`interval_ms` = 5000) — accepted ruling: rollups treat it as covering the 5 s since the previous row.
+    /// Returns the record's interval, or nil when no record is due. Due path: 5 s. Overdue path: the actual gap
+    /// since the last record, clamped to 5–10 s, so a steady 6-s overdue cadence doesn't under-count coverage.
+    /// First record (no previous one): 5 s.
+    private func overlayRecordInterval(now: UInt64, processesFresh: Bool, mode: SamplingMode) -> Duration? {
+        let nominal = SamplingMode.background.interval ?? .seconds(5)
+        guard let last = lastRecordNs else { return nominal }
+        guard now > last else { return nil }
+        let since = now - last                                        // guarded: now > last
+        let period = SensorSlot<Int>.ns(nominal) ?? 5_000_000_000
+        let tick = SensorSlot<Int>.ns(mode.interval) ?? 1_000_000_000
+        if since >= period + tick {                                   // overdue
+            let gap = min(max(since, period), 2 * period)
+            return .nanoseconds(Int64(clamping: gap))
+        }
+        let due = since >= period - min(tick / 2, period)
+        return due && processesFresh ? nominal : nil
     }
 
     private func resetBaselines() {
         assembler?.reset()
         nextDeadlineNs = nil
+        lastRecordNs = nil
     }
 
     static func uptimeNs() -> UInt64 { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }

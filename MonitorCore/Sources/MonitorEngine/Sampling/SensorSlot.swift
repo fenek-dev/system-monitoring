@@ -116,9 +116,10 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         if consecutiveFailures > 0, now < nextAttemptNs, !newlyRequested || consecutiveFailures >= 3 {
             return failedResult(lastError ?? .timeout, now: now, window: effective)
         }
-        // Not due: serve the last reading.
+        // Not due: serve the last reading. Half a tick of slack (R2) so a jittered grid tick just short of the
+        // interval counts, instead of slipping the sensor a whole tick (5 s on a 1-s grid → 6 s).
         if !isOnce, !newlyRequested, let lastAttempt = lastAttemptNs, consecutiveFailures == 0,
-           now < lastAttempt &+ interval {
+           now &+ tick / 2 < lastAttempt &+ interval {
             if let last { return .cached(last.reading, capturedNs: last.capturedNs) }
             return .notRequested
         }
@@ -158,12 +159,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
     private func interval(for ctx: SampleContext) -> UInt64? {
         let c = sensor.cadence
         if !c.requires.isEmpty, ctx.demand.intersection(c.requires).isEmpty { return nil }
-        let d: Duration? = switch ctx.mode {
-        case .interactive: c.interactive
-        case .background: c.background
-        case .paused: nil
-        }
-        return Self.ns(d)
+        return Self.ns(c.interval(in: ctx.mode))
     }
 
     private func attempt(now: UInt64, retry: UInt64, window: UInt64, ctx: SampleContext) -> SensorResult<R> {

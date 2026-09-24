@@ -47,6 +47,15 @@ import Testing
         #expect(v.mode == .interactive)
     }
 
+    @Test func overlayModeResolution() {
+        #expect(UIVisibility(overlayVisible: true).mode == .overlay)
+        #expect(UIVisibility(popoverOpen: true, overlayVisible: true).mode == .interactive)
+        #expect(UIVisibility(dashboardVisible: true, overlayVisible: true).mode == .interactive)
+        #expect(UIVisibility().mode == .background)
+        #expect(UIVisibility(overlayVisible: true).demand == .none)
+        #expect(SamplingMode.overlay.interval == .seconds(1))
+    }
+
     @Test func nothingVisibleIsBackground() {
         let v = UIVisibility()
         #expect(v.demand == .none)

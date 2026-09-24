@@ -40,7 +40,7 @@ struct ProbeSensor {
     /// Would the engine sample this sensor in `mode` with `demand`? (cadence + `requires`, as `SensorSlot` does.)
     func wanted(mode: SamplingMode, demand: SamplingDemand) -> Bool {
         if !cadence.requires.isEmpty, cadence.requires.isDisjoint(with: demand) { return false }
-        return mode != .background || cadence.background != nil
+        return cadence.interval(in: mode) != nil
     }
 
     static func all(_ s: SensorSuite) -> [ProbeSensor] {
@@ -72,7 +72,7 @@ extension SensorCadence {
         func fmt(_ d: Duration) -> String {
             d == .zero ? "tick" : String(format: "%gs", Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18)
         }
-        var s = "i=\(fmt(interactive)) bg=\(background.map(fmt) ?? "never")"
+        var s = "i=\(fmt(interactive)) bg=\(background.map(fmt) ?? "never") ov=\(interval(in: .overlay).map(fmt) ?? "never")"
         if !requires.isEmpty { s += " requires=\(ProbeOptions.describe(requires))" }
         return s
     }

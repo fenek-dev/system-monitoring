@@ -25,7 +25,7 @@ final class TickLog: Sendable {
 final class CountingCPUSensor: Sensor {
     typealias Reading = HostCPUReading
     let id = SensorID.hostCPU
-    let cadence = SensorCadence.everyTick
+    let cadence = SensorCadence.totals                    // like HostCPUSensor: every tick, overlay included
     private let log: TickLog
     private var n: UInt64 = 0
     init(_ log: TickLog) { self.log = log }
@@ -46,7 +46,9 @@ struct RuntimeHarness {
     let pipeline: LivePipeline
 
     /// flushInterval 1 h: nothing reaches SQLite before shutdown unless the test flushes.
-    init(background: Duration = .milliseconds(20), interactive: Duration = .milliseconds(10)) throws {
+    /// `uptime`: the engine's sample clock (nil = real uptime).
+    init(background: Duration = .milliseconds(20), interactive: Duration = .milliseconds(10),
+         overlay: Duration = .milliseconds(10), uptime: (@Sendable () -> UInt64)? = nil) throws {
         let log = self.log
         let factory = SensorFactory { _ in
             SensorSuite(
@@ -59,7 +61,8 @@ struct RuntimeHarness {
         }
         let engine = SamplingEngine(factory: factory, canary: .none,
                                     resolver: { BundleAppResolver(currentUID: 501, readInfoPlist: { _ in nil }) },
-                                    interactiveInterval: interactive, backgroundInterval: background)
+                                    interactiveInterval: interactive, backgroundInterval: background,
+                                    overlayInterval: overlay, uptime: uptime ?? { SamplingEngine.uptimeNs() })
         store = try HistoryStore(location: .inMemory,
                                  config: StoreConfig(flushInterval: .seconds(3_600), flushMaxRecords: 100_000,
                                                      maintenanceInterval: .zero))
@@ -88,6 +91,23 @@ struct RuntimeHarness {
         let ticks = h.log.count
         #expect(ticks >= 10)
         #expect(try await h.rows() == ticks)                     // one row per tick, all flushed by shutdown
+    }
+
+    /// R3 end to end: 10 overlay ticks on a 1-s sample clock write 2 rows (the 5-s ticks), each 5 s long.
+    /// After the 10th tick the clock crawls 1 ms per tick, so ticks the loop takes before shutdown add no rows.
+    @Test func overlayForTenSecondsWritesTwoRows() async throws {
+        let calls = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+        let h = try RuntimeHarness(uptime: {
+            let n = calls.withLock { n in defer { n += 1 }; return n }
+            return 1_000_000_000_000 + min(n, 9) * 1_000_000_000 + (max(n, 9) - 9) * 1_000_000
+        })
+        h.pipeline.setVisibility(UIVisibility(overlayVisible: true))
+        h.pipeline.start()
+        #expect(await h.log.wait(atLeast: 10))
+        await h.pipeline.shutdown()
+        #expect(h.log.modes.prefix(10).allSatisfy { $0 == .overlay })
+        #expect(try await h.rows() == 2)
+        #expect(try await h.store.intValue("SELECT COUNT(*) FROM system_raw WHERE interval_ms = 5000") == 2)
     }
 
     @Test func framesReachTheLiveModel() async throws {

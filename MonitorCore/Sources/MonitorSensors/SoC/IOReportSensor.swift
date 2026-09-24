@@ -9,7 +9,7 @@ import os
 public final class IOReportSensor: Sensor {
     public typealias Reading = SoCPowerReading
     public let id: SensorID = .soc
-    public let cadence: SensorCadence = .everyTick
+    public let cadence: SensorCadence = .totals
 
     /// Deltas shorter than this are noise: the first sample waits (once, ≤ this), later ones return the last reading.
     static let minInterval: UInt64 = 100_000_000

@@ -29,23 +29,28 @@ public struct UIVisibility: Sendable, Equatable {
     public var page: DashboardPage?
     /// Connections are collected only for this app.
     public var inspectedApp: AppKey?
+    /// The on-screen stats overlay is shown. Adds no demand.
+    public var overlayVisible: Bool
 
     public init(
         popoverOpen: Bool = false,
         dashboardVisible: Bool = false,
         page: DashboardPage? = nil,
-        inspectedApp: AppKey? = nil
+        inspectedApp: AppKey? = nil,
+        overlayVisible: Bool = false
     ) {
         self.popoverOpen = popoverOpen
         self.dashboardVisible = dashboardVisible
         self.page = page
         self.inspectedApp = inspectedApp
+        self.overlayVisible = overlayVisible
     }
 
-    /// Interactive while the popover or the dashboard is visible, else background.
-    /// (`paused` is set separately via `setPaused`, not derived from visibility.)
+    /// Interactive while the popover or the dashboard is visible, else overlay while the overlay is visible,
+    /// else background. (`paused` is set separately via `setPaused`, not derived from visibility.)
     public var mode: SamplingMode {
-        popoverOpen || dashboardVisible ? .interactive : .background
+        if popoverOpen || dashboardVisible { return .interactive }
+        return overlayVisible ? .overlay : .background
     }
 
     /// Page → demand (only while the dashboard is visible). `.processTable` (enables the `ps` RSS sensor) only for

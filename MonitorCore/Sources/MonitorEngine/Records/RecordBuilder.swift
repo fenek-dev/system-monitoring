@@ -23,7 +23,8 @@ public struct RecordBuilder: Sendable {
         self.config = config
     }
 
-    public func record(from frame: SystemFrame) -> HistoryRecord {
+    /// `interval`: overrides the nominal `frame.mode.interval` (overlay records cover the 5-s process tick).
+    public func record(from frame: SystemFrame, interval: Duration? = nil) -> HistoryRecord {
         var apps: [AppRecord] = []
         var other: AppMetrics?
         for a in frame.apps {
@@ -43,7 +44,7 @@ public struct RecordBuilder: Sendable {
         // No `.other` row when nothing folded carried a value.
         if let other, other != AppMetrics() { apps.append(AppRecord(identity: .other, metrics: other)) }
         // interval_ms is NOMINAL (the mode's cadence), never the measured frame interval (ruling).
-        return HistoryRecord(time: frame.wallTime, interval: frame.mode.interval ?? .zero,
+        return HistoryRecord(time: frame.wallTime, interval: interval ?? frame.mode.interval ?? .zero,
                              system: frame.metrics, apps: apps)
     }
 

@@ -2,7 +2,7 @@ import Foundation
 import MonitorModel
 
 /// The interval/pause state machine behind `MockPipeline` (`MonitorRuntime`, ARCHITECTURE §5.11):
-/// interactive (popover or dashboard visible) → 1 s, background → 5 s, paused → no ticks (§4's loop —
+/// interactive (popover or dashboard visible) → 1 s, overlay → 1 s, background → 5 s, paused → no ticks (§4's loop —
 /// "interactive samples immediately; paused sleeps and takes no samples" — applied to the mock stream).
 ///
 /// Kept in `MonitorMocks` (not `MonitorRuntime`, which owns the actual timer `Task`) so it can be tested

@@ -144,7 +144,7 @@ enum HostCPUFFI {
 public final class HostCPUSensor: Sensor {
     public typealias Reading = HostCPUReading
     public let id = SensorID.hostCPU
-    public let cadence = SensorCadence.everyTick
+    public let cadence = SensorCadence.totals
 
     private var kinds: [CoreKind]?
     private var accumulator = TickAccumulator()
