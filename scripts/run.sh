@@ -6,13 +6,15 @@
 #   scripts/run.sh --mock calm        (build first: scripts/build.sh)
 #   scripts/run.sh --stop             only quit this build's instance
 # Every TELLTALE_* env var is passed through (TELLTALE_DISABLE_SENSORS, TELLTALE_MOCK, DEBUG
-# TELLTALE_POPOVER_CYCLES=N, TELLTALE_VISIBILITY_DRILL=1 …); TELLTALE_DATA_DIR defaults to .build/data here.
+# TELLTALE_POPOVER_CYCLES=N, TELLTALE_VISIBILITY_DRILL=1 …); TELLTALE_DATA_DIR defaults to
+# ~/Library/Caches/dev.telltale-dev/<worktree dir name>.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP="$PWD/.build/xcode/Build/Products/Debug/Telltale.app"
 BIN="$APP/Contents/MacOS/Telltale"
-DATA="${TELLTALE_DATA_DIR:-$PWD/.build/data}"
+# Never under ~/Documents (TCC prompts block file I/O): per-worktree dir in the user's caches (ruling).
+DATA="${TELLTALE_DATA_DIR:-$HOME/Library/Caches/dev.telltale-dev/$(basename "$PWD")}"
 
 # Graceful quit of processes running exactly $BIN: SIGTERM takes the app's ⌘Q path (store flush), then KILL.
 stop_this_build() {
