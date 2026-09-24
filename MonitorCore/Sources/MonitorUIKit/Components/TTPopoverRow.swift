@@ -71,7 +71,7 @@ public struct TTPopoverRow: View {
         switch category {
         case .cpu: app.cpuPercent
         case .gpu: app.gpuPercent
-        case .memory: app.memory.map(Double.init)
+        case .memory: app.memory.map { Double($0) }
         case .network: sum(app.netRxBps, app.netTxBps)
         case .thermals, .power: app.energyWatts
         case .disk: sum(app.diskReadBps, app.diskWriteBps)

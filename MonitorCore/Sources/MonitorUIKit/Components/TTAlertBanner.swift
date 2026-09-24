@@ -26,6 +26,7 @@ public struct TTAlertBanner: View {
                 .lineSpacing(TTFont.bannerTextSpacing)
                 .foregroundStyle(TTColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 1) // CSS half-leading of line-height 1.45
                 .accessibilityLabel(title.isEmpty ? message : "\(title). \(message)")
             if !actions.isEmpty {
                 HStack(spacing: TTSpace.x6) {

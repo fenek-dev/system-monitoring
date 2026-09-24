@@ -14,7 +14,8 @@ public struct TTTreemap: View, Equatable {
     let metric: AppMetric
     let animated: Bool
     let otherCount: Int?
-    let onSelect: ((AppKey) -> Void)?
+    /// Only compared for presence in `==` (closures are called on the main actor).
+    nonisolated(unsafe) let onSelect: ((AppKey) -> Void)?
     @Environment(\.unitPreferences) private var units
 
     public init(_ shares: [AppShare], metric: AppMetric, animated: Bool, onSelect: ((AppKey) -> Void)? = nil) {

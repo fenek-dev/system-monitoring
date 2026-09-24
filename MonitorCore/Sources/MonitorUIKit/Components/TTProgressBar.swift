@@ -150,13 +150,17 @@ public struct TTThermalScale: View, Equatable {
         HStack(alignment: .top, spacing: TTSpace.x6) {
             ForEach(levels.indices, id: \.self) { i in
                 let on = i == current
-                VStack(alignment: .leading, spacing: TTSpace.x6) {
+                // CSS gap 6 between Chrome line boxes; SwiftUI's taller SF lines need 5.5 / 5 to land on the
+                // Thermals@2x ink rows (bar→label 29 px, label→detail 40 px).
+                VStack(alignment: .leading, spacing: 0) {
                     RoundedRectangle(cornerRadius: TTRadius.r3)
                         .fill(levels[i].color.opacity(on ? 1 : TTOpacity.inactiveThermalSegment))
                         .frame(height: 6)
+                        .padding(.bottom, 5.5)
                     Text(levels[i].title)
                         .font(on ? TTFont.body12Strong : TTFont.body12)
                         .foregroundStyle(on ? TTColor.textPrimary : TTColor.textSecondary)
+                        .padding(.bottom, TTSpace.x5)
                     Text(levels[i].detail).font(TTFont.caption).foregroundStyle(TTColor.textTertiary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
