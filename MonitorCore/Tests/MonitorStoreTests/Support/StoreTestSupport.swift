@@ -15,7 +15,7 @@ final class TestClock: Sendable {
 }
 
 enum T {
-    /// 2026-09-21 13:20:00 UTC, aligned to 2 h (so every display bucket starts on it).
+    /// 2026-09-21 14:00:00 UTC, aligned to 2 h (so every display bucket starts on it).
     static let t0 = Date(timeIntervalSince1970: 1_789_999_200)
 
     static func tempDir() -> URL {

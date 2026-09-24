@@ -244,7 +244,10 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         try await writer.read { db in try Queries.coverage(db) }
     }
 
+    /// Rows of `range`'s storage level in [end − duration, end); see `CSVExporter`.
     public func exportCSV(range: HistoryRange, end: Date, to url: URL) async throws -> ExportSummary {
-        ExportSummary(rows: 0, bytes: 0, url: url)
+        let level = Level.forRange(range)
+        let window = Window(from: end.unixMs - range.span.milliseconds, to: end.unixMs)
+        return try await writer.read { db in try CSVExporter.export(db, level: level, window: window, to: url) }
     }
 }
