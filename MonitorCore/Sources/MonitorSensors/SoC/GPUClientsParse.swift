@@ -32,6 +32,7 @@ enum GPUClientsParse {
     }
 
     /// `PerformanceStatistics` → (Device Utilization % 0–100, In use system memory bytes).
+    /// Utilization resets on every read by any process (fallback only; see `GPUClientsReading.deviceUtilization`).
     static func performance(_ stats: Any?) -> (utilization: Double?, inUseSystemMemory: UInt64?) {
         guard let d = stats as? [String: Any] else { return (nil, nil) }
         let util = (d["Device Utilization %"] as? NSNumber).map { min(100, max(0, $0.doubleValue)) }
