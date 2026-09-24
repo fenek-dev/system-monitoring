@@ -204,6 +204,10 @@ final class IOReportSetupBox: Sendable {
         case failed(SensorError)
     }
 
+    // `uncheckedState` / `withLockUnchecked`: `Phase.ready` carries CF objects (IOReportSubscription,
+    // CFDictionary), which are not `Sendable`. This is sound because (1) they are created on the setup queue and
+    // never touched there after being stored, (2) `take()` moves them out exactly once (state → .taken), so
+    // afterwards only the sampler executor owns them, and (3) the lock orders the store before the take.
     private let phase = OSAllocatedUnfairLock<Phase>(uncheckedState: .running)
     private static let queue = DispatchQueue(label: "dev.telltale.ioreport-setup", qos: .utility)
 

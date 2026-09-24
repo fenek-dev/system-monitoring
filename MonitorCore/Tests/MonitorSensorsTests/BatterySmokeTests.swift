@@ -22,7 +22,9 @@ struct BatterySmokeTests {
         try sensor.prepare()
         defer { sensor.invalidate() }
         if W6bFixture.capture {
-            let raw = BatterySensor.raw(service: IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery")))
+            let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+            defer { if svc != 0 { IOObjectRelease(svc) } }
+            let raw = BatterySensor.raw(service: svc)
             var dump: [String: Any] = [:]
             if var reg = raw.registry?.filter({ BatteryParse.registryKeys.contains($0.key) }) {
                 if let bd = reg["BatteryData"] as? [String: Any] { reg["BatteryData"] = ["CellVoltage": bd["CellVoltage"] ?? []] }
@@ -47,8 +49,14 @@ struct BatterySmokeTests {
                        r.maxCapacityWh ?? -1, r.currentCapacityWh ?? -1, 100 * (r.maxCapacityWh ?? 0) / (r.designCapacityWh ?? 1),
                        r.voltageV ?? -1, r.amperageA ?? -99, r.temperatureC ?? -1)
               + "toFull=\(r.minutesToFull ?? -1) toEmpty=\(r.minutesToEmpty ?? -1) cond=\(r.condition ?? "-") adapter=\(r.adapterName ?? "-") lpm=\(r.lowPowerMode)"
-              + " | pmset: \(pct ?? -1)% ac=\(pmsetAC) charging=\(pmsetCharging)")
+              + " calculating=\(r.timeRemainingCalculating) | pmset: \(pct ?? -1)% ac=\(pmsetAC) charging=\(pmsetCharging)")
+        // Desktop (no AppleSmartBattery in ioreg): only "no battery, on AC" can be checked.
+        guard ioreg.contains("AppleSmartBattery") else {
+            #expect(!r.present && r.onAC)
+            return
+        }
         #expect(r.present)
+        if pmset.contains("(no estimate)") { #expect(r.timeRemainingCalculating) }
         #expect(r.cycleCount == ioregInt(ioreg, "CycleCount"))
         let design = try #require(ioregInt(ioreg, "DesignCapacity")), rawMax = try #require(ioregInt(ioreg, "AppleRawMaxCapacity"))
         let health = try #require(r.maxCapacityWh.flatMap { m in r.designCapacityWh.map { m / $0 } })

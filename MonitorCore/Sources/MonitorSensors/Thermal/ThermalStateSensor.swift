@@ -23,7 +23,7 @@ public final class ThermalStateSensor: Sensor {
         case .fair: .fair
         case .serious: .serious
         case .critical: .critical
-        @unknown default: .critical
+        @unknown default: .serious      // unknown future state: elevated, but don't claim critical (review ruling)
         }
     }
 }

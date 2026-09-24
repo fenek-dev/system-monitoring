@@ -50,7 +50,7 @@ enum BatteryParse {
             if let name = a["Name"] as? String, !name.isEmpty {
                 r.adapterName = name
             } else if let w = int(a, "Watts"), w > 0 {
-                r.adapterName = "\(w) W adapter"
+                r.adapterName = "\(w) W USB-C"          // DESIGN label when the adapter reports no name
             }
         }
         guard r.present else { return r }
@@ -61,12 +61,20 @@ enum BatteryParse {
         } else if let cur = w6bNumber(reg["CurrentCapacity"]), let max = w6bNumber(reg["MaxCapacity"]), max > 0 {
             r.percent = min(100, Swift.max(0, cur / max * 100))
         }
+        // Time remaining: IOPS −1 = "still calculating"; registry 65535 = no estimate. Only when NO source has a
+        // value and at least one of them says calculating/sentinel do we report `timeRemainingCalculating`.
+        // A missing key (e.g. fully charged: no "Time to Full Charge") is simply not available.
         func minutes(_ v: Int?) -> Int? { v.flatMap { $0 >= 0 && $0 < timeSentinel ? $0 : nil } }
+        func calculating(_ vs: [Int?]) -> Bool { vs.contains { $0 == -1 || $0 == timeSentinel } }
         if r.isCharging {
-            r.minutesToFull = minutes(source.flatMap { int($0, "Time to Full Charge") }) ?? minutes(int(reg, "AvgTimeToFull"))
+            let ps = source.flatMap { int($0, "Time to Full Charge") }, avg = int(reg, "AvgTimeToFull")
+            r.minutesToFull = minutes(ps) ?? minutes(avg)
+            r.timeRemainingCalculating = r.minutesToFull == nil && calculating([ps, avg])
         } else if !r.onAC {
-            r.minutesToEmpty = minutes(source.flatMap { int($0, "Time to Empty") }) ?? minutes(int(reg, "AvgTimeToEmpty"))
-                ?? minutes(int(reg, "TimeRemaining"))
+            let ps = source.flatMap { int($0, "Time to Empty") }, avg = int(reg, "AvgTimeToEmpty")
+            let rem = int(reg, "TimeRemaining")
+            r.minutesToEmpty = minutes(ps) ?? minutes(avg) ?? minutes(rem)
+            r.timeRemainingCalculating = r.minutesToEmpty == nil && calculating([ps, avg, rem])
         }
         r.cycleCount = int(reg, "CycleCount")
 
@@ -81,7 +89,9 @@ enum BatteryParse {
         r.maxCapacityWh = wh("AppleRawMaxCapacity")
         r.currentCapacityWh = wh("AppleRawCurrentCapacity")
         r.voltageV = packVolts
-        r.amperageA = w6bInt64(reg["Amperage"]).map { Double($0) / 1000 }
+        // InstantAmperage preferred (live gauge; `Amperage` is smoothed). BatteryReading has one field, so the
+        // instant value replaces the smoothed one when present (ruling). Both are two's-complement UInt64 mA.
+        r.amperageA = (w6bInt64(reg["InstantAmperage"]) ?? w6bInt64(reg["Amperage"])).map { Double($0) / 1000 }
         r.temperatureC = w6bNumber(reg["Temperature"]).flatMap { $0 > 0 ? $0 / 100 : nil }
         r.condition = source.flatMap { ($0["BatteryHealthCondition"] as? String) ?? ($0["BatteryHealth"] as? String) }
         if r.condition == nil, let pf = int(reg, "PermanentFailureStatus"), pf != 0 { r.condition = "Service Recommended" }

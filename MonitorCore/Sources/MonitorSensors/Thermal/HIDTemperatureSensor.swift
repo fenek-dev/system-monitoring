@@ -5,46 +5,50 @@ import MonitorModel
 import os
 
 /// Raw HID temperature list (private IOHIDEventSystemClient, weak-linked). A full read costs 65–80 ms
-/// (~1 ms IPC per service), so it runs on its own queue: `sample()` returns the last completed read and kicks
-/// off the next; it waits (≤ 240 ms) only when there is no reading yet or the last one is stale.
+/// (~1 ms IPC per service), so it runs on its own queue and `sample()` NEVER waits for it: it kicks off the
+/// next read and returns the last completed one (even if stale, e.g. when Thermals reopens — its `capturedNs`
+/// tells the engine how old it is), or throws `.transient("warming up")` before the first read finished.
 /// Only with `.rawTemperatures` (Thermals page), 2 s, never in background (ARCHITECTURE §5.4).
 public final class HIDTemperatureSensor: Sensor {
     public typealias Reading = TemperatureReading
     public let id: SensorID = .temperatures
     public let cadence: SensorCadence = .every(.seconds(2), background: nil, requires: .rawTemperatures)
 
-    static let staleNs: UInt64 = 6_000_000_000
-    static let maxWaitNs: UInt64 = 240_000_000
-
     private var box: HIDTemperatureBox?
 
-    public init() {}
+    typealias Reader = @Sendable () -> Result<[HIDTemperatureParse.Sample], SensorError>
+    private let reader: Reader
+
+    public init() { reader = HIDTemperatureBox.readAll }
+    /// Tests: inject the (slow) read to verify `sample()` never blocks on it.
+    init(reader: @escaping Reader) { self.reader = reader }
 
     public func prepare() throws(SensorError) {
         guard box == nil else { return }
         guard tt_hid_available() else { throw .unavailable("IOHIDEventSystemClient symbols missing") }
-        box = HIDTemperatureBox(catalog: try? TemperatureCatalog.bundled())
+        box = HIDTemperatureBox(catalog: try? TemperatureCatalog.bundled(), reader: reader)
     }
 
     public func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: TemperatureReading, capturedNs: UInt64) {
         if box == nil { try prepare() }
         guard let box else { throw .unavailable("HID not prepared") }
-        let now = w6bUptimeNs()
         let state = box.kick()
-        if let last = state.last, now - last.capturedNs < Self.staleNs { return (last.reading, last.capturedNs) }
-        // No (fresh) reading: wait for the read just kicked off.
-        let deadline = now + Self.maxWaitNs
-        while w6bUptimeNs() < deadline {
-            usleep(5_000)
-            let s = box.state
-            if let last = s.last, last.capturedNs >= now { return (last.reading, last.capturedNs) }
-            if !s.inFlight, let error = s.error { throw error }
-        }
-        if let last = box.state.last { return (last.reading, last.capturedNs) }
-        throw .timeout
+        if let last = state.last { return (last.reading, last.capturedNs) }
+        if let error = state.error { throw error }
+        throw .transient("warming up")
     }
 
     public func invalidate() { box = nil }
+
+    /// Tests / probes only: waits until a read newer than `after` completed (never used by `sample()`).
+    func waitForRead(after ns: UInt64, timeout: Duration = .seconds(5)) -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if let last = box?.state.last, last.capturedNs > ns { return true }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return false
+    }
 }
 
 /// Sendable state shared with the HID queue. CF objects never leave the queue closure.
@@ -58,8 +62,12 @@ final class HIDTemperatureBox: Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: State())
     private let queue = DispatchQueue(label: "dev.telltale.hid-temps", qos: .utility)
     private let catalog: TemperatureCatalog?
+    private let reader: HIDTemperatureSensor.Reader
 
-    init(catalog: TemperatureCatalog?) { self.catalog = catalog }
+    init(catalog: TemperatureCatalog?, reader: @escaping HIDTemperatureSensor.Reader = HIDTemperatureBox.readAll) {
+        self.catalog = catalog
+        self.reader = reader
+    }
 
     var state: State { lock.withLock { $0 } }
 
@@ -74,7 +82,7 @@ final class HIDTemperatureBox: Sendable {
         }
         if start {
             queue.async { [self] in
-                let result = Self.readAll()
+                let result = reader()
                 let ns = w6bUptimeNs()
                 lock.withLock { s in
                     s.inFlight = false

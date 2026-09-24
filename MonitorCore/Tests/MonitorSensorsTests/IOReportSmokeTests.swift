@@ -125,10 +125,8 @@ struct IOReportSmokeTests {
         let prepareMs = Double(w6bUptimeNs() - t0) / 1e6
         var warm = false
         do { _ = try sensor.sample(SampleContext()) } catch { warm = error == .transient("warming up") }
-        let t1 = w6bUptimeNs()
         try #require(sensor.waitUntilReady())
         let readyMs = Double(w6bUptimeNs() - t0) / 1e6
-        _ = t1
         #expect(prepareMs < 50, "prepare \(prepareMs) ms")
         #expect(warm, "first sample before setup finished should be .transient(\"warming up\")")
         W6bFixture.sleep(0.15)
