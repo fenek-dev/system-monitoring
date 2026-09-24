@@ -497,6 +497,7 @@ States (ADDED, the design shows only rest):
 - A native `NSMenu` (dark), opened by right-clicking a row, clicking `…`, or clicking `…` in the inspector. Items:
   1. `Quit`: `NSRunningApplication.terminate()` for apps, SIGTERM for processes.
   2. `Force Quit…`: opens the confirm dialog, then `forceTerminate()` or SIGKILL.
+  - Ruling (final review A-I3): Quit on an app group asks only the app to quit (`terminate()` on its regular-app members; SIGTERM to the group leader only for bundle-less groups), never its helpers; Force Quit kills every member. Every pid is start-time verified right before the signal; a gone or reused pid is skipped ("Process has exited"). A quit the app hasn't finished within 2 s toasts "Asked {name} to quit.".
   3. separator
   4. `Reveal in Finder`: `NSWorkspace.activateFileViewerSelecting([bundleOrExecURL])`. Disabled when there is no path.
   5. `Open in Activity Monitor`: launches `com.apple.ActivityMonitor`.

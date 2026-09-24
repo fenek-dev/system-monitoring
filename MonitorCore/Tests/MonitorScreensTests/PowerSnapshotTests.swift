@@ -17,26 +17,20 @@ struct PowerSnapshotTests {
     @Test func sensorsUnavailable() { assertScreen("power", scenario: .sensorsUnavailable) }
     @Test func restricted() { assertScreen("power", scenario: .restricted) }
 
-    /// Force Quit confirm (TTConfirmDialog over the page area).
-    @Test func forceQuitConfirm() {
-        let feedback = ProcessActionFeedback()
-        let fcp = AppIdentity(key: AppKey(kind: .app, id: "com.apple.FinalCut"), displayName: "Final Cut Pro")
-        feedback.requestForceQuit?(.app(fcp, pids: [812]))
-        assertSnapshot(PowerPage(selectedRowID: nil, feedback: feedback).screenEnvironment(.calm, page: .power),
-                       size: ScreenSize.pageContent, named: "power-forcequit-calm")
-    }
-
     /// First tick: one sample → chart "Collecting…", values already shown.
     @Test func firstTick() {
         assertSnapshot(PowerPage().telltaleEnvironment(ScreenFixture.context(.collecting, page: .power, ticks: 0)),
                        size: ScreenSize.pageContent, named: "power-firsttick-collecting")
     }
 
-    /// A selected user-owned row shows inline [Quit] [Force Quit] (leading) instead of "…".
+    /// A selected user-owned row shows inline [Quit] [Force Quit] (leading) instead of "…". Force Quit needs the
+    /// window-level confirm presenter (inside a dashboard window).
     @Test func selectedRowInlineActions() {
         var ctx = ScreenFixture.context(.calm, page: .power)
         ctx.processActions = ProcessActions(canControl: { _ in true })
-        assertSnapshot(PowerPage(selectedRowID: "app:app:com.apple.FinalCut").telltaleEnvironment(ctx),
+        let dialogs = ConfirmDialogHost()
+        assertSnapshot(PowerPage(selectedRowID: "app:app:com.apple.FinalCut").telltaleEnvironment(ctx)
+                           .environment(\.presentConfirmDialog, dialogs.presenter),
                        size: ScreenSize.pageContent, named: "power-selected-calm")
     }
 
@@ -192,34 +186,61 @@ struct PowerPageLogicTests {
         #expect(PowerChartScale.ceiling([[]]) == 1)
     }
 
-    /// Force Quit always confirms: request → pending dialog; Cancel clears; confirm runs forceQuit and toasts.
-    @Test func forceQuitConfirmFlow() async {
+    /// Force Quit always confirms through the shell's window-level dialog (DESIGN §2.26, U-I4): request → the
+    /// host shows it; Cancel sends nothing; Confirm runs forceQuit and toasts with the shared copy.
+    @Test func forceQuitConfirmsThroughWindowLevelHost() async {
         let feedback = ProcessActionFeedback()
-        let target = ProcessTarget.process(pid: 42, name: "ffmpeg", path: nil, uid: 501)
+        let target = ProcessTarget.process(ProcessID(pid: 42, startTimeUs: 1), name: "ffmpeg", path: nil, uid: 501)
         let log = PowerDiskCallLog()
         let actions = ProcessActions(canControl: { _ in true },
                                      forceQuit: { t in log.calls.append(t); return .done })
-        feedback.requestForceQuit?(target)
-        #expect(feedback.pending == .init(target: target, name: "ffmpeg"))
-        feedback.cancel()
-        #expect(feedback.pending == nil)
-        await feedback.confirm(using: actions)
-        #expect(log.calls.isEmpty)                                  // nothing pending → no action
-        feedback.requestForceQuit?(target)
-        await feedback.confirm(using: actions)
+        #expect(feedback.requestForceQuit(presenter: nil, actions: actions) == nil)   // no window → no Force Quit
+        let dialogs = ConfirmDialogHost()
+        let request = feedback.requestForceQuit(presenter: dialogs.presenter, actions: actions)
+        request?(target)
+        await until { dialogs.current != nil }
+        #expect(dialogs.current?.title == "Force quit “ffmpeg”?")
+        dialogs.cancel()
+        await settle()
+        #expect(log.calls.isEmpty && feedback.toast == nil)          // cancelled → nothing sent, no toast
+        request?(target)
+        await until { dialogs.current != nil }
+        dialogs.confirm()
+        await until { feedback.toast != nil }
         #expect(log.calls == [target])
-        #expect(feedback.pending == nil)
         #expect(feedback.toast == "ffmpeg was force quit.")
         feedback.onResult?(target, .notPermitted)
         #expect(feedback.toast == "Not permitted to quit ffmpeg.")
+        feedback.onResult?(target, .requested)
+        #expect(feedback.toast == "Asked ffmpeg to quit.")
         feedback.onResult?(target, .cancelled)                       // cancelled keeps the previous toast
-        #expect(feedback.toast == "Not permitted to quit ffmpeg.")
+        #expect(feedback.toast == "Asked ffmpeg to quit.")
     }
 
-    /// Handlers are created once (stable environment values → row menus aren't invalidated per tick).
+    @Test func forceQuitFailureCopyNamesForceQuit() async {
+        let feedback = ProcessActionFeedback()
+        let target = ProcessTarget.process(ProcessID(pid: 42, startTimeUs: 1), name: "ffmpeg", path: nil, uid: 501)
+        let dialogs = ConfirmDialogHost()
+        feedback.requestForceQuit(presenter: dialogs.presenter,
+                                  actions: ProcessActions(forceQuit: { _ in .failed("EPERM") }))?(target)
+        await until { dialogs.current != nil }
+        dialogs.confirm()
+        await until { feedback.toast != nil }
+        #expect(feedback.toast == "Couldn't force quit ffmpeg: EPERM")
+    }
+
+    /// The result handler is created once (stable environment value → row menus aren't invalidated per tick).
     @Test func feedbackHandlersAreStable() {
         let feedback = ProcessActionFeedback()
-        #expect(feedback.requestForceQuit != nil && feedback.onResult != nil)
+        #expect(feedback.onResult != nil)
+    }
+
+    private func until(_ condition: () -> Bool) async {
+        for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+
+    private func settle() async {
+        for _ in 0..<10 { await Task.yield() }
     }
 
     @Test func energyRowsFilterAndTargets() {
@@ -235,6 +256,6 @@ struct PowerPageLogicTests {
         let rows = EnergyRows.apps(apps.reversed(), averages: [fcp.key: 5.2], health: [:])
         #expect(rows.map(\.name) == ["Final Cut Pro", "Sleepy"])        // sorted by energy, descending
         #expect(rows[0].estimated && rows[0].average12h == 5.2 && rows[0].reason == nil)
-        #expect(rows[0].target == .app(fcp, pids: []))
+        #expect(rows[0].target == .app(fcp, processes: []))
     }
 }

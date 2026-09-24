@@ -15,8 +15,8 @@ public struct PowerPage: View {
         initialSelection = nil
     }
 
-    /// Tests/renders: start with an energy row selected (e.g. "app:app:com.apple.FinalCut") and/or a pending
-    /// Force Quit confirm.
+    /// Tests/renders: start with an energy row selected (e.g. "app:app:com.apple.FinalCut") and/or inject the
+    /// action feedback (toast).
     init(selectedRowID: String?, feedback: ProcessActionFeedback = ProcessActionFeedback()) {
         _feedback = State(initialValue: feedback)
         initialSelection = selectedRowID
@@ -327,7 +327,7 @@ enum EnergyRows {
             return EnergyRow(id: "app:\(a.identity.key)", name: a.identity.displayName, identity: a.identity,
                              watts: a.energyWatts, estimated: a.energyEstimated, reason: reason,
                              average12h: averages[a.identity.key], isChild: false, preventsSleep: a.preventsSleep,
-                             target: .app(a.identity, pids: a.processIDs.map(\.pid)))
+                             target: a.target)
         }
     }
 
@@ -335,7 +335,7 @@ enum EnergyRows {
         EnergyRow(id: "pid:\(p.id.pid):\(p.id.startTimeUs)", name: p.name, identity: nil, watts: p.energyWatts,
                   estimated: p.energyEstimated, reason: unavailableReason(.energy, p, health: health), average12h: nil,
                   isChild: true, preventsSleep: p.preventsSleep,
-                  target: .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid))
+                  target: p.target)
     }
 }
 
@@ -343,7 +343,6 @@ private struct EnergyImpactCard: View {
     @Environment(LiveModel.self) private var live
     @Environment(NavigationModel.self) private var nav
     @Environment(\.historyProvider) private var history
-    @Environment(\.processActions) private var actions
     @Environment(\.now) private var fixedNow
     @State private var selection: String?
     @State private var averages: [AppKey: Double] = [:]
@@ -409,7 +408,6 @@ private struct EnergyImpactCard: View {
 
     private func columns(sleepReason: String?) -> [TTTable<EnergyRow>.Column] {
         let selected = selection
-        let actions = actions
         return [
             .init(id: "name", title: "Process", width: .fraction(2, min: 0)) { row in
                 AnyView(TTNameCell(identity: row.identity, name: row.name, disclosure: true))
@@ -430,36 +428,12 @@ private struct EnergyImpactCard: View {
                 return AnyView(Text(row.preventsSleep ? "Yes" : "No")
                     .foregroundStyle(row.preventsSleep ? TTColor.statusElevated : TTColor.textSecondary))
             },
+            // Selected user-owned row: [Quit] [Force Quit] leading; the shared self rule hides Force Quit for
+            // Telltale and makes its Quit quit Telltale (`InlineActionsCell`, DESIGN §2.25).
             .init(id: "actions", title: "", width: .fixed(170), alignment: .trailing) { row in
-                if selected == row.id, actions.canControl(row.target) {
-                    return AnyView(EnergyInlineActions(row: row).frame(maxWidth: .infinity, alignment: .leading))
-                }
-                return AnyView(TTRowActionsButton(target: row.target, name: row.name))
+                AnyView(InlineActionsCell(target: row.target, name: row.name, selected: selected == row.id))
             },
         ]
-    }
-}
-
-/// Selected user-owned row: [Quit (small secondary)] [Force Quit (small destructive)], leading-aligned.
-private struct EnergyInlineActions: View {
-    let row: EnergyRow
-    @Environment(\.processActions) private var actions
-    @Environment(\.requestForceQuit) private var requestForceQuit
-    @Environment(\.onProcessActionResult) private var onResult
-
-    var body: some View {
-        HStack(spacing: TTSpace.x6) {
-            Button("Quit") {
-                let target = row.target, actions = actions, onResult = onResult
-                Task { @MainActor in
-                    let result = await actions.quit(target)
-                    onResult?(target, result)
-                }
-            }
-            .buttonStyle(.tt(.smallSecondary))
-            Button("Force Quit") { requestForceQuit?(row.target) }
-                .buttonStyle(.tt(.smallDestructive))
-        }
     }
 }
 

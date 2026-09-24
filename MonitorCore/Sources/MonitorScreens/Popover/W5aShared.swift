@@ -48,12 +48,12 @@ extension MonitorModel.Category {
 
 extension AppSample {
     /// Row-action target for an app group.
-    var target: ProcessTarget { .app(identity, pids: processIDs.map(\.pid)) }
+    var target: ProcessTarget { .app(identity, processes: processIDs) }
     var name: String { identity.displayName.isEmpty ? identity.key.id : identity.displayName }
 }
 
 extension ProcessSample {
-    var target: ProcessTarget { .process(pid: pid, name: name, path: path, uid: uid) }
+    var target: ProcessTarget { .process(id, name: name, path: path, uid: uid) }
 }
 
 extension ThermalPressure {

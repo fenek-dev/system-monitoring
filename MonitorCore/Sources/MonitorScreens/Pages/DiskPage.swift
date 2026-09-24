@@ -11,7 +11,7 @@ public struct DiskPage: View {
 
     public init() { _feedback = State(initialValue: ProcessActionFeedback()) }
 
-    /// Tests/renders: inject the action feedback (pending Force Quit confirm, toast).
+    /// Tests/renders: inject the action feedback (toast).
     init(feedback: ProcessActionFeedback) { _feedback = State(initialValue: feedback) }
 
     /// The root reads no live data (the subtitle lives in its own view), so it isn't re-evaluated per tick.
@@ -127,7 +127,7 @@ enum DiskCopy {
         case .done: "\(name) ejected."
         case .notPermitted: "Not permitted to eject \(name)."
         case .failed(let message): "Couldn't eject \(name): \(message)"
-        case .cancelled: nil
+        case .requested, .exited, .cancelled: nil                    // process-only results
         }
     }
 
@@ -356,7 +356,7 @@ enum DiskRows {
                            identity: exited ? nil : identity(p.app),
                            read: p.diskReadBps, write: p.diskWriteBps,
                            readSession: p.diskReadSession, writeSession: p.diskWriteSession, isExited: exited,
-                           target: .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid))
+                           target: .process(p.id, name: p.name, path: p.path, uid: p.uid))
         }) { $0.rate }
     }
 

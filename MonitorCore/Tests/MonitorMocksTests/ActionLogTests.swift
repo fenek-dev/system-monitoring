@@ -5,11 +5,13 @@ import MonitorModel
 
 @Suite struct ActionLogTests {
     static let userApp = ProcessTarget.app(
-        AppIdentity(key: AppKey(kind: .app, id: "com.apple.dt.Xcode"), displayName: "Xcode"), pids: [1_842])
+        AppIdentity(key: AppKey(kind: .app, id: "com.apple.dt.Xcode"), displayName: "Xcode"),
+        processes: [ProcessID(pid: 1_842)])
     static let systemDaemon = ProcessTarget.app(
-        AppIdentity(key: AppKey(kind: .process, id: "WindowServer"), displayName: "WindowServer"), pids: [210])
-    static let ownedProcess = ProcessTarget.process(pid: 1_842, name: "Xcode", path: nil, uid: 501)
-    static let rootProcess = ProcessTarget.process(pid: 210, name: "WindowServer", path: nil, uid: 0)
+        AppIdentity(key: AppKey(kind: .process, id: "WindowServer"), displayName: "WindowServer"),
+        processes: [ProcessID(pid: 210)])
+    static let ownedProcess = ProcessTarget.process(ProcessID(pid: 1_842), name: "Xcode", path: nil, uid: 501)
+    static let rootProcess = ProcessTarget.process(ProcessID(pid: 210), name: "WindowServer", path: nil, uid: 0)
 
     @MainActor
     @Test func canControlMatchesOwnership() {

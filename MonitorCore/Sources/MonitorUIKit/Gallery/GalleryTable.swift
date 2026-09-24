@@ -26,7 +26,8 @@ import SwiftUI
             },
             .init(id: "row-action", size: CGSize(width: 60, height: 34)) {
                 AnyView(
-                    TTRowActionsButton(target: .process(pid: 2210, name: "Final Cut Pro", path: nil, uid: 501), name: "Final Cut Pro")
+                    TTRowActionsButton(target: .process(ProcessID(pid: 2210), name: "Final Cut Pro", path: nil, uid: 501),
+                                       name: "Final Cut Pro")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(TTColor.bgCard)
                 )
@@ -136,7 +137,8 @@ private struct TopProcesses: View {
                 AnyView(Text(TTFormat.appWatts($0.energy)))
             },
             C(id: "actions", title: "", width: .fixed(28), alignment: .trailing) {
-                AnyView(TTRowActionsButton(target: .process(pid: $0.pid, name: $0.name, path: nil, uid: 501), name: $0.name))
+                AnyView(TTRowActionsButton(target: .process(ProcessID(pid: $0.pid), name: $0.name, path: nil, uid: 501),
+                                           name: $0.name))
             },
         ]
         return TTCard(spacing: TTSpace.x8) {

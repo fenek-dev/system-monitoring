@@ -5,7 +5,8 @@ import Observation
 /// Quit / Force Quit flow for the Processes page (DESIGN §2.25, §2.26, §3.12). Every action goes through the
 /// injected `ProcessActions` service. Force Quit always asks first through the injected `confirm` (the shell's
 /// window-level `presentConfirmDialog`); without a dialog host nothing is force-quit. Results become the toolbar
-/// toast ("{name} quit." / "{name} was force quit."), auto-dismissed after 4 s.
+/// toast (`ActionFeedback` copy: "{name} quit." / "Asked {name} to quit." / "{name} was force quit." /
+/// "Process has exited"), auto-dismissed after 4 s.
 @MainActor @Observable
 public final class ProcessActionCoordinator {
     public struct Toast: Equatable, Sendable {
@@ -42,7 +43,7 @@ public final class ProcessActionCoordinator {
         let started = sampler.startTimeUs(pid: process.pid)
         guard let started, process.startTimeUs == 0 || started == process.startTimeUs else {
             toastCounter += 1
-            toast = Toast(id: toastCounter, text: "Process has exited")
+            toast = Toast(id: toastCounter, text: ActionFeedback.exited)
             return
         }
         samplingPID = process.pid
@@ -73,15 +74,8 @@ public final class ProcessActionCoordinator {
 
     /// Row-menu Quit results (the menu performs the action itself, `\.onProcessActionResult`).
     public func report(_ target: ProcessTarget, _ result: ActionResult, force: Bool) {
-        let name = Self.name(of: target)
-        let text: String?
-        switch result {
-        case .done: text = force ? "\(name) was force quit." : "\(name) quit."
-        case .notPermitted: text = "Not permitted to quit \(name)."
-        case .failed(let why): text = "Couldn’t quit \(name): \(why)"
-        case .cancelled: text = nil
-        }
-        guard let text else { return }
+        guard let text = ActionFeedback.message(force ? .forceQuit : .quit, result, name: Self.name(of: target))
+        else { return }
         toastCounter += 1
         toast = Toast(id: toastCounter, text: text)
     }

@@ -815,26 +815,17 @@ extension View {
     }
 }
 
-/// Page-level process-action feedback shared by the Power and Disk tables: the Force Quit confirm
-/// (`TTConfirmDialog`) and result toasts ("{name} quit.", eject failures). The environment handlers are created
+/// Result toasts for the Power and Disk tables (quit / force quit results, eject failures), shown in the table card
+/// header (`ProcessActionToast`). Force Quit confirms through the shell's window-level `\.presentConfirmDialog`
+/// (DESIGN §2.26), exactly like `ProcessActionsHost`; all copy is `ActionFeedback`'s. The result handler is created
 /// once, so row menus are not invalidated on every tick.
 @MainActor @Observable final class ProcessActionFeedback {
-    struct Pending: Equatable {
-        var target: ProcessTarget
-        var name: String
-    }
-
-    var pending: Pending?
     var toast: String?
-    @ObservationIgnored private(set) var requestForceQuit: (@MainActor @Sendable (ProcessTarget) -> Void)?
     @ObservationIgnored private(set) var onResult: (@MainActor @Sendable (ProcessTarget, ActionResult) -> Void)?
 
     init() {
-        requestForceQuit = { [weak self] target in
-            self?.pending = Pending(target: target, name: Self.name(of: target))
-        }
         onResult = { [weak self] target, result in
-            self?.show(Self.toast(name: Self.name(of: target), forced: false, result: result))
+            self?.show(ActionFeedback.message(.quit, result, name: target.displayName))
         }
     }
 
@@ -842,28 +833,19 @@ extension View {
         if let text { toast = text }
     }
 
-    func cancel() { pending = nil }
-
-    /// Confirmed Force Quit: runs the action, clears the dialog and shows the result.
-    func confirm(using actions: ProcessActions) async {
-        guard let p = pending else { return }
-        pending = nil
-        show(Self.toast(name: p.name, forced: true, result: await actions.forceQuit(p.target)))
-    }
-
-    static func name(of target: ProcessTarget) -> String {
-        switch target {
-        case .app(let identity, _): identity.displayName
-        case .process(_, let name, _, _): name
-        }
-    }
-
-    static func toast(name: String, forced: Bool, result: ActionResult) -> String? {
-        switch result {
-        case .done: forced ? "\(name) was force quit." : "\(name) quit."
-        case .notPermitted: "Not permitted to quit \(name)."
-        case .failed(let message): "Couldn't quit \(name): \(message)"
-        case .cancelled: nil
+    /// Force Quit handler: confirm through `presenter`, then force quit and toast the result. nil without a
+    /// presenter (a page rendered outside a dashboard window offers no Force Quit).
+    func requestForceQuit(presenter: ConfirmDialogPresenter?,
+                          actions: ProcessActions) -> (@MainActor @Sendable (ProcessTarget) -> Void)? {
+        guard let presenter else { return nil }
+        return { [weak self] target in
+            Task { @MainActor in
+                let copy = ForceQuitFlow.message(target)
+                let result = await ForceQuitFlow.run(target, confirm: {
+                    await presenter.confirm(title: copy.title, message: copy.message, confirmTitle: copy.confirmTitle)
+                }, actions: actions)
+                self?.show(ActionFeedback.message(.forceQuit, result, name: target.displayName))
+            }
         }
     }
 }
@@ -871,28 +853,18 @@ extension View {
 private struct ProcessActionFeedbackModifier: ViewModifier {
     let feedback: ProcessActionFeedback
     @Environment(\.processActions) private var actions
+    @Environment(\.presentConfirmDialog) private var presenter
 
     func body(content: Content) -> some View {
         content
-            .environment(\.requestForceQuit, feedback.requestForceQuit)
+            .environment(\.requestForceQuit, feedback.requestForceQuit(presenter: presenter, actions: actions))
             .environment(\.onProcessActionResult, feedback.onResult)
-            .overlay {
-                // TTConfirmDialog covers the page area (the shell has no window-level host).
-                if let p = feedback.pending {
-                    TTConfirmDialog(
-                        title: "Force quit “\(p.name)”?",
-                        message: "Unsaved changes will be lost. The process ends immediately without cleanup.",
-                        confirmTitle: "Force Quit",
-                        onConfirm: { [feedback, actions] in Task { await feedback.confirm(using: actions) } },
-                        onCancel: { [feedback] in feedback.cancel() })
-                        .transition(TTConfirmDialog.transition)
-                }
-            }
     }
 }
 
 extension View {
-    /// Installs the Force Quit confirm + result handlers of `feedback` for the row menus and inline buttons below.
+    /// Installs the Force Quit (window-level confirm) + result handlers of `feedback` for the row menus and inline
+    /// buttons below.
     func processActionFeedback(_ feedback: ProcessActionFeedback) -> some View {
         modifier(ProcessActionFeedbackModifier(feedback: feedback))
     }

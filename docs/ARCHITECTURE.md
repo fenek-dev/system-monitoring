@@ -1108,10 +1108,10 @@ At every open, after migrations, the store compares metric columns with `History
 
 ```swift
 public enum ProcessTarget: Sendable, Hashable {
-    case app(AppIdentity, pids: [Int32])
-    case process(pid: Int32, name: String, path: String?, uid: UInt32)
+    case app(AppIdentity, processes: [ProcessID])                          // pid + start time (reuse-safe)
+    case process(ProcessID, name: String, path: String?, uid: UInt32)
 }
-public enum ActionResult: Sendable, Equatable { case done, notPermitted, failed(String), cancelled }
+public enum ActionResult: Sendable, Equatable { case done, requested, exited, notPermitted, failed(String), cancelled }
 public struct ProcessActions: Sendable {
     public var canControl: @MainActor @Sendable (ProcessTarget) -> Bool     // false for root/other users and synthetic rows
     public var quit: @MainActor @Sendable (ProcessTarget) async -> ActionResult
@@ -1294,13 +1294,14 @@ struct TTStatusGlyph: View { init(state: AlertState, size: CGFloat = 16, templat
 ### 5.13 App shell decisions (W4)
 
 - `main.swift` + `AppDelegate` (AppKit lifecycle), `.accessory` activation policy (+ `LSUIElement`).
+- Single instance per data dir (ruling): `InstanceLock` (`flock` on `<dataDir>/.instance.lock`) is taken before `AppEnvironment` is built; a second launch posts `InstanceActivation` (distributed notification, object = data dir; the running instance opens its dashboard, optionally the `--open-dashboard` page), yields activation to it and exits.
 - Status item: button image from `StatusGlyphRenderer`; re-armed `withObservationTracking` on `live.alert`; dimmed when paused; one pulse per `pulseToken` change.
 - Popover: **borderless non-activating `NSPanel`** (design: 360 pt dark rounded panel, no arrow). Closes on outside click / Esc / status click. Hosting view created on open, released on close.
 - Dashboard: `NSWindow` 1280×860 (min 1040×700), `.fullSizeContentView`, transparent titlebar, `.darkAqua`, released on close; occlusion/miniaturize → `VisibilityTracker`.
 - Settings window: launch at login (`SMAppService.mainApp`), units, popover row order/hide, re-enable crashed/disabled sensors.
 - `PowerEvents`: `NSWorkspace` will-sleep/did-wake → runtime.
 - Termination: `.terminateLater` + `await runtime.shutdown()` (§4).
-- `ProcessActionsLive`: `NSRunningApplication.terminate()/forceTerminate()`, `kill(SIGTERM/SIGKILL)`; `canControl` = all pids owned by `getuid()` and not synthetic; Reveal via `activateFileViewerSelecting`; Activity Monitor via `openApplication(at:)`; eject via `unmountAndEjectDevice(at:)`. No "Sample" action (ruling).
+- `ProcessActionsLive`: `NSRunningApplication.terminate()/forceTerminate()`, `kill(SIGTERM/SIGKILL)`; `canControl` = all pids owned by `getuid()`, not synthetic, and not Telltale itself (`ProcessTarget.isSelf`); each pid's start time is re-read (`KERN_PROC_PID`) right before its signal and a mismatch sends nothing (`.exited`); group Quit/Force Quit per DESIGN §2.25; Reveal via `activateFileViewerSelecting`; Activity Monitor via `openApplication(at:)`; eject via `unmountAndEjectDevice(at:)`. [Sample] is a separate service (`ProcessSampling`, DESIGN §3.12).
 
 ---
 

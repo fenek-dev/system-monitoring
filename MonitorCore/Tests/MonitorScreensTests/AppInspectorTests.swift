@@ -53,8 +53,9 @@ final class StubSampler: ProcessSampling {
 struct AppInspectorActionTests {
     let log = ActionLog()
     var actions: ProcessActions { MockDataProvider(scenario: .calm).processActions(log: log) }
-    let xcode = ProcessTarget.app(AppIdentity(key: PT.xcode, displayName: "Xcode"), pids: [1842])
-    let rootProc = ProcessTarget.process(pid: 377, name: "mds_stores", path: nil, uid: 0)
+    let xcode = ProcessTarget.app(AppIdentity(key: PT.xcode, displayName: "Xcode"),
+                                  processes: [ProcessID(pid: 1842, startTimeUs: 1)])
+    let rootProc = ProcessTarget.process(ProcessID(pid: 377, startTimeUs: 1), name: "mds_stores", path: nil, uid: 0)
 
     @Test func quitGoesThroughServiceAndToasts() async {
         let c = ProcessActionCoordinator(actions: actions)
@@ -78,6 +79,18 @@ struct AppInspectorActionTests {
         await c.forceQuit(xcode)
         #expect(log.entries == ["forceQuit Xcode -> done"])
         #expect(c.toast?.text == "Xcode was force quit.")
+    }
+
+    /// Quit / Force Quit results from the service use the shared copy: an unconfirmed quit is only "asked", a
+    /// target whose pid was reused or exited says so, and failures name the force quit.
+    @Test func coordinatorToastCopy() {
+        let c = ProcessActionCoordinator()
+        c.report(xcode, .requested, force: false)
+        #expect(c.toast?.text == "Asked Xcode to quit.")
+        c.report(xcode, .exited, force: true)
+        #expect(c.toast?.text == "Process has exited")
+        c.report(xcode, .failed("EPERM"), force: true)
+        #expect(c.toast?.text == "Couldn't force quit Xcode: EPERM")
     }
 
     /// [Sample] goes through the injected sampler: success reveals the report, failure toasts; nothing is spawned.
@@ -111,13 +124,42 @@ struct AppInspectorActionTests {
     }
 
     /// The live runner's timeout path, with a stub executable (`/bin/sleep`) instead of `sample`.
-    @Test func liveSamplerTimesOutAndKills() async {
+    @Test func liveSamplerTimesOutAndKills() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tt-samples-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
         let slow = LiveProcessSampler(executable: URL(fileURLWithPath: "/bin/sleep"), timeout: 0.3,
-                                      arguments: { _, _ in ["30"] })
+                                      arguments: { _, _ in ["30"] }, reportsRoot: root)
         let started = Date()
         let result = await slow.sample(pid: 1, name: "slow")
         #expect(result == .failed("sample timed out after 0.3 s"))
         #expect(Date().timeIntervalSince(started) < 5)
+        // M5: a failed run leaves no report directory behind.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        let failing = LiveProcessSampler(executable: URL(fileURLWithPath: "/usr/bin/false"), reportsRoot: root)
+        #expect(await failing.sample(pid: 1, name: "x") == .failed("sample exited with status 1"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    /// Report directories older than a day are pruned (launch / next sample); newer ones are kept for the reveal.
+    @Test func samplerPrunesOldReportDirectories() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("tt-samples-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let old = try LiveProcessSampler.makeRunDirectory(in: root)
+        let fresh = try LiveProcessSampler.makeRunDirectory(in: root)
+        var st = stat()
+        #expect(lstat(fresh.path, &st) == 0 && st.st_mode & 0o777 == 0o700)
+        #expect(lstat(root.path, &st) == 0 && st.st_mode & 0o777 == 0o700)
+        try "r".write(to: old.appendingPathComponent("Telltale-x.txt"), atomically: true, encoding: .utf8)
+        try fm.setAttributes([.modificationDate: Date().addingTimeInterval(-2 * 86_400)], ofItemAtPath: old.path)
+        LiveProcessSampler.pruneReports(in: root)
+        #expect(!fm.fileExists(atPath: old.path))
+        #expect(fm.fileExists(atPath: fresh.path))
+        // A symlinked root is refused (never follow a planted link).
+        let link = fm.temporaryDirectory.appendingPathComponent("tt-samples-link-\(UUID().uuidString)")
+        try fm.createSymbolicLink(at: link, withDestinationURL: root)
+        defer { try? fm.removeItem(at: link) }
+        #expect(throws: (any Error).self) { try LiveProcessSampler.makeRunDirectory(in: link) }
     }
 
     /// A leftover or planted file is never trusted: symlinks fail, stale files fail, fresh regular files pass.
