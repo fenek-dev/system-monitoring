@@ -63,4 +63,24 @@ struct DiskIOSmokeTests {
         }
         #expect(sawPlausibleWriteDelta)
     }
+
+    /// Perf is advisory (plan §0): report p50/p95, don't tune to it. The hard contract (ARCHITECTURE
+    /// §5.4 Sensor.sample doc) is "never blocks > 250 ms"; ARCHITECTURE §7 estimates diskIO as part of
+    /// a < 1 ms combined budget with hostCPU/memory/thermalState/interfaces.
+    @Test func benchThirtySamples() throws {
+        let sensor = DiskIOSensor()
+        try sensor.prepare()
+        let ctx = SampleContext()
+        var samplesMs: [Double] = []
+        for _ in 0..<30 {
+            let start = DispatchTime.now()
+            _ = try sensor.sample(ctx)
+            samplesMs.append(Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
+        }
+        samplesMs.sort()
+        let p50 = samplesMs[samplesMs.count / 2]
+        let p95 = samplesMs[Int(Double(samplesMs.count) * 0.95)]
+        print("DiskIOSensor.sample() bench (n=30): p50=\(p50) ms, p95=\(p95) ms")
+        #expect(p95 < 250)
+    }
 }

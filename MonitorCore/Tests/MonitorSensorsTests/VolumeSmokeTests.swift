@@ -35,6 +35,25 @@ struct VolumeSmokeTests {
         #expect(Self.line(in: diskutil, labeled: "Encrypted:", contains: "No"))
     }
 
+    /// Perf is advisory (plan §0). VolumeSensor isn't in ARCHITECTURE §7's per-tick budget table (its
+    /// cadence is 10 s/60 s, not every tick); the only hard contract is "never blocks > 250 ms".
+    @Test func benchThirtySamples() throws {
+        let sensor = VolumeSensor()
+        try sensor.prepare()
+        let ctx = SampleContext()
+        var samplesMs: [Double] = []
+        for _ in 0..<30 {
+            let start = DispatchTime.now()
+            _ = try sensor.sample(ctx)
+            samplesMs.append(Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
+        }
+        samplesMs.sort()
+        let p50 = samplesMs[samplesMs.count / 2]
+        let p95 = samplesMs[Int(Double(samplesMs.count) * 0.95)]
+        print("VolumeSensor.sample() bench (n=30): p50=\(p50) ms, p95=\(p95) ms")
+        #expect(p95 < 250)
+    }
+
     private static func withinTolerance(_ a: Double, _ b: Double, fraction: Double) -> Bool {
         guard b != 0 else { return a == 0 }
         return abs(a - b) / b <= fraction

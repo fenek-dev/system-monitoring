@@ -52,6 +52,27 @@ struct SMARTSmokeTests {
         #expect(info.capacityBytes == diskutilCapacityBytes)
     }
 
+    /// Perf is advisory (plan §0). Each sample() opens+reads+closes the CFPlugIn fresh (findings §2:
+    /// ~0.6 ms targeted lookup + ~2-3 ms SMARTReadData) — cheap enough at this sensor's 300 s,
+    /// .smart-demand-gated cadence that keeping the plugin open between reads isn't worth the
+    /// non-Sendable-handle complexity. The hard contract is "never blocks > 250 ms".
+    @Test func benchThirtySamples() throws {
+        let sensor = SMARTSensor()
+        try sensor.prepare()
+        let ctx = SampleContext()
+        var samplesMs: [Double] = []
+        for _ in 0..<30 {
+            let start = DispatchTime.now()
+            _ = try sensor.sample(ctx)
+            samplesMs.append(Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
+        }
+        samplesMs.sort()
+        let p50 = samplesMs[samplesMs.count / 2]
+        let p95 = samplesMs[Int(Double(samplesMs.count) * 0.95)]
+        print("SMARTSensor.sample() bench (n=30): p50=\(p50) ms, p95=\(p95) ms")
+        #expect(p95 < 250)
+    }
+
     private static func extractInt(from output: String, label: String) throws -> Int {
         let cleaned = try Self.extractString(from: output, label: label).filter { $0.isNumber }
         return try #require(Int(cleaned))
