@@ -135,6 +135,17 @@ func frame(t: Double, cpuUsage: Double = 0.4, memUsed: UInt64 = 1_000, apps: [Ap
         #expect(model.topApps(.cpu, count: 2).map(\.identity.displayName) == ["b", "a"])
         #expect(model.topApps(.network, count: 1).map(\.identity.displayName) == ["net"])
         #expect(model.topApps(.disk, count: 1).map(\.identity.displayName) == ["disk"])
+        #expect(model.topApps(.memory).isEmpty)                  // no memory values in this frame
+    }
+
+    @Test func topAppsByMemoryUsesByteValues() {
+        let model = LiveModel()
+        model.isPresenting = true
+        var small = app("small", cpu: 1), big = app("big", cpu: 1)
+        small.memory = 1_000
+        big.memory = 3 << 30
+        model.apply(frame(t: 0, apps: [small, big]))
+        #expect(model.topApps(.memory).map(\.identity.displayName) == ["big", "small"])
         #expect(!model.topApps(.cpu, count: 10).contains { $0.identity.key == .other })
         #expect(model.topApps(.gpu).isEmpty)          // nobody has a GPU value
     }

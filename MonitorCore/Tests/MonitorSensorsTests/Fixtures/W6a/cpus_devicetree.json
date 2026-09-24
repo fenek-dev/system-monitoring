@@ -1,0 +1,42 @@
+[
+  {
+    "kind" : "efficiency",
+    "logicalID" : 0
+  },
+  {
+    "kind" : "efficiency",
+    "logicalID" : 1
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 2
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 3
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 4
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 5
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 6
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 7
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 8
+  },
+  {
+    "kind" : "performance",
+    "logicalID" : 9
+  }
+]

@@ -85,7 +85,7 @@ public struct ProcessSample: Sendable, Codable, Hashable, Identifiable {
         switch metric {
         case .cpu: cpuPercent
         case .gpu: gpuPercent
-        case .memory: memory.map(Double.init)
+        case .memory: memory.map { Double($0) }
         case .netRx: netRxBps
         case .netTx: netTxBps
         case .diskRead: diskReadBps
