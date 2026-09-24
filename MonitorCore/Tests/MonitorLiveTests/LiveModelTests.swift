@@ -89,6 +89,47 @@ func frame(t: Double, cpuUsage: Double = 0.4, memUsed: UInt64 = 1_000, apps: [Ap
         #expect(model.lastUpdate == Date(timeIntervalSince1970: 0))
     }
 
+    @Test func overlayPresentationPublishesOnlyTotals() {
+        let live = LiveModel()
+        live.presentation = .overlay
+        let net0 = live.networkVersion, apps0 = live.appsVersion, cpu0 = live.cpuVersion, s0 = live.seriesVersion
+        var f = frame(t: 1, apps: [app("a", cpu: 10)])
+        f.network = NetworkSnapshot(rxBps: 1_000)
+        live.apply(f)
+        #expect(live.cpuVersion > cpu0 && live.seriesVersion > s0)
+        #expect(live.cpu.usage == 0.4 && live.memory.used == 1_000)
+        #expect(live.lastUpdate == Date(timeIntervalSince1970: 1))
+        #expect(live.networkVersion == net0 && live.network == NetworkSnapshot())
+        #expect(live.appsVersion == apps0 && live.apps.isEmpty)
+        #expect(live.chartSeries(.cpuUsage).compactMap(\.value).isEmpty == false)
+        #expect(!live.isPresenting)
+    }
+
+    @Test func overlayFromNoneRepresentsTotalsAndFullRepresentsEverything() {
+        let live = LiveModel()
+        var f = frame(t: 0, cpuUsage: 0.9, apps: [app("a", cpu: 10)])
+        f.network = NetworkSnapshot(rxBps: 1_000)
+        live.apply(f)
+        let cpu0 = live.cpuVersion, net0 = live.networkVersion
+        live.presentation = .overlay
+        #expect(live.cpu.usage == 0.9 && live.cpuVersion > cpu0)
+        #expect(live.network == NetworkSnapshot() && live.networkVersion == net0)
+        live.presentation = .full
+        #expect(live.isPresenting)
+        #expect(live.network.rxBps == 1_000 && live.networkVersion > net0)
+        #expect(live.apps.count == 1)
+    }
+
+    @Test func isPresentingAliasesFull() {
+        let live = LiveModel()
+        live.isPresenting = true
+        #expect(live.presentation == .full)
+        live.presentation = .overlay
+        #expect(!live.isPresenting)
+        live.isPresenting = false
+        #expect(live.presentation == .none)
+    }
+
     @Test func phaseCollectingUntilFrameWithRates() {
         let model = LiveModel()
         guard case .collecting = model.phase else { Issue.record("initial phase \(model.phase)"); return }
