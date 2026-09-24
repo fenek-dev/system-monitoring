@@ -15,7 +15,12 @@ public final class ReverseDNS: Sendable {
         var jobs: ReverseDNSJobs
     }
 
-    private let queue = DispatchQueue(label: "dev.telltale.rdns", qos: .utility, attributes: .concurrent)
+    /// Starts a lookup off the caller. Test seam only: the default is the `.utility` concurrent queue; tests pass
+    /// dedicated threads, because a non-overcommit queue gets no thread while other suites keep the cooperative
+    /// pool busy.
+    typealias Spawn = @Sendable (@escaping @Sendable () -> Void) -> Void
+
+    private let spawn: Spawn
     private let lock: OSAllocatedUnfairLock<State>
     private let resolve: @Sendable (String) -> ReverseDNSResult
     private let now: @Sendable () -> UInt64
@@ -27,7 +32,10 @@ public final class ReverseDNS: Sendable {
 
     init(capacity: Int = 512, ttlNs: UInt64 = 600_000_000_000, failureTTLNs: UInt64 = 30_000_000_000,
          maxConcurrent: Int = 4, maxPending: Int = 128,
-         resolve: @escaping @Sendable (String) -> ReverseDNSResult, now: @escaping @Sendable () -> UInt64) {
+         resolve: @escaping @Sendable (String) -> ReverseDNSResult, now: @escaping @Sendable () -> UInt64,
+         spawn: Spawn? = nil) {
+        let queue = DispatchQueue(label: "dev.telltale.rdns", qos: .utility, attributes: .concurrent)
+        self.spawn = spawn ?? { queue.async(execute: $0) }
         self.resolve = resolve
         self.now = now
         self.failureTTLNs = failureTTLNs
@@ -69,7 +77,7 @@ public final class ReverseDNS: Sendable {
             return out
         }
         for address in started {
-            queue.async { [self] in
+            spawn { [self] in
                 let result = resolve(address)
                 let t = now()
                 let failureTTL = failureTTLNs

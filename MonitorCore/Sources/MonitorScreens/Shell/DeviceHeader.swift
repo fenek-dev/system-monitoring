@@ -40,7 +40,7 @@ public struct DeviceHeader: View {
         if d.bootTime.timeIntervalSince1970 > 0, now > d.bootTime {
             mem.append("up " + uptime(now.timeIntervalSince(d.bootTime)))
         }
-        return (d.modelName, chip.joined(separator: " · "), mem.joined(separator: " · "))
+        return (ShellFormat.modelShortName(d.modelName), chip.joined(separator: " · "), mem.joined(separator: " · "))
     }
 
     /// DESIGN §5.8 coarse uptime: "4 d 7 h", "7 h 12 m", "12 m".

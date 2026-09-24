@@ -11,7 +11,7 @@ import MonitorModel
 /// window — running concurrently with another test in this suite (Swift Testing's default) would
 /// pollute that measurement. See SMARTSmokeTests for a confirmed case of concurrent-hardware-access
 /// flakiness in a sibling suite.
-@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
+@Suite(.serialized, .offCooperativePool, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
 struct DiskIOSmokeTests {
     @Test func internalDriveIsPresentWithPlausibleCounters() throws {
         let sensor = DiskIOSensor()

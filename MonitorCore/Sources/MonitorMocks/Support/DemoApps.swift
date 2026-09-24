@@ -165,6 +165,14 @@ enum DemoApps {
 
     /// `ProcessSample` + `AppSample` for one demo app, evaluated at `tick`. Single-process apps are their
     /// own group; multi-process apps (Docker Desktop) are merged by the caller.
+    /// Live flow count (Network "Connections" column): ≈ √(↓+↑ KB/s), at least 1 while the app has traffic,
+    /// nil when idle — deterministic, and in the artboard's 3…14 range for the demo roster.
+    static func connections(_ app: DemoApp) -> Int? {
+        let kb = (app.netRxBps + app.netTxBps) / 1_000
+        guard kb > 0 else { return nil }
+        return max(1, Int(kb.squareRoot().rounded()))
+    }
+
     static func makeProcess(_ app: DemoApp, at tick: Int) -> ProcessSample {
         let series = DemoSeries(seed: app.jitterSeed, base: app.baseCPU, vol: max(app.baseCPU * 0.06, 0.3),
                                  min: max(app.baseCPU * 0.5, 0), max: app.baseCPU * 1.5 + 5)
@@ -189,6 +197,7 @@ enum DemoApps {
             netTxBps: app.netTxBps > 0 ? app.netTxBps : nil,
             netRxTotal: UInt64(app.netRxBps) * UInt64(max(tick, 1)),
             netTxTotal: UInt64(app.netTxBps) * UInt64(max(tick, 1)),
+            connectionCount: Self.connections(app),
             diskReadBps: app.diskReadBps > 0 ? app.diskReadBps : nil,
             diskWriteBps: app.diskWriteBps > 0 ? app.diskWriteBps : nil,
             diskReadTotal: UInt64(app.diskReadBps) * UInt64(max(tick, 1)),
@@ -233,7 +242,8 @@ enum DemoApps {
                 netRxSession: members.compactMap(\.netRxTotal).reduce(0, +),
                 netTxSession: members.compactMap(\.netTxTotal).reduce(0, +),
                 threads: members.compactMap(\.threads).reduce(0, +),
-                connectionCount: nil,
+                connectionCount: members.contains { $0.connectionCount != nil }
+                    ? members.compactMap(\.connectionCount).reduce(0, +) : nil,
                 preventsSleep: members.contains(where: \.preventsSleep),
                 diskReadSession: members.compactMap(\.diskReadSession).reduce(0, +),     // ICR-14
                 diskWriteSession: members.compactMap(\.diskWriteSession).reduce(0, +)

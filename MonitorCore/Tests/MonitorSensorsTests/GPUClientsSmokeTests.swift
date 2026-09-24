@@ -5,7 +5,7 @@ import Testing
 @testable import MonitorSensors
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh GPUClientsSmokeTests`.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive, .offCooperativePool)
 struct GPUClientsSmokeTests {
     private func ownGPUTime(_ r: GPUClientsReading) -> UInt64 {
         r.clients.filter { $0.pid == getpid() }.reduce(0) { $0 + $1.gpuTimeNs }

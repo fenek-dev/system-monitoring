@@ -20,7 +20,9 @@ import Testing
     }
 }
 
-@Suite("Shell termination", .serialized) @MainActor
+/// `.idleMainActor`: the controller's tasks run on the main actor; started inside the initial main-queue backlog of
+/// a full run, a test waits out tens of seconds of other suites' renders before its first step.
+@Suite("Shell termination", .serialized, .idleMainActor) @MainActor
 struct ShellTerminationTests {
     /// Generous: parallel screen suites can hold the main actor for seconds (render-heavy catalog tests).
     /// Main-actor scheduling allowance on top of a timeout (other suites share the main actor; the render-heavy

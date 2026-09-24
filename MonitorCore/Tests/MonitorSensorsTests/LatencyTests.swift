@@ -118,7 +118,8 @@ import Testing
 }
 
 /// Hermetic: ICMP to 127.0.0.1 (no network needed) and injected route states.
-@Suite(.serialized) struct LatencyLoopbackTests {
+/// `.offCooperativePool`: `LatencyBox.burst` blocks its thread for the ~1 s probe schedule by design.
+@Suite(.serialized, .offCooperativePool) struct LatencyLoopbackTests {
     @Test func burstAgainstLoopback() throws {
         let r = LatencyBox.burst(target: "127.0.0.1", identifier: 0x7777, firstSequence: 65_534) // wraps past 65535
         let probes = try r.get()
@@ -156,7 +157,7 @@ import Testing
 }
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh LatencySmokeTests`.
-@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized, .offCooperativePool)
 struct LatencySmokeTests {
     @Test func matchesPingToRouter() throws {
         let probe = LatencyProbe()

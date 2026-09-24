@@ -6,7 +6,7 @@ import Testing
 
 /// Hardware smoke: opt-in, run one suite at a time at checkpoints; never in parallel with other suites or builds
 /// (load-sensitive). `TELLTALE_HW_TESTS=1 swift test --no-parallel --filter RootMemorySmokeTests`.
-@Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6aFixture.hardwareTests), .serialized, .offCooperativePool)
 struct RootMemorySmokeTests {
     @Test func rootPidsHaveRSSMatchingPs() throws {
         let sensor = RootMemorySensor()
