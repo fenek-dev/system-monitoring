@@ -65,6 +65,31 @@ private func isNotRequested<R>(_ r: SensorResult<R>) -> Bool { if case .notReque
         #expect(s.sampleCount == 3)
     }
 
+    @Test func overlayCadence() {
+        #expect(SensorCadence.everyTick.interval(in: .overlay) == .seconds(5))           // R1
+        #expect(SensorCadence.totals.interval(in: .overlay) == .zero)
+        #expect(SensorCadence.every(.seconds(2), background: nil).interval(in: .overlay) == nil)
+        #expect(SensorCadence.every(.seconds(2), background: .seconds(10)).interval(in: .overlay) == .seconds(10))
+        #expect(SensorCadence.every(.seconds(2), background: .seconds(3)).interval(in: .overlay) == .seconds(5))
+    }
+
+    /// R2: a 5-s sensor on a jittered 1-s overlay grid runs every 5 ticks; t = 4.99 counts thanks to the half-tick
+    /// slack instead of slipping to the 6.01 tick.
+    @Test func fiveSecondSensorOnJitteredOneSecondGridRunsEveryFiveTicks() {
+        let s = ScriptSensor([.success(1)])                                            // .everyTick → 5 s in overlay
+        let slot = SensorSlot(s, canary: .none)
+        let ticks = [0, 1.02, 1.98, 3.01, 4.00, 4.99, 6.01, 7.00, 8.03, 8.97, 10.01]
+        let fresh = ticks.map { isFresh(slot.sample(ctx($0, .overlay))) }
+        #expect(fresh == [true, false, false, false, false, true, false, false, false, false, true])
+        #expect(s.sampleCount == 3)
+    }
+
+    @Test func totalsRunEveryOverlayTick() {
+        let s = ScriptSensor(cadence: .totals, [.success(1)])
+        let slot = SensorSlot(s, canary: .none)
+        #expect([0, 1.0, 2.0, 3.0].allSatisfy { isFresh(slot.sample(ctx($0, .overlay))) })
+    }
+
     @Test func neverInBackgroundIsNotRequested() {
         let s = ScriptSensor(.temperatures, cadence: .every(.seconds(2)), [.success(1)])   // background nil
         let slot = SensorSlot(s, canary: .none)

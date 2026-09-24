@@ -47,23 +47,41 @@ public struct SensorCadence: Sendable, Equatable {
     public var interactive: Duration
     /// nil = never in background.
     public var background: Duration?
+    /// Overlay-mode interval; nil = the background cadence, at least the background tick (R1).
+    public var overlay: Duration?
     /// [] = always; else only when demand ∩ requires ≠ ∅.
     public var requires: SamplingDemand
 
-    public init(interactive: Duration = .zero, background: Duration? = nil, requires: SamplingDemand = []) {
+    public init(interactive: Duration = .zero, background: Duration? = nil, overlay: Duration? = nil,
+                requires: SamplingDemand = []) {
         self.interactive = interactive
         self.background = background
+        self.overlay = overlay
         self.requires = requires
     }
 
-    /// Every tick in both modes.
+    /// Interval in `mode`; nil = not sampled. Overlay without its own interval runs at `max(background, 5 s)`,
+    /// so every-tick sensors stay at 5 s there; a nil `background` means never.
+    public func interval(in mode: SamplingMode) -> Duration? {
+        switch mode {
+        case .interactive: interactive
+        case .background: background
+        case .paused: nil
+        case .overlay: overlay ?? background.map { max($0, SamplingMode.background.interval!) }
+        }
+    }
+
+    /// Every tick in interactive and background; background cadence (5 s) in overlay.
     public static let everyTick = SensorCadence(interactive: .zero, background: .zero)
+    /// Every tick in every mode, overlay included: the CPU, GPU and memory totals the overlay shows.
+    public static let totals = SensorCadence(interactive: .zero, background: .zero, overlay: .zero)
     /// Sampled once per launch; slots recognise it by equality (`cadence == .once`). The interval is a
     /// ~68-year sentinel, so arithmetic on it can't overflow a clock instant.
     public static let once = SensorCadence(interactive: .seconds(Int64(Int32.max)), background: .seconds(Int64(Int32.max)))
 
-    public static func every(_ d: Duration, background: Duration? = nil, requires: SamplingDemand = []) -> SensorCadence {
-        SensorCadence(interactive: d, background: background, requires: requires)
+    public static func every(_ d: Duration, background: Duration? = nil, overlay: Duration? = nil,
+                             requires: SamplingDemand = []) -> SensorCadence {
+        SensorCadence(interactive: d, background: background, overlay: overlay, requires: requires)
     }
 }
 
