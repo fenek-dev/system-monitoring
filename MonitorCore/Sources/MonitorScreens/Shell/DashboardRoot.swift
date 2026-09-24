@@ -1,9 +1,47 @@
+import MonitorLive
+import MonitorModel
+import MonitorUIKit
 import SwiftUI
 
-// W0b placeholder. W4 replaces this file.
-
+/// Dashboard window content (DESIGN §3.0): custom sidebar (220) + main column (page header 52 + page).
+/// Pages (W5) own their content padding (20) and scrolling; the shell gives them the area under the header on
+/// `bgWindow` and reads their `.pageHeader(…)` preferences. Needs the `telltaleEnvironment`.
 public struct DashboardRoot: View {
+    @Environment(NavigationModel.self) private var nav
+    @State private var headerConfig = PageHeaderConfig()
+
     public init() {}
 
-    public var body: some View { Text("Dashboard") }
+    public var body: some View {
+        HStack(spacing: 0) {
+            Sidebar()
+            VStack(spacing: 0) {
+                PageHeader(config: headerConfig)
+                Self.page(nav.page)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(ShellStyle.bgWindow)
+                    .onPreferenceChange(PageHeaderPreferenceKey.self) { headerConfig = $0 }
+            }
+        }
+        .frame(minWidth: ShellStyle.dashboardMinSize.width, minHeight: ShellStyle.dashboardMinSize.height)
+        .background(ShellStyle.bgWindow)
+        .ignoresSafeArea()
+        .onChange(of: nav.page) { headerConfig = PageHeaderConfig() }
+    }
+
+    /// Page registry (one place; W5 pages are built from their public `init()`).
+    @MainActor @ViewBuilder public static func page(_ page: DashboardPage) -> some View {
+        switch page {
+        case .overview: OverviewPage()
+        case .cpu: CPUPage()
+        case .gpu: GPUPage()
+        case .memory: MemoryPage()
+        case .network: NetworkPage()
+        case .thermals: ThermalsPage()
+        case .power: PowerPage()
+        case .disk: DiskPage()
+        case .processes: ProcessesPage()
+        case .history: HistoryPage()
+        }
+    }
 }
