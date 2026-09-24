@@ -118,13 +118,14 @@ struct MemoryPressureCard: View {
     @Environment(LiveModel.self) private var live
 
     var body: some View {
-        RangeSeriesReader([.memPressure]) { s in
+        RangeSeriesReader([.memPressure, .memPressureLevel]) { s in
             TTCard(spacing: TTSpace.x10) {
                 TTCardHeader("Memory pressure") {
                     TTLegend(items: [("Normal", TTColor.mem), ("Warning", TTColor.statusElevated),
                                      ("Critical", TTColor.statusCritical)])
                 }
-                MemoryPressureChart(points: s[.memPressure], levels: Self.levels(s[.memPressure], live: live))
+                MemoryPressureChart(points: s[.memPressure],
+                                    levels: Self.levels(s[.memPressureLevel], count: s[.memPressure].count, live: live))
                     .frame(minHeight: 150, maxHeight: .infinity)
                 TTTimeAxis(range: s.range, end: s.end)
             }
@@ -132,9 +133,19 @@ struct MemoryPressureCard: View {
         }
     }
 
-    /// Per-sample OS level. TODO(ICR 009): read `.memPressureLevel`; until then every sample takes the current level.
-    static func levels(_ points: [SeriesPoint], live: LiveModel) -> [MemoryPressureLevel] {
-        Array(repeating: live.memory.pressureLevel ?? .normal, count: points.count)
+    /// Per-sample OS level from `.memPressureLevel` (ICR-12). Store buckets hold a time-weighted average of the raw
+    /// value (1/2/4): > 2.5 → critical, > 1.0 → warning, else normal. A missing sample reuses the previous level
+    /// (the first falls back to the current level); arrays are aligned to the pressure series by index.
+    static func levels(_ raw: [SeriesPoint], count: Int, live: LiveModel) -> [MemoryPressureLevel] {
+        var last = live.memory.pressureLevel ?? .normal
+        return (0..<count).map { i in
+            if i < raw.count, let v = raw[i].value { last = level(v) }
+            return last
+        }
+    }
+
+    static func level(_ v: Double) -> MemoryPressureLevel {
+        v > 2.5 ? .critical : (v > 1.0 ? .warning : .normal)
     }
 }
 

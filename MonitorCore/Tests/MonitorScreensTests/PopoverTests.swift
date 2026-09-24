@@ -67,9 +67,9 @@ struct PopoverTests {
 
     @Test func expansionShowsTopThree() {
         let live = ScreenFixture.live(.calm)
-        let lines = PopoverModel.expansion(.cpu, live: live, units: UnitPreferences())
-        #expect(lines.count == 3)
-        #expect(lines.allSatisfy { $0.value.hasSuffix("%") })
+        let apps = PopoverModel.expansionApps(.cpu, live: live)
+        #expect(apps.count == 3)
+        #expect(zip(apps, apps.dropFirst()).allSatisfy { ($0.cpuPercent ?? 0) >= ($1.cpuPercent ?? 0) })
     }
 
     // MARK: Behaviour (recording AppCommands + mock ActionLog)
@@ -107,12 +107,12 @@ struct PopoverTests {
         ops.openDashboard()
         ops.openHistory()
         ops.quitTelltale()
-        ops.openPage(.thermals)                      // row double-click
-        ops.openApp(AppKey(kind: .app, id: "com.apple.dt.Xcode"))   // expansion line click
+        ops.openApp(AppKey(kind: .app, id: "com.apple.dt.Xcode"))   // top-consumer click
         ops.setPaused(true)
         ops.openSettings()
-        #expect(log.entries == ["open overview", "open history", "quitTelltale", "open thermals",
+        #expect(log.entries == ["open overview", "open history", "quitTelltale",
                                 "inspect com.apple.dt.Xcode", "paused true", "settings"])
+        // Row double-click / expansion-line clicks are TTPopoverRow's (W3), via the same `appCommands`.
     }
 
     @Test func rowExpansionToggles() {

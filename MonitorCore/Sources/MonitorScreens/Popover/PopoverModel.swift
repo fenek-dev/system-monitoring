@@ -98,32 +98,10 @@ enum PopoverModel {
 
     // MARK: Expansion
 
-    struct AppLine: Equatable, Identifiable {
-        var id: AppKey { key }
-        var key: AppKey
-        var identity: AppIdentity
-        var name: String
-        var value: String
-    }
-
-    /// Top 3 apps for the category's key (ARCHITECTURE §5.5) with the DESIGN §2.22 metric per row.
-    static func expansion(_ c: MonitorModel.Category, live: LiveModel, units: UnitPreferences) -> [AppLine] {
-        live.topApps(c, count: 3).map { a in
-            let value: String = switch c {
-            case .cpu: TTFormat.cpuPercent(a.cpuPercent)
-            case .gpu: TTFormat.cpuPercent(a.gpuPercent)
-            case .memory: TTFormat.memory(a.memory, style: .detail)
-            case .network: TTFormat.rate(sum(a.netRxBps, a.netTxBps), units: units)
-            case .thermals, .power: TTFormat.appWatts(a.energyWatts)
-            case .disk: TTFormat.diskRate(sum(a.diskReadBps, a.diskWriteBps))
-            }
-            return AppLine(key: a.identity.key, identity: a.identity, name: a.name, value: value)
-        }
-    }
-
-    private static func sum(_ a: Double?, _ b: Double?) -> Double? {
-        if a == nil && b == nil { return nil }
-        return (a ?? 0) + (b ?? 0)
+    /// Top 3 app groups for the category's key (ARCHITECTURE §5.5, cached per apply by `LiveModel`); `TTPopoverRow`
+    /// formats the DESIGN §2.22 metric per line.
+    static func expansionApps(_ c: MonitorModel.Category, live: LiveModel) -> [AppSample] {
+        live.topApps(c, count: 3)
     }
 
     // MARK: Top consumer
@@ -221,7 +199,6 @@ struct PopoverActions {
     var actions: ProcessActions
     var live: LiveModel
 
-    func openPage(_ c: MonitorModel.Category) { commands.openDashboard(c.dashboardPage) }
     func openApp(_ key: AppKey) { commands.inspectApp(key) }
     func openDashboard() { commands.openDashboard(.overview) }
     func openHistory() { commands.openDashboard(.history) }

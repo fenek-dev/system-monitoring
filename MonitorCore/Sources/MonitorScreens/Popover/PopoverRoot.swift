@@ -32,10 +32,11 @@ public struct PopoverRoot: View {
                                    feedback: $feedback)
             PopoverDivider()
             if let feedback {
-                Text(feedback).font(TTFont.caption).foregroundStyle(TTColor.statusElevated).lineLimit(1)
+                TTToast(feedback)
                     .padding(.horizontal, 10).padding(.top, 2)
+                    .transition(.opacity)
                     .task(id: feedback) {
-                        try? await Task.sleep(for: .seconds(4))
+                        try? await Task.sleep(for: TTToast.lifetime)
                         self.feedback = nil
                     }
             }
@@ -67,14 +68,10 @@ struct PopoverCategoryRow: View {
     let toggle: () -> Void
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
-    @Environment(\.appCommands) private var commands
-    @Environment(\.processActions) private var actions
 
     var body: some View {
-        let ops = PopoverActions(commands: commands, actions: actions, live: live)
         PopoverRowView(row: PopoverModel.row(category, live: live, units: units), expanded: expanded,
-                       lines: expanded ? PopoverModel.expansion(category, live: live, units: units) : [],
-                       toggle: toggle, openPage: { ops.openPage(category) }, openApp: { ops.openApp($0) })
+                       topApps: expanded ? PopoverModel.expansionApps(category, live: live) : [], toggle: toggle)
             .equatable()
     }
 }

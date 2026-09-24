@@ -243,15 +243,16 @@ struct ForceQuitHost: ViewModifier {
             .environment(\.requestForceQuit, { target in pending = target })
             .overlay {
                 if let target = pending {
-                    ZStack(alignment: .top) {
-                        TTColor.bgScrim.ignoresSafeArea()
-                            .onTapGesture {}
-                        ForceQuitDialog(name: target.displayName, onConfirm: {
-                            pending = nil
-                            Task { _ = await actions.forceQuit(target) }
-                        }, onCancel: { pending = nil })
-                    }
-                    .transition(.opacity)
+                    // Page-level overlay: the shell owns the window, so the scrim covers the page, not the sidebar.
+                    TTConfirmDialog(title: "Force quit “\(target.displayName)”?",
+                                    message: "Unsaved changes will be lost. The process ends immediately without cleanup.",
+                                    confirmTitle: "Force Quit",
+                                    onConfirm: {
+                                        pending = nil
+                                        Task { _ = await actions.forceQuit(target) }
+                                    },
+                                    onCancel: { pending = nil })
+                        .transition(TTConfirmDialog.transition)
                 }
             }
             .animation(.easeOut(duration: 0.15), value: pending != nil)
@@ -260,39 +261,6 @@ struct ForceQuitHost: ViewModifier {
 
 extension View {
     func forceQuitHost() -> some View { modifier(ForceQuitHost()) }
-}
-
-// TODO(W3): replace with `TTConfirmDialog` once W3 lands it (the W0b stub draws nothing).
-/// DESIGN §2.26: 380 wide, top just under the header, `bgElevated`, 1-pt `borderPopover`, radius 12,
-/// `shadowDialog`, padding 20, VStack gap 12: title `dialogTitle`, body `body12Para` `textSecondary`, right-aligned
-/// [Cancel][Force Quit] (gap 8, 4 top padding). Esc = Cancel; no default button.
-struct ForceQuitDialog: View {
-    let name: String
-    let onConfirm: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: TTRadius.window, style: .continuous)
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Force quit “\(name)”?").font(TTFont.dialogTitle).foregroundStyle(TTColor.textPrimary)
-            Text("Unsaved changes will be lost. The process ends immediately without cleanup.")
-                .font(TTFont.body12Para).lineSpacing(TTFont.body12ParaSpacing)
-                .foregroundStyle(TTColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Spacer()
-                Button("Cancel", action: onCancel).buttonStyle(TTButtonStyle(.regularSecondary))
-                    .keyboardShortcut(.cancelAction)
-                Button("Force Quit", action: onConfirm).buttonStyle(TTButtonStyle(.regularDestructive))
-            }
-            .padding(.top, 4)
-        }
-        .padding(20)
-        .frame(width: 380)
-        .background(shape.fill(TTColor.bgElevated))
-        .overlay(shape.strokeBorder(TTColor.borderPopover, lineWidth: 1))
-        .shadow(color: .black.opacity(0.55), radius: 30, y: 24)
-    }
 }
 
 /// DESIGN §2.20 170-wide actions cell (CPU, Power tables): a selected, controllable row shows [Quit][Force Quit]

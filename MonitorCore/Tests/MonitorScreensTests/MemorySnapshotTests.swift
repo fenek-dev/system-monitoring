@@ -42,6 +42,19 @@ struct MemorySnapshotTests {
         #expect(runs[2].1.map { $0.value != nil } == [false, false, false, false, true])
     }
 
+    /// ICR-12: bucket averages map > 2.5 → critical, > 1.0 → warning, else normal; gaps keep the previous level.
+    @Test func pressureLevelsFromStoredMetric() {
+        #expect(MemoryPressureCard.level(1.0) == .normal)
+        #expect(MemoryPressureCard.level(1.4) == .warning)
+        #expect(MemoryPressureCard.level(2.6) == .critical)
+        let live = ScreenFixture.live(.calm)
+        let t = Date(timeIntervalSince1970: 0)
+        let raw = [1.0, 2.0, nil, 4.0].enumerated().map { SeriesPoint(time: t.addingTimeInterval(Double($0.offset)), value: $0.element) }
+        #expect(MemoryPressureCard.levels(raw, count: 4, live: live) == [.normal, .warning, .warning, .critical])
+        #expect(MemoryPressureCard.levels(ScreenFixture.live(.memoryWarning).series(.memPressureLevel), count: 1,
+                                          live: live).first != nil)
+    }
+
     /// Ruling: the consumers table has no Compressed/Private/Ports columns; restricted groups sort last ("—").
     @Test func consumersSortedByMemory() {
         let rows = MemoryConsumersCard.rows(ScreenFixture.live(.restricted))
