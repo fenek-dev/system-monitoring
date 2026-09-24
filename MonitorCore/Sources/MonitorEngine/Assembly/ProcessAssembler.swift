@@ -25,12 +25,16 @@ struct ProcessAssembly {
     var samples: [ProcessSample] = []
     var identities: [AppKey: AppIdentity] = [:]
     var identityByPID: [Int32: AppIdentity] = [:]
+    /// Counter deltas of readings that advanced this tick only (a `.cached` reading contributes nothing), so session
+    /// totals never count the same interval twice.
     var deltas: [ProcessID: ProcessDelta] = [:]
     /// GPU/net that belongs to no live process (→ `.system`).
     var unattributed = UnattributedUsage()
     var unattributedDelta = ProcessDelta()
-    /// Seconds covered by the process table's rates (nil on first sight).
+    /// Seconds covered by the process table's rates (nil on first sight; the previous value for a cached reading).
     var interval: Double?
+    /// The process table's capturedNs advanced this tick (fresh deltas).
+    var advanced = false
 }
 
 /// Interval between successive readings of one sensor, by `capturedNs` (same semantics as `RateCalculator`).
@@ -38,13 +42,18 @@ struct CaptureClock: Sendable {
     private var last: UInt64?
     private var seconds: Double?
 
-    mutating func advance(to capturedNs: UInt64?) -> Double? {
-        guard let capturedNs else { return nil }
+    /// `seconds`: interval behind the current rates (kept for a cached reading). `advanced`: capturedNs moved forward,
+    /// i.e. this tick's counter deltas are new.
+    mutating func advance(to capturedNs: UInt64?) -> (seconds: Double?, advanced: Bool) {
+        guard let capturedNs else { return (nil, false) }
         defer { last = capturedNs }
-        guard let last else { seconds = nil; return nil }
-        if capturedNs == last { return seconds }
+        guard let last else {
+            seconds = nil
+            return (nil, false)
+        }
+        if capturedNs == last { return (seconds, false) }
         seconds = capturedNs > last ? Double(capturedNs - last) / 1e9 : nil
-        return seconds
+        return (seconds, seconds != nil)
     }
 
     mutating func reset() { self = CaptureClock() }
@@ -76,6 +85,9 @@ struct ProcessAssembler {
     private var processClock = CaptureClock()
     private var gpuClock = CaptureClock()
     private var netClock = CaptureClock()
+    /// NStat `ProcessID(pid, 0)` → the live process it was first matched to. Pins the loose id to that process, so a
+    /// later pid reuse doesn't inherit its bytes (closedBytes keep the loose key after the process exits).
+    private var looseOwners: [Int32: ProcessID] = [:]
     private var userNames: [UInt32: String] = [:]
 
     init(currentUID: uid_t = getuid()) {
@@ -89,6 +101,7 @@ struct ProcessAssembler {
     mutating func reset() {
         cpu.reset(); energy.reset(); diskRead.reset(); diskWrite.reset(); gpu.reset(); netRx.reset(); netTx.reset()
         processClock.reset(); gpuClock.reset(); netClock.reset()
+        looseOwners.removeAll()
     }
 
     mutating func assemble(_ input: ProcessInputs, resolver: any AppResolving) -> ProcessAssembly {
@@ -96,7 +109,9 @@ struct ProcessAssembler {
         guard let table = input.processes.value, let capturedNs = input.processes.capturedNs else {
             return out
         }
-        out.interval = processClock.advance(to: capturedNs)
+        let clock = processClock.advance(to: capturedNs)
+        out.interval = clock.seconds
+        out.advanced = clock.advanced
 
         let raws = table.processes
         var rawByPID: [Int32: RawProcess] = [:]
@@ -126,7 +141,7 @@ struct ProcessAssembler {
 
             if let ns = r.cpuTimeNs, let d = cpu.delta(for: r.id, counter: ns, capturedNs: capturedNs), d.seconds > 0 {
                 s.cpuPercent = Double(d.delta) / d.seconds / 1e7
-                out.deltas[r.id, default: ProcessDelta()].cpuNs = d.delta
+                if clock.advanced { out.deltas[r.id, default: ProcessDelta()].cpuNs = d.delta }
             }
             if let nj = r.energyNJ, let w = energy.rate(for: r.id, counter: nj, capturedNs: capturedNs) {
                 s.energyWatts = w / 1e9
@@ -147,10 +162,9 @@ struct ProcessAssembler {
         var index: [ProcessID: Int] = [:]
         index.reserveCapacity(out.samples.count)
         for (i, s) in out.samples.enumerated() { index[s.id] = i }
-        let liveByPID = rawByPID.mapValues(\.id)
 
-        assembleGPU(input.gpuClients, liveByPID: liveByPID, index: index, into: &out)
-        assembleNetwork(input.flows, live: live, liveByPID: liveByPID, index: index, into: &out)
+        assembleGPU(input.gpuClients, rawByPID: rawByPID, index: index, into: &out)
+        assembleNetwork(input.flows, live: live, rawByPID: rawByPID, index: index, into: &out)
 
         cpu.prune(keeping: live)
         energy.prune(keeping: live)
@@ -162,10 +176,10 @@ struct ProcessAssembler {
 
     // MARK: - GPU (AGX per client → per pid)
 
-    private mutating func assembleGPU(_ result: SensorResult<GPUClientsReading>, liveByPID: [Int32: ProcessID],
+    private mutating func assembleGPU(_ result: SensorResult<GPUClientsReading>, rawByPID: [Int32: RawProcess],
                                       index: [ProcessID: Int], into out: inout ProcessAssembly) {
         guard let reading = result.value, let capturedNs = result.capturedNs else { return }
-        let seconds = gpuClock.advance(to: capturedNs)
+        let clock = gpuClock.advance(to: capturedNs)
         var deltaByPID: [Int32: UInt64] = [:]
         var totalByPID: [Int32: UInt64] = [:]
         var keys = Set<GPUClientKey>()
@@ -173,7 +187,7 @@ struct ProcessAssembler {
         for c in reading.clients {
             let key = GPUClientKey(clientID: c.clientID, pid: c.pid, creator: c.creatorName)
             keys.insert(key)
-            totalByPID[c.pid, default: 0] = Self.saturatingAdd(totalByPID[c.pid] ?? 0, c.gpuTimeNs)
+            totalByPID[c.pid] = Self.saturatingAdd(totalByPID[c.pid] ?? 0, c.gpuTimeNs)
             // first sight / reset / recreated client → no delta: contributes 0 this tick (never a wrapped value)
             if let d = gpu.delta(for: key, counter: c.gpuTimeNs, capturedNs: capturedNs) {
                 deltaByPID[c.pid] = Self.saturatingAdd(deltaByPID[c.pid] ?? 0, d.delta)
@@ -182,18 +196,18 @@ struct ProcessAssembler {
         gpu.prune(keeping: keys)
 
         for (pid, total) in totalByPID {
-            if let id = liveByPID[pid], let i = index[id] { out.samples[i].gpuTimeNs = total }
+            if let id = rawByPID[pid]?.id, let i = index[id] { out.samples[i].gpuTimeNs = total }
         }
-        guard let seconds, seconds > 0 else { return }
+        guard let seconds = clock.seconds, seconds > 0 else { return }
         for i in out.samples.indices { out.samples[i].gpuPercent = 0 }
         for (pid, delta) in deltaByPID {
             let percent = Double(delta) / seconds / 1e7
-            if let id = liveByPID[pid], let i = index[id] {
+            if let id = rawByPID[pid]?.id, let i = index[id] {
                 out.samples[i].gpuPercent = percent
-                out.deltas[id, default: ProcessDelta()].gpuNs = delta
-            } else {
+                if clock.advanced { out.deltas[id, default: ProcessDelta()].gpuNs = delta }
+            } else if delta > 0 {
                 out.unattributed.gpuPercent = (out.unattributed.gpuPercent ?? 0) + percent
-                out.unattributedDelta.gpuNs = Self.saturatingAdd(out.unattributedDelta.gpuNs, delta)
+                if clock.advanced { out.unattributedDelta.gpuNs = Self.saturatingAdd(out.unattributedDelta.gpuNs, delta) }
             }
         }
     }
@@ -201,69 +215,79 @@ struct ProcessAssembler {
     // MARK: - Network (NStat per ProcessID)
 
     private mutating func assembleNetwork(_ result: SensorResult<NetworkFlowsReading>, live: Set<ProcessID>,
-                                          liveByPID: [Int32: ProcessID], index: [ProcessID: Int],
+                                          rawByPID: [Int32: RawProcess], index: [ProcessID: Int],
                                           into out: inout ProcessAssembly) {
         guard let reading = result.value, let capturedNs = result.capturedNs else { return }
-        let seconds = netClock.advance(to: capturedNs)
+        let clock = netClock.advance(to: capturedNs)
 
         // Cumulative bytes per reported ProcessID (live flows + closed flows) — keyed by the reported id so an
         // exited process's counter simply stops growing (no spike when it becomes unresolvable).
         var cumulative: [ProcessID: ByteCounts] = reading.closedBytes
-        var flowCount: [ProcessID: Int] = [:]
         for f in reading.flows {
             var c = cumulative[f.process] ?? ByteCounts()
             c.rx = Self.saturatingAdd(c.rx, f.rxBytes)
             c.tx = Self.saturatingAdd(c.tx, f.txBytes)
             cumulative[f.process] = c
-            if let owner = resolve(f.process, live: live, liveByPID: liveByPID) { flowCount[owner, default: 0] += 1 }
         }
+        var owners: [ProcessID: ProcessID] = [:]
+        owners.reserveCapacity(cumulative.count)
+        for id in cumulative.keys {
+            if let owner = resolve(id, live: live, rawByPID: rawByPID) { owners[id] = owner }
+        }
+        looseOwners = looseOwners.filter { cumulative[ProcessID(pid: $0.key, startTimeUs: 0)] != nil }
 
-        let hasRates = seconds.map { $0 > 0 } ?? false
-        if hasRates {
-            for i in out.samples.indices {
+        var flowCount: [ProcessID: Int] = [:]
+        for f in reading.flows { if let owner = owners[f.process] { flowCount[owner, default: 0] += 1 } }
+
+        let seconds = clock.seconds.flatMap { $0 > 0 ? $0 : nil }
+        for i in out.samples.indices {
+            out.samples[i].connectionCount = flowCount[out.samples[i].id] ?? 0
+            if seconds != nil {
                 out.samples[i].netRxBps = 0
                 out.samples[i].netTxBps = 0
             }
         }
-        for i in out.samples.indices { out.samples[i].connectionCount = flowCount[out.samples[i].id] ?? 0 }
 
         var keys = Set<NetKey>([.unattributed])
         keys.reserveCapacity(cumulative.count + 1)
         func account(_ key: NetKey, _ bytes: ByteCounts, owner: ProcessID?, out: inout ProcessAssembly) {
             keys.insert(key)
-            if let owner, let i = index[owner] {
+            let slot = owner.flatMap { index[$0] }
+            if let i = slot {
                 out.samples[i].netRxTotal = Self.saturatingAdd(out.samples[i].netRxTotal ?? 0, bytes.rx)
                 out.samples[i].netTxTotal = Self.saturatingAdd(out.samples[i].netTxTotal ?? 0, bytes.tx)
             }
             let rx = netRx.delta(for: key, counter: bytes.rx, capturedNs: capturedNs)
             let tx = netTx.delta(for: key, counter: bytes.tx, capturedNs: capturedNs)
-            guard hasRates, let seconds else { return }
-            let rxBps = rx.map { Double($0.delta) / seconds }, txBps = tx.map { Double($0.delta) / seconds }
-            if let owner, let i = index[owner] {
-                if let rxBps { out.samples[i].netRxBps! += rxBps }
-                if let txBps { out.samples[i].netTxBps! += txBps }
-                out.deltas[owner, default: ProcessDelta()].rx += rx?.delta ?? 0
-                out.deltas[owner, default: ProcessDelta()].tx += tx?.delta ?? 0
+            guard let seconds else { return }
+            let rxBps = Double(rx?.delta ?? 0) / seconds, txBps = Double(tx?.delta ?? 0) / seconds
+            let delta = ProcessDelta(rx: clock.advanced ? rx?.delta ?? 0 : 0, tx: clock.advanced ? tx?.delta ?? 0 : 0)
+            if let i = slot, let owner {
+                out.samples[i].netRxBps = (out.samples[i].netRxBps ?? 0) + rxBps
+                out.samples[i].netTxBps = (out.samples[i].netTxBps ?? 0) + txBps
+                out.deltas[owner, default: ProcessDelta()].accumulate(delta)
             } else {
-                if let rxBps { out.unattributed.netRxBps = (out.unattributed.netRxBps ?? 0) + rxBps }
-                if let txBps { out.unattributed.netTxBps = (out.unattributed.netTxBps ?? 0) + txBps }
-                out.unattributedDelta.rx = Self.saturatingAdd(out.unattributedDelta.rx, rx?.delta ?? 0)
-                out.unattributedDelta.tx = Self.saturatingAdd(out.unattributedDelta.tx, tx?.delta ?? 0)
+                // only real traffic creates/grows the System share (no 0 B/s "System" row out of nothing)
+                if rxBps > 0 { out.unattributed.netRxBps = (out.unattributed.netRxBps ?? 0) + rxBps }
+                if txBps > 0 { out.unattributed.netTxBps = (out.unattributed.netTxBps ?? 0) + txBps }
+                out.unattributedDelta.accumulate(delta)
             }
         }
-        for (pid, bytes) in cumulative {
-            account(.process(pid), bytes, owner: resolve(pid, live: live, liveByPID: liveByPID), out: &out)
-        }
+        for (id, bytes) in cumulative { account(.process(id), bytes, owner: owners[id], out: &out) }
         account(.unattributed, reading.unattributedBytes, owner: nil, out: &out)
 
         netRx.prune(keeping: keys)
         netTx.prune(keeping: keys)
     }
 
-    /// `ProcessID(pid, 0)` matches the live process with that pid; else exact match; else nil (→ `.system`).
-    private func resolve(_ id: ProcessID, live: Set<ProcessID>, liveByPID: [Int32: ProcessID]) -> ProcessID? {
-        if id.startTimeUs == 0 { return liveByPID[id.pid] }
-        return live.contains(id) ? id : nil
+    /// Exact `ProcessID` when live; `ProcessID(pid, 0)` → the live process it was first matched to (pinned, so pid
+    /// reuse doesn't inherit it), else the live process with that pid; nil (→ `.system`) otherwise.
+    private mutating func resolve(_ id: ProcessID, live: Set<ProcessID>, rawByPID: [Int32: RawProcess]) -> ProcessID? {
+        guard id.startTimeUs == 0 else { return live.contains(id) ? id : nil }
+        if let pinned = looseOwners[id.pid] { return live.contains(pinned) ? pinned : nil }
+        guard let current = rawByPID[id.pid]?.id else { return nil }
+        looseOwners[id.pid] = current
+        return current
     }
 
     // MARK: - Helpers

@@ -217,6 +217,51 @@ import Testing
         #expect(a.samples[pid: 10]?.connectionCount == nil)
     }
 
+    @Test func loosePidDoesNotLeakIntoReusedPid() {
+        var pa = ProcessAssembler(currentUID: testUID)
+        let loose = ProcessID(pid: 10, startTimeUs: 0)
+        _ = run(&pa, [own(10, start: 1)], at: sec, flows: flows([FlowCounter(flowID: 1, process: loose, rxBytes: 100)], at: sec))
+        _ = run(&pa, [own(10, start: 1)], at: 2 * sec, flows: flows([FlowCounter(flowID: 1, process: loose, rxBytes: 200)], at: 2 * sec))
+        // process exits, pid 10 reused by a new process; the old process's bytes stay keyed (10, 0) in closedBytes
+        let a = run(&pa, [own(10, start: 9)], at: 3 * sec,
+                    flows: flows([], closed: [loose: ByteCounts(rx: 5_000, tx: 0)], at: 3 * sec))
+        #expect(a.samples[pid: 10]?.netRxTotal == nil)          // not inherited
+        #expect(a.samples[pid: 10]?.netRxBps == 0)
+        #expect(a.unattributed.netRxBps == 4_800)                 // the old process's last bytes → System
+    }
+
+    // MARK: cached readings never double count session deltas
+
+    @Test func cachedReadingsYieldNoSessionDeltas() throws {
+        var pa = ProcessAssembler(currentUID: testUID)
+        let ps = [own(10, cpuNs: 0)]
+        let id = ProcessID(pid: 10, startTimeUs: 1)
+        func g(_ ns: UInt64) -> GPUClientsReading {
+            GPUClientsReading(clients: [GPUClientCounter(clientID: 1, pid: 10, creatorName: "a", gpuTimeNs: ns),
+                                        GPUClientCounter(clientID: 2, pid: 99, creatorName: "gone", gpuTimeNs: ns)])
+        }
+        func f(_ b: UInt64) -> NetworkFlowsReading {
+            NetworkFlowsReading(flows: [FlowCounter(flowID: 1, process: id, rxBytes: b, txBytes: b)], unattributedBytes: ByteCounts(rx: b, tx: 0))
+        }
+        _ = run(&pa, ps, at: sec, gpu: .fresh(g(0), capturedNs: sec), flows: .fresh(f(0), capturedNs: sec))
+        let fresh = run(&pa, [own(10, cpuNs: sec)], at: 2 * sec, gpu: .fresh(g(sec), capturedNs: 2 * sec),
+                        flows: .fresh(f(1_000), capturedNs: 2 * sec))
+        #expect(fresh.deltas[id] == ProcessDelta(cpuNs: sec, gpuNs: sec, rx: 1_000, tx: 1_000))
+        #expect(fresh.unattributedDelta == ProcessDelta(gpuNs: sec, rx: 1_000))
+        #expect(fresh.advanced)
+
+        let cached = pa.assemble(ProcessInputs(
+            processes: .cached(ProcessTableReading(processes: [own(10, cpuNs: sec)]), capturedNs: 2 * sec),
+            gpuClients: .cached(g(sec), capturedNs: 2 * sec), flows: .cached(f(1_000), capturedNs: 2 * sec),
+            uptimeNs: 3 * sec), resolver: resolver)
+        #expect(!cached.advanced)
+        #expect(cached.deltas.values.allSatisfy { $0 == ProcessDelta() })
+        #expect(cached.unattributedDelta == ProcessDelta())
+        // …while the displayed rates stay the previous ones
+        let p = try #require(cached.samples[pid: 10])
+        #expect(p.cpuPercent == 100 && p.gpuPercent == 100 && p.netRxBps == 1_000)
+    }
+
     // MARK: misc
 
     @Test func sleepAssertions() {

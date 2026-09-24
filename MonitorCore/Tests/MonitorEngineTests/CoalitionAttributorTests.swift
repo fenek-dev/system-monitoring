@@ -103,13 +103,66 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
     }
 
     @Test func tinyResidualBelowThresholdsMakesNoSyntheticRow() {
-        var ps = [restricted(7, cid: 9), restricted(8, cid: 9)]
+        // one measured member with a v6 value → v6 mode
+        var ps = [restricted(7, cid: 9), restricted(8, cid: 9), measured(20, cid: 9, cpu: 0, watts: 0.1)]
         var ca = CoalitionAttributor(minResidualCPUPercent: 0.5, minResidualWatts: 0.05)
-        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0.2, watts: 0.01), 7, [7, 8])]), identities: [:]).isEmpty)
-        // energy alone above its threshold is enough
-        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0.2, watts: 0.5), 7, [7, 8])]), identities: [:]).count == 1)
+        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0.2, watts: 0.12), 7, [7, 8, 20])]), identities: [:]).isEmpty)
+        // energy residual alone above its threshold is enough (v6 mode)
+        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0.2, watts: 0.5), 7, [7, 8, 20])]), identities: [:]).count == 1)
         // disk alone is enough
-        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0, diskR: 4_096), 7, [7, 8])]), identities: [:]).count == 1)
+        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0, diskR: 4_096), 7, [7, 8, 20])]), identities: [:]).count == 1)
+    }
+
+    @Test func fallbackModeEnergyDoesNotMakeRowsSignificant() {
+        // no measured v6 anywhere: whole-coalition watts must not create a row for a tiny CPU residual
+        var ps = [restricted(7, cid: 9), restricted(8, cid: 9), measured(20, cid: 9, cpu: 0)]
+        var ca = CoalitionAttributor()
+        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0.2, watts: 3), 7, [7, 8, 20])]), identities: [:]).isEmpty)
+    }
+
+    @Test func belowThresholdTooltipNamesLeaderApp() {
+        var ps = [restricted(7, cid: 9, name: "backupd"), restricted(8, cid: 9)]
+        var ca = CoalitionAttributor()
+        let app = AppIdentity(key: AppKey(kind: .app, id: "com.apple.TimeMachine"), displayName: "Time Machine")
+        #expect(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 0.1), 7, [7, 8])]), identities: [7: app]).isEmpty)
+        #expect(ps[pid: 8]?.coalitionLeaderName == "Time Machine")
+    }
+
+    @Test func leaderNameSetEvenWithoutDelta() {
+        var ps = [restricted(7, cid: 9, name: "WindowServer"), restricted(8, cid: 9)]
+        var ca = CoalitionAttributor()
+        let firstTick = CoalitionDeltas(byID: [:], membership: [9: CoalitionUsage(id: 9, leaderPID: 7, memberPIDs: [7, 8])])
+        #expect(ca.attribute(&ps, coalitions: firstTick, identities: [:]).isEmpty)
+        #expect(ps[pid: 8]?.coalitionLeaderName == "WindowServer")
+        #expect(ps[pid: 8]?.provenance == .restricted)
+    }
+
+    @Test func leaderPidOutsideTheCoalitionIsNotTheLeader() throws {
+        // pid 7 was the leader of coalition 9 but got reused by a process in coalition 3
+        var ps = [measured(7, cid: 3, cpu: 1), restricted(8, cid: 9), restricted(10, cid: 9)]
+        var ca = CoalitionAttributor()
+        let row = try #require(ca.attribute(&ps, coalitions: deltas([9: (delta(cpu: 5), 7, [8, 10])]), identities: [:]).first)
+        #expect(row.name == "System" && row.app == .system)
+    }
+
+    // Ruling: keep the single-fill rule. A visible member that exits mid-interval is missing from Σ visible, so its
+    // last-interval work leaks into the residual.
+    @Test func exitedVisibleMemberLeaksIntoSingleFill() {
+        // coalition work 70 % = restricted 30 % + live visible 20 % + visible that exited 20 %
+        var ps = [measured(10, cid: 5, cpu: 20), restricted(418, cid: 5)]
+        var ca = CoalitionAttributor()
+        _ = ca.attribute(&ps, coalitions: deltas([5: (delta(cpu: 70), 10, [10, 418])]), identities: [:])
+        #expect(abs(ps[pid: 418]!.cpuPercent! - 50) < 1e-9)   // 30 + the exited member's 20
+    }
+
+    @Test func exitedVisibleMemberLeaksIntoSyntheticRowOfLeaderApp() throws {
+        let leaderApp = AppIdentity(key: AppKey(kind: .app, id: "com.x.leader"), displayName: "Leader")
+        var ps = [measured(10, cid: 5, cpu: 20), restricted(418, cid: 5), restricted(419, cid: 5)]
+        var ca = CoalitionAttributor()
+        let row = try #require(ca.attribute(&ps, coalitions: deltas([5: (delta(cpu: 70), 10, [10, 418, 419])]),
+                                            identities: [10: leaderApp]).first)
+        #expect(abs(row.cpuPercent! - 50) < 1e-9)
+        #expect(row.app == leaderApp.key)
     }
 
     @Test func singleRestrictedMemberFilledEvenBelowThreshold() {
@@ -201,6 +254,100 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
                 }
             }
         }
+    }
+
+    /// Default thresholds, clamp cases, nil-CPU visible members, v6 energy; invariants at row, app and energy level.
+    @Test func noDoubleCountAppLevelAndEnergyProperty() {
+        var rng = SplitMix64(seed: 0xC0A1_1710)
+        let apps = (0..<5).map { AppKey(kind: .app, id: "app\($0)") }
+        var clampRounds = 0, droppedRounds = 0
+        for round in 0..<200 {
+            var ca = CoalitionAttributor()                           // 0.5 %, 0.05 W
+            var ps: [ProcessSample] = []
+            var byID: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int32])] = [:]
+            var expectedResidualCPU: [UInt64: Double] = [:]          // emitted residual per restricted coalition
+            var visCPUByID: [UInt64: Double] = [:], visWattsByID: [UInt64: Double] = [:], coalWatts: [UInt64: Double] = [:]
+            var pid: Int32 = 1
+            for c in 0..<Int.random(in: 1...6, using: &rng) {
+                let cid = UInt64(round * 10 + c + 1)
+                let visible = Int.random(in: 0...4, using: &rng), hidden = Int.random(in: 0...3, using: &rng)
+                guard visible + hidden > 0 else { continue }
+                var members: [Int32] = []
+                var visCPU = 0.0, visR = 0.0, visW = 0.0, visWatts = 0.0
+                for _ in 0..<visible {
+                    let cpu: Double? = Int.random(in: 0..<10, using: &rng) == 0 ? nil : Double.random(in: 0...150, using: &rng)
+                    let r = Double(Int.random(in: 0...10_000, using: &rng)), w = Double(Int.random(in: 0...10_000, using: &rng))
+                    let watts = Double.random(in: 0...3, using: &rng)
+                    var p = measured(pid, cid: cid, cpu: cpu, diskR: r, diskW: w, watts: watts)
+                    p.app = apps.randomElement(using: &rng)!
+                    ps.append(p)
+                    visCPU += cpu ?? 0; visR += r; visW += w; visWatts += watts
+                    members.append(pid); pid += 1
+                }
+                for _ in 0..<hidden {
+                    ps.append(restricted(pid, cid: cid))
+                    members.append(pid); pid += 1
+                }
+                let mode = Int.random(in: 0..<6, using: &rng)
+                let seconds = Double.random(in: 0.5...5, using: &rng)
+                // mode 0: coalition below Σ visible (clamp); mode 1: tiny residual, no disk (threshold drop); else normal
+                let cpuC = mode == 0 ? visCPU * 0.9 : (mode == 1 ? visCPU + 0.1 : visCPU + Double.random(in: 0...200, using: &rng))
+                let extraR = mode <= 1 ? 0 : Double(Int.random(in: 0...50_000, using: &rng))
+                let extraW = mode <= 1 ? 0 : Double(Int.random(in: 0...50_000, using: &rng))
+                let wattsC = mode == 0 ? visWatts * 0.8 : (mode == 1 ? visWatts + 0.01 : visWatts + Double.random(in: 0...5, using: &rng))
+                let d = CoalitionDelta(cpuNs: UInt64((cpuC * 1e7 * seconds).rounded(.up)),
+                                       energyNJ: UInt64((wattsC * 1e9 * seconds).rounded(.up)),
+                                       diskR: UInt64(((visR + extraR) * seconds).rounded(.up)),
+                                       diskW: UInt64(((visW + extraW) * seconds).rounded(.up)), seconds: seconds)
+                byID[cid] = (d, members.first, members)
+                visCPUByID[cid] = visCPU
+                visWattsByID[cid] = visWatts
+                coalWatts[cid] = d.watts!
+                if hidden > 0 {
+                    let res = max(0, d.cpuPercent - visCPU)
+                    let resDisk = max(0, d.diskReadBps! - visR) + max(0, d.diskWriteBps! - visW)
+                    let resW = max(0, d.watts! - visWatts)
+                    let emitted = hidden == 1 || res >= 0.5 || resW >= 0.05 || resDisk > 0
+                    expectedResidualCPU[cid] = emitted ? res : 0
+                    if d.cpuPercent < visCPU { clampRounds += 1 }
+                    if !emitted { droppedRounds += 1 }
+                }
+            }
+            let before = ps
+            let synthetic = ca.attribute(&ps, coalitions: deltas(byID), identities: [:])
+            var all = ps + synthetic
+
+            // row level
+            for (cid, _) in byID {
+                let rows = all.filter { $0.coalitionID == cid }
+                if let res = expectedResidualCPU[cid] {
+                    let got = rows.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+                    #expect(abs(got - (visCPUByID[cid]! + res)) < 1e-6, "round \(round) cid \(cid)")
+                } else {
+                    #expect(rows == before.filter { $0.coalitionID == cid }, "all-visible coalition changed")
+                }
+            }
+
+            // app level: Σ app CPU == Σ visible + Σ emitted residuals
+            let grouped = AppGrouper.group(all, identities: [:])
+            let appCPU = grouped.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+            let expectedCPU = visCPUByID.values.reduce(0, +) + expectedResidualCPU.values.reduce(0, +)
+            #expect(abs(appCPU - expectedCPU) < 1e-6, "round \(round) app-level")
+
+            // energy (v6 mode): Σ W over a restricted coalition == max(coalition W, Σ visible v6) when a residual row exists
+            guard all.contains(where: { $0.provenance == .measured }) else { continue }   // no v6 value → fallback mode
+            var ea = RulingEnergyAttributor()
+            let watts = ea.watts(processes: all, coalitions: deltas(byID), soc: nil, dt: 1)
+            for i in all.indices { all[i].energyWatts = watts[all[i].id] }
+            for cid in expectedResidualCPU.keys {
+                let rows = all.filter { $0.coalitionID == cid }
+                let hasTarget = rows.contains { $0.provenance == .coalition }
+                let got = rows.reduce(0) { $0 + ($1.energyWatts ?? 0) }
+                let expected = hasTarget ? max(coalWatts[cid]!, visWattsByID[cid]!) : visWattsByID[cid]!
+                #expect(abs(got - expected) < 1e-6, "round \(round) cid \(cid) energy")
+            }
+        }
+        #expect(clampRounds > 0 && droppedRounds > 0)                // the generator hits both edge cases
     }
 
     // MARK: CoalitionTracker (reading → deltas)

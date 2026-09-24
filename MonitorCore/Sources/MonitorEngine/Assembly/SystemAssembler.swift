@@ -15,9 +15,9 @@ struct SystemSnapshots: Sendable {
 /// System-wide snapshots + `SystemMetrics` from one `RawTick` (ARCHITECTURE §3 step 4, §5.5).
 /// Counter-based values go through `RateCalculator`s timed by each reading's `capturedNs`.
 ///
-/// Unit assumptions (see report ICR notes): `MemoryReading` free/active/inactive/speculative/wired/purgeable/
-/// fileBacked/anonymous are page counts (× `pageSize`); `total`, `compressorBytes`, `compressedOriginalBytes`, swap
-/// are bytes. `GPUClientsReading.deviceUtilization` is AGX "Device Utilization %" (0–100).
+/// Units (W6a, controller 2026-09-24): `MemoryReading` page-class fields (free … anonymous), `total`, compressor and
+/// swap fields are bytes; `pageins/pageouts/swapins/swapouts` are cumulative page counts (→ pages/s, DESIGN).
+/// `GPUClientsReading.deviceUtilization` is AGX "Device Utilization %" (0–100).
 struct SystemAssembler {
     private enum Counter: Hashable, Sendable {
         case pageins, pageouts, swapins, swapouts
@@ -130,17 +130,15 @@ struct SystemAssembler {
     private mutating func assembleMemory(_ result: SensorResult<MemoryReading>, live: inout Set<Counter>,
                                          into s: inout SystemSnapshots) {
         guard let m = result.value, let t = result.capturedNs else { return }
-        let page = m.pageSize
-        func bytes(_ pages: UInt64) -> UInt64 { pages.multipliedReportingOverflow(by: page).overflow ? .max : pages * page }
-        let app = bytes(m.anonymous > m.purgeable ? m.anonymous - m.purgeable : 0)
-        let wired = bytes(m.wired)
+        let add = ProcessAssembler.saturatingAdd
+        let app = m.anonymous > m.purgeable ? m.anonymous - m.purgeable : 0
         var snap = MemorySnapshot(total: m.total)
         snap.appMemory = app
-        snap.wired = wired
+        snap.wired = m.wired
         snap.compressed = m.compressorBytes
-        snap.used = ProcessAssembler.saturatingAdd(ProcessAssembler.saturatingAdd(app, wired), m.compressorBytes)
-        snap.cachedFiles = bytes(ProcessAssembler.saturatingAdd(m.fileBacked, m.purgeable))
-        snap.free = bytes(ProcessAssembler.saturatingAdd(m.free, m.speculative))
+        snap.used = add(add(app, m.wired), m.compressorBytes)
+        snap.cachedFiles = add(m.fileBacked, m.purgeable)
+        snap.free = add(m.free, m.speculative)
         if let original = m.compressedOriginalBytes, m.compressorBytes > 0 {
             snap.compressionRatio = Double(original) / Double(m.compressorBytes)
         }
@@ -217,7 +215,8 @@ struct SystemAssembler {
         th.fans = (smc?.fans ?? []).map {
             FanSnapshot(id: $0.index, name: $0.name ?? "Fan \($0.index + 1)", rpm: $0.rpm, minRPM: $0.minRPM, maxRPM: $0.maxRPM)
         }
-        th.approximateMapping = false   // no catalog-match flag in SMCReading yet (ICR note in report)
+        // TODO(ICR-6): `th.approximateMapping = !(smc?.catalogMatched ?? true)` once `SMCReading.catalogMatched` lands.
+        th.approximateMapping = false
         s.thermals = th
         s.metrics[.socTemp] = th.socAverage
         s.metrics[.cpuPTemp] = avg(.cpuPerformance)

@@ -95,6 +95,28 @@ private let soc = SoCPowerReading(interval: .seconds(1), cpuWatts: 4, gpuWatts: 
         #expect(!e.usesSoCShareFallback)
     }
 
+    @Test func estimatedIDsAreExactlyStepsTwoAndThreeInMixedTicks() {
+        var e = RulingEnergyAttributor()
+        let v6 = row(10, cid: nil, .measured, cpu: 50, watts: 2)
+        let firstSight = row(11, cid: nil, .measured, cpu: 50)                      // no v6 yet → SoC share
+        let filled = row(418, cid: 5, .coalition, cpu: 10)
+        let visible = row(12, cid: 5, .measured, cpu: 5, watts: 0.5)
+        let w = e.watts(processes: [v6, firstSight, filled, visible], coalitions: coalitions([5: 2.0]), soc: soc, dt: 1)
+        #expect(w[v6.id] == 2 && w[visible.id] == 0.5)
+        #expect(e.usesSoCShareFallback)                      // global flag is set …
+        #expect(e.estimatedIDs == [firstSight.id, filled.id]) // … but only these rows are estimated
+    }
+
+    @Test func noSoCShareInsideScopeThatGotResidual() {
+        var e = RulingEnergyAttributor()
+        // 13 is a visible member seen for the first time (no v6 yet): its energy is inside the coalition residual
+        let ps = [row(12, cid: 5, .measured, cpu: 5, watts: 0.5), row(13, cid: 5, .measured, cpu: 30),
+                  row(418, cid: 5, .coalition, cpu: 10)]
+        let w = e.watts(processes: ps, coalitions: coalitions([5: 2.0]), soc: soc, dt: 1)
+        #expect(w[ps[1].id] == nil)
+        #expect(w.values.reduce(0, +) == 2.0)                // = the coalition, not more
+    }
+
     @Test func flagResetsEachTick() {
         var e = RulingEnergyAttributor()
         let nilRow = [row(11, cid: nil, .measured, cpu: 50)]

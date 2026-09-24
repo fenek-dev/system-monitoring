@@ -98,12 +98,19 @@ public struct CoalitionAttributor: Sendable {
             if p.provenance == .restricted { restrictedCoalitions.insert(cid) }
         }
 
+        let energySignificant = RulingEnergyAttributor.v6Available(processes)
         var synthetic: [ProcessSample] = []
         for cid in restrictedCoalitions.sorted() {
-            guard let d = coalitions.byID[cid], d.seconds > 0, let idx = members[cid] else { continue }
-            let leaderIndex = coalitions.membership[cid]?.leaderPID.flatMap { indexByPID[$0] }
-            let leader = leaderIndex.map { processes[$0] }
+            guard let idx = members[cid] else { continue }
+            // The leader must be the live process in this coalition (a pid alone could be a reused pid elsewhere).
+            let leader = coalitions.membership[cid]?.leaderPID
+                .flatMap { indexByPID[$0] }
+                .map { processes[$0] }
+                .flatMap { $0.coalitionID == cid ? $0 : nil }
             let leaderName = leader?.name
+            // Tooltip target, also on ticks without a delta (first tick, coalition sensor cached/failed).
+            for i in idx where processes[i].provenance == .restricted { processes[i].coalitionLeaderName = leaderName }
+            guard let d = coalitions.byID[cid], d.seconds > 0 else { continue }
 
             var visCPU = 0.0, visR = 0.0, visW = 0.0, visWatts = 0.0
             var hidden: [Int] = []
@@ -121,7 +128,6 @@ public struct CoalitionAttributor: Sendable {
             let cpu = max(0, d.cpuPercent - visCPU)
             let diskR = d.diskReadBps.map { max(0, $0 - visR) }
             let diskW = d.diskWriteBps.map { max(0, $0 - visW) }
-            for i in hidden { processes[i].coalitionLeaderName = leaderName }
 
             if hidden.count == 1 {
                 let i = hidden[0]
@@ -131,10 +137,16 @@ public struct CoalitionAttributor: Sendable {
                 processes[i].diskWriteBps = diskW
                 continue
             }
-            let watts = d.watts.map { max(0, $0 - visWatts) }
+            // Energy counts only with v6 (in fallback mode the "residual" would be the whole coalition's energy).
+            let watts = energySignificant ? d.watts.map { max(0, $0 - visWatts) } : nil
             let significant = cpu >= minResidualCPUPercent || (watts ?? 0) >= minResidualWatts
                 || (diskR ?? 0) > 0 || (diskW ?? 0) > 0
-            guard significant else { continue }
+            guard significant else {
+                // No residual row to point at: the tooltip names the leader's app instead.
+                let appName = leader.flatMap { identities[$0.pid]?.displayName } ?? leaderName
+                for i in hidden { processes[i].coalitionLeaderName = appName }
+                continue
+            }
             let app = leader.flatMap { identities[$0.pid]?.key } ?? (leader?.app ?? .system)
             synthetic.append(ProcessSample(
                 id: .coalitionResidual(cid), name: leaderName ?? "System", user: leader?.user, uid: leader?.uid ?? 0,

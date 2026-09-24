@@ -85,9 +85,11 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
 
     @Test func memoryComposition() throws {
         var sa = SystemAssembler()
+        // page-class fields are bytes (pages × pageSize); pageins/outs are page counts
         let page: UInt64 = 16_384
-        var m = MemoryReading(pageSize: page, total: 24 << 30, free: 100, speculative: 20, wired: 1_000, purgeable: 50,
-                              fileBacked: 400, anonymous: 3_050, compressorBytes: 200 * page,
+        var m = MemoryReading(pageSize: page, total: 24 << 30, free: 100 * page, speculative: 20 * page, wired: 1_000 * page,
+                              purgeable: 50 * page, fileBacked: 400 * page, anonymous: 3_050 * page,
+                              compressorBytes: 200 * page,
                               compressedOriginalBytes: 560 * page, pageins: 10, pageouts: 0, swapins: 0, swapouts: 0,
                               swapTotal: 2 << 30, swapUsed: 1 << 30, swapFileCount: 2, pressureLevel: .warning,
                               pressureFraction: 0.62)
