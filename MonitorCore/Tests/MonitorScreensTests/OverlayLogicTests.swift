@@ -1,7 +1,9 @@
 import CoreGraphics
 import Foundation
+import MonitorLive
 import MonitorModel
 @testable import MonitorScreens
+import MonitorUIKit
 import Testing
 
 /// Overlay pure helpers (spec 2026-09-25 overlay §Stats, §Window): stats, placement, display choice.
@@ -100,5 +102,48 @@ struct OverlayLogicTests {
         #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: 0, y: 400), screenFrames: screens, mainIndex: 1) == 0)
         #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: 700, y: 982), screenFrames: screens, mainIndex: 1) == 0)
         #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: -1, y: 1080), screenFrames: screens, mainIndex: 0) == 1)
+    }
+
+    // MARK: - OverlayView.metrics
+
+    @MainActor @Test func metricsCalm() {
+        let m = TTFormat.$locale.withValue(Locale(identifier: "en_US")) { OverlayView.metrics(live: ScreenFixture.live(.calm)) }
+        #expect(m.map(\.label) == ["CPU", "GPU", "MEM"])
+        #expect(m.map(\.labelColor) == [TTColor.cpu, TTColor.gpu, TTColor.mem])
+        for x in m {
+            #expect(x.value != "—")
+            #expect(x.tint == TTColor.textPrimary)
+            #expect(x.stats.hasPrefix("↓") && x.stats.contains(" ↑") && x.stats.contains(" ø"))
+        }
+        #expect(m[0].value.hasSuffix("%") && m[1].value.hasSuffix("%"))
+        #expect(m[2].value.hasSuffix(" GB"))
+        #expect(!m[0].stats.contains("%") && !m[2].stats.contains("GB"))
+    }
+
+    @MainActor @Test func metricsMemoryPressureTint() {
+        #expect(OverlayView.metrics(live: ScreenFixture.live(.memoryWarning))[2].tint == TTColor.statusElevated)
+        #expect(OverlayView.metrics(live: ScreenFixture.live(.memoryCritical))[2].tint == TTColor.statusCritical)
+    }
+
+    @MainActor @Test func metricsGPUUnavailable() {
+        let m = OverlayView.metrics(live: OverlayFixture.gpuUnavailableLive())
+        #expect(m[1].value == "—")
+        #expect(m[1].tint == TTColor.textTertiary)
+        #expect(m[1].stats == "— — —")
+        #expect(m[0].value != "—" && m[2].value != "—")
+    }
+
+    @MainActor @Test func metricsCollecting() {
+        let m = OverlayView.metrics(live: ScreenFixture.live(.collecting))
+        #expect(m.map(\.stats) == ["—", "—", "—"])
+        #expect(m[2].value != "—")   // memory is a level: shown from the first sample
+    }
+
+    @MainActor @Test func statsRowFormats() {
+        TTFormat.$locale.withValue(Locale(identifier: "en_US")) {
+            #expect(OverlayView.percentStats(OverlayStats(min: 0.08, max: 0.912, avg: 0.2204)) == "↓8 ↑91 ø22")
+            #expect(OverlayView.memoryStats(OverlayStats(min: 15_891_378_585, max: 17_287_070_106, avg: 16_428_249_907))
+                    == "↓14.8 ↑16.1 ø15.3")
+        }
     }
 }
