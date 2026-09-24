@@ -132,7 +132,8 @@ struct GPUNeuralEngineCard: View {
                 TTAreaChart(s[.aneWatts], color: TTColor.power,
                             yDomain: ceilings.domain("ane", range: s.range, W5a.autoDomain(s[.aneWatts], minimum: 1)),
                             fillOpacity: TTChartFill.ane, lineWidth: TTStroke.spark,
-                            showsCollecting: w != nil || unavailableReason(.aneWatts, health: live.sensorHealth) == nil)
+                            showsCollecting: w != nil || unavailableReason(.aneWatts, health: live.sensorHealth) == nil,
+                            partialHistory: s.range != .live)
                     .equatable()
                     .frame(minHeight: 44, maxHeight: flexes ? .infinity : 44)
             }

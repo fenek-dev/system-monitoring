@@ -41,6 +41,7 @@ public struct TTMetricTile: View, Equatable {
     let yDomain: ClosedRange<Double>?
     let action: (@MainActor () -> Void)?
     let showsCollecting: Bool
+    let partialHistory: Bool
 
     /// Legacy form: for Network a `unit` of "↓ " is treated as the prefix.
     public init(category: MonitorModel.Category, value: String?, unit: String?, detail: String?, points: [SeriesPoint],
@@ -54,8 +55,9 @@ public struct TTMetricTile: View, Equatable {
     ///   `unavailableReason` is set (an unavailable sensor shows "—" + tooltip and an empty chart, DESIGN §3.15).
     public init(category: MonitorModel.Category, value: String?, prefix: String? = nil, unit: String?, detail: String?,
                 points: [SeriesPoint], unavailableReason: String?, yDomain: ClosedRange<Double>?,
-                showsCollecting: Bool? = nil, action: (@MainActor () -> Void)? = nil) {
+                showsCollecting: Bool? = nil, partialHistory: Bool = false, action: (@MainActor () -> Void)? = nil) {
         self.showsCollecting = showsCollecting ?? (unavailableReason == nil)
+        self.partialHistory = partialHistory
         self.category = category
         self.value = value
         if prefix == nil, category == .network, let unit, unit.hasPrefix("↓") || unit.hasPrefix("↑") {
@@ -75,7 +77,7 @@ public struct TTMetricTile: View, Equatable {
     public nonisolated static func == (a: Self, b: Self) -> Bool {
         a.category == b.category && a.value == b.value && a.prefix == b.prefix && a.unit == b.unit && a.detail == b.detail
             && a.points == b.points && a.unavailableReason == b.unavailableReason && a.yDomain == b.yDomain
-            && a.showsCollecting == b.showsCollecting
+            && a.showsCollecting == b.showsCollecting && a.partialHistory == b.partialHistory
             && (a.action == nil) == (b.action == nil)
     }
 
@@ -130,7 +132,7 @@ public struct TTMetricTile: View, Equatable {
                 Spacer(minLength: 0)
                 TTAreaChart(tile.points, color: TTColor.category(tile.category), yDomain: tile.domain,
                             fillOpacity: TTChartFill.sparkline, lineWidth: TTStroke.spark,
-                            showsCollecting: tile.showsCollecting)
+                            showsCollecting: tile.showsCollecting, partialHistory: tile.partialHistory)
                     .frame(height: 40)
             }
             .padding(.vertical, TTSpace.tileVerticalPadding + TTStroke.hairline)

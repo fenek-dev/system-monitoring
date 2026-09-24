@@ -47,7 +47,7 @@ struct OverviewTiles: View {
                 ForEach(Self.tiles(series, live: live, units: units, ceilings: ceilings), id: \.category) { t in
                     TTMetricTile(category: t.category, value: t.value, prefix: t.prefix, unit: t.unit, detail: t.detail,
                                  points: t.points, unavailableReason: t.reason, yDomain: t.domain,
-                                 showsCollecting: !t.sensorDown) {
+                                 showsCollecting: !t.sensorDown, partialHistory: series.range != .live) {
                         nav.page = t.category.dashboardPage
                     }
                     .equatable()
@@ -156,7 +156,8 @@ struct OverviewTimelineCard: View {
                     // M3: a "—" always has a reason; only a down sensor turns "Collecting…" off.
                     let h = headlineReason(r.metric, value: r.value, live: live)
                     TTTimelineRow(label: r.label, icon: nil, value: r.value, unavailableReason: h.reason,
-                                  points: r.points, color: r.color, yDomain: r.domain, showsCollecting: !h.sensorDown)
+                                  points: r.points, color: r.color, yDomain: r.domain, showsCollecting: !h.sensorDown,
+                                  partialHistory: s.range != .live)
                         .equatable()
                 }
             }

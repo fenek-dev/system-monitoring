@@ -232,7 +232,7 @@ struct MemorySwapCard: View {
                 }
                 TTAreaChart(s[.swapUsed], color: TTColor.memCompressed,
                             yDomain: 0...Double(max(m.swapTotal ?? 1, 1)), fillOpacity: TTChartFill.swap,
-                            lineWidth: TTStroke.spark, showsCollecting: reason == nil)
+                            lineWidth: TTStroke.spark, showsCollecting: reason == nil, partialHistory: s.range != .live)
                     .equatable()
                     .frame(height: 50)
                 TTKeyValueList(rows: [

@@ -43,6 +43,23 @@ struct ThermalsSnapshotTests {
                        named: "thermals-temps-unavailable")
     }
 
+    /// U-M9: the "Approximate mapping" caption/tooltip when the SMC keys did not match the catalog
+    /// (`ThermalSnapshot.approximateMapping`, set by the engine from `SMCReading.catalogMatched`).
+    @Test func approximateMapping() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.thermals.approximateMapping = true
+            live.apply(f)
+        }
+        live.isPresenting = true
+        let ctx = ShellContext(live: live, settings: ScreenCatalog.snapshotSettings(), history: provider.history(),
+                               isSnapshot: true, now: MockDataProvider.referenceDate)
+        assertSnapshot(ThermalsPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent,
+                       named: "thermals-approximate-calm")
+    }
+
     /// A raw sensor row clicked open: its 30-pt 1H strip ("Collecting…" until the page has recorded samples).
     @Test func rawStripOpen() {
         let key = ThermalGroupCopy.rawKey(RawTemperature(name: "PMU die", group: .cpuPerformance, source: .hid))
