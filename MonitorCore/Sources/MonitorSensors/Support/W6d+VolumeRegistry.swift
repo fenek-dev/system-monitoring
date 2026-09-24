@@ -1,22 +1,8 @@
 import Foundation
 import IOKit
 
-// W6d volume helpers: BSD-name resolution for a mount path, and bus-label lookup shared with the
-// registry-walk pattern in W6d+DiskRegistry.swift.
-
-/// The BSD device name backing `mountPath` (e.g. "/" -> "disk3s3s1"), read from `statfs`'s
-/// `f_mntfromname` ("/dev/disk3s3s1" -> "disk3s3s1"). `nil` for a non-device mount (e.g. a network
-/// share) or if `statfs` fails.
-func ttBSDName(forMountPath mountPath: String) -> String? {
-    var buf = statfs()
-    guard statfs(mountPath, &buf) == 0 else { return nil }
-    let prefix = "/dev/"
-    let mountedFrom = withUnsafePointer(to: &buf.f_mntfromname) { ptr -> String in
-        ptr.withMemoryRebound(to: CChar.self, capacity: Int(MNAMELEN)) { String(cString: $0) }
-    }
-    guard mountedFrom.hasPrefix(prefix) else { return nil }
-    return String(mountedFrom.dropFirst(prefix.count))
-}
+// W6d volume helper: bus-label lookup shared with the registry-walk pattern in W6d+DiskRegistry.swift.
+// (The BSD name comes from getfsstat's f_mntfromname in VolumeSensor — no per-mount statfs.)
 
 /// The transport/bus label for a volume's underlying device (e.g. "Apple Fabric", "USB", "Virtual
 /// Interface" for a mounted disk image), read from the first ancestor's `Protocol Characteristics`

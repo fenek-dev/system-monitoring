@@ -227,8 +227,7 @@ struct SystemAssembler {
         th.fans = (smc?.fans ?? []).map {
             FanSnapshot(id: $0.index, name: $0.name ?? "Fan \($0.index + 1)", rpm: $0.rpm, minRPM: $0.minRPM, maxRPM: $0.maxRPM)
         }
-        // TODO(ICR-6): `th.approximateMapping = !(smc?.catalogMatched ?? true)` once `SMCReading.catalogMatched` lands.
-        th.approximateMapping = false
+        th.approximateMapping = !(smc?.catalogMatched ?? true)      // ICR-6: generic SMC families (unknown model)
         s.thermals = th
         s.metrics[.socTemp] = th.socAverage
         s.metrics[.cpuPTemp] = avg(.cpuPerformance)

@@ -81,27 +81,24 @@ public final class WiFiSensor: Sensor {
     public let cadence: SensorCadence = .every(.seconds(2), background: .seconds(30), requires: .wifi)
 
     let box: WiFiBox
-    private let hasInterface: () -> Bool
 
-    public convenience init() {
-        self.init(box: WiFiBox()) { !(CWWiFiClient.interfaceNames() ?? []).isEmpty }
-    }
+    public convenience init() { self.init(box: WiFiBox()) }
 
-    /// Tests inject a fake read (`WiFiBox(read:)`) and hardware check.
-    init(box: WiFiBox, hasInterface: @escaping () -> Bool) {
-        self.box = box
-        self.hasInterface = hasInterface
-    }
+    /// Tests inject a fake read (`WiFiBox(read:)`).
+    init(box: WiFiBox) { self.box = box }
 
+    /// No CoreWLAN call on the sampler (S-M6): the interface check is the box's first read (off-queue, awaited ≤ 200 ms
+    /// by the first sample); "no interface" surfaces there as `.unavailable`.
     public func prepare() throws(SensorError) {
         guard !box.isPrepared else { return }
-        guard hasInterface() else { throw .unavailable("No Wi-Fi interface") }
         box.setPrepared(true)
         box.startRead()
     }
 
     public func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: WiFiInfo, capturedNs: UInt64) {
         guard box.isPrepared else { throw .unavailable("Wi-Fi not prepared") }
+        // S-M5: a read hung past its deadline (airportd XPC) → stale data is not served as fresh (slot → degraded).
+        if box.isStalled(nowNs: W6cClock.uptimeNs()) { throw .timeout }
         if let last = box.last() {
             box.startRead()
             return try last.get()
@@ -125,7 +122,12 @@ final class WiFiBox: Sendable {
         var last: Result<(reading: WiFiInfo, capturedNs: UInt64), SensorError>?
         var lastReadCostNs: UInt64 = 0
         var firstSignalled = false
+        /// Uptime the in-flight read started.
+        var readStartedNs: UInt64 = 0
     }
+
+    /// A read (~6 ms) still running after this is hung.
+    static let readDeadlineNs: UInt64 = 10_000_000_000
 
     let queue = DispatchQueue(label: "dev.telltale.wifi", qos: .utility)
     let lock = OSAllocatedUnfairLock(initialState: State())
@@ -167,10 +169,16 @@ final class WiFiBox: Sendable {
         lock.withLock { $0.last }
     }
 
-    func startRead() {
+    /// The in-flight read has run past `readDeadlineNs` (a hung read is never doubled up: `startRead` waits for it).
+    func isStalled(nowNs: UInt64) -> Bool {
+        lock.withLock { s in s.inFlight && nowNs >= s.readStartedNs && nowNs - s.readStartedNs > Self.readDeadlineNs }
+    }
+
+    func startRead(nowNs: UInt64 = W6cClock.uptimeNs()) {
         let go = lock.withLock { s -> Bool in
             guard s.prepared, !s.inFlight else { return false }
             s.inFlight = true
+            s.readStartedNs = nowNs
             return true
         }
         guard go else { return }

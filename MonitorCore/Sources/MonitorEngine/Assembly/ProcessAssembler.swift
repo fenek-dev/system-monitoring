@@ -108,6 +108,10 @@ struct ProcessAssembler {
     private var sessionSeenNet = Set<ProcessID>()
     private var gpuClock = CaptureClock()
     private var netClock = CaptureClock()
+    /// E-I1: NStat returns the last *completed* query, so the first reading after a reset (sleep/wake, unpause) was
+    /// captured before it. Readings captured before the first post-reset tick are stale: never a baseline.
+    private var netFloorPending = false
+    private var netFloorNs: UInt64 = 0
     /// NStat `ProcessID(pid, 0)` → the live process it was first matched to. Pins the loose id to that process, so a
     /// later pid reuse doesn't inherit its bytes (closedBytes keep the loose key after the process exits).
     private var looseOwners: [Int32: ProcessID] = [:]
@@ -128,6 +132,7 @@ struct ProcessAssembler {
         processClock.reset(); gpuClock.reset(); netClock.reset()
         lastCapture = nil
         looseOwners.removeAll()
+        netFloorPending = true
     }
 
     /// The process's resource coalition. A process missing from the coalition reading's membership (born after it
@@ -278,7 +283,7 @@ struct ProcessAssembler {
         for (i, s) in out.samples.enumerated() { index[s.id] = i }
 
         assembleGPU(input.gpuClients, rawByPID: rawByPID, index: index, into: &out)
-        assembleNetwork(input.flows, live: live, rawByPID: rawByPID, index: index, into: &out)
+        assembleNetwork(input.flows, uptimeNs: input.uptimeNs, live: live, rawByPID: rawByPID, index: index, into: &out)
 
         cpu.prune(keeping: live)
         energy.prune(keeping: live)
@@ -335,10 +340,16 @@ struct ProcessAssembler {
 
     // MARK: - Network (NStat per ProcessID)
 
-    private mutating func assembleNetwork(_ result: SensorResult<NetworkFlowsReading>, live: Set<ProcessID>,
-                                          rawByPID: [Int32: RawProcess], index: [ProcessID: Int],
-                                          into out: inout ProcessAssembly) {
-        guard let reading = result.value, let capturedNs = result.capturedNs else { return }
+    private mutating func assembleNetwork(_ result: SensorResult<NetworkFlowsReading>, uptimeNs: UInt64,
+                                          live: Set<ProcessID>, rawByPID: [Int32: RawProcess],
+                                          index: [ProcessID: Int], into out: inout ProcessAssembly) {
+        if netFloorPending {
+            netFloorNs = uptimeNs
+            netFloorPending = false
+        }
+        // A stale reading (captured before the last reset) is absent: no baseline, no rates, no session bytes — the
+        // sleep/pause gap is dropped (ruling). No flow owners either, so `FrameAssembler.connections` lists none.
+        guard let reading = result.value, let capturedNs = result.capturedNs, capturedNs >= netFloorNs else { return }
         let clock = netClock.advance(to: capturedNs)
 
         // Cumulative bytes per reported ProcessID (live flows + closed flows) — keyed by the reported id so an

@@ -147,4 +147,16 @@ struct PStateCatalogTests {
         #expect(catalog.tables(forModel: "") == nil)
         #expect(catalog.models.values.allSatisfy { catalog.chips[$0] != nil })
     }
+
+    /// Wake / unpause: the baseline is dropped when the Mac slept since it (continuous time ran ahead of uptime) or
+    /// when it is older than 15 s of uptime; normal 1 s / 5 s ticks keep it.
+    @Test func staleBaselineAfterSleepOrLongPause() {
+        let s: UInt64 = 1_000_000_000
+        #expect(!IOReportSensor.baselineIsStale(uptimeDeltaNs: s, continuousDeltaNs: s))
+        #expect(!IOReportSensor.baselineIsStale(uptimeDeltaNs: 5 * s, continuousDeltaNs: 5 * s + s / 2))  // jitter
+        #expect(IOReportSensor.baselineIsStale(uptimeDeltaNs: s, continuousDeltaNs: 3_600 * s))           // slept 1 h
+        #expect(IOReportSensor.baselineIsStale(uptimeDeltaNs: 60 * s, continuousDeltaNs: 60 * s))         // paused
+        #expect(!IOReportSensor.baselineIsStale(uptimeDeltaNs: 15 * s, continuousDeltaNs: 15 * s))
+        #expect(!IOReportSensor.baselineIsStale(uptimeDeltaNs: 2 * s, continuousDeltaNs: 0))              // clock oddity
+    }
 }

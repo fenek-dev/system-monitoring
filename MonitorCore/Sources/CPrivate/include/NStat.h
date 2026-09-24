@@ -60,6 +60,6 @@ static inline bool tt_proc_uniqueid(int pid, uint64_t *out) {
 static inline bool tt_nstat_available(void) {
     return &NStatManagerCreate != NULL && &NStatManagerDestroy != NULL && &NStatManagerAddAllTCP != NULL &&
            &NStatManagerAddAllUDP != NULL && &NStatManagerQueryAllSources != NULL &&
-           &NStatSourceSetDescriptionBlock != NULL && &NStatSourceSetCountsBlock != NULL &&
+           &NStatManagerQueryAllSourcesDescriptions != NULL && &NStatSourceSetDescriptionBlock != NULL && &NStatSourceSetCountsBlock != NULL &&
            &NStatSourceSetRemovedBlock != NULL;
 }

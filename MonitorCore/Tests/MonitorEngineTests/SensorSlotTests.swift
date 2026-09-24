@@ -221,6 +221,65 @@ private func isNotRequested<R>(_ r: SensorResult<R>) -> Bool { if case .notReque
         #expect(seen == ["prepare:true", "prepare:true", "sample:true", "sample:false"])
     }
 
+    /// S-I2: "warming up" (`.transient`) is not a real reading — the off-queue setup it started may still crash, so the
+    /// marker stays set across warm-up failures and clears on the first `.fresh`.
+    @Test func canaryStaysArmedThroughWarmUpUntilFirstFresh() {
+        let canary = CrashCanary.inMemory()
+        let s = ScriptSensor(.soc, [.failure(.transient("warming up")), .failure(.timeout), .success(1)])
+        let slot = SensorSlot(s, canary: canary)
+        _ = slot.sample(ctx(0))
+        #expect(canary.isTripped(.soc))
+        _ = slot.sample(ctx(1))
+        #expect(canary.isTripped(.soc))
+        #expect(isFresh(slot.sample(ctx(2))))
+        #expect(!canary.isTripped(.soc))
+        var seen: [Bool] = []
+        s.onSample = { seen.append(canary.isTripped(.soc)) }
+        _ = slot.sample(ctx(3))
+        #expect(seen == [false])                                        // never re-armed after the first reading
+    }
+
+    /// Ruled unavailable (nothing left running) or invalidated at a clean stop: the marker clears, and a later retry
+    /// re-arms it until the first real reading.
+    @Test func canaryClearsWhenUnavailableOrInvalidatedWhileWarming() {
+        let canary = CrashCanary.inMemory()
+        let s = ScriptSensor(.soc, [.failure(.transient("warming up")), .failure(.unavailable("gone")),
+                                    .failure(.transient("warming up"))])
+        let slot = SensorSlot(s, canary: canary)
+        _ = slot.sample(ctx(0))
+        #expect(canary.isTripped(.soc))
+        _ = slot.sample(ctx(1))
+        #expect(!canary.isTripped(.soc) && slot.status == .unavailable("gone"))
+        _ = slot.sample(ctx(302))                                       // 5-min retry: warming again
+        #expect(canary.isTripped(.soc))
+        slot.invalidate()                                               // engine stop() at quit
+        #expect(!canary.isTripped(.soc))
+    }
+
+    /// S-M7: `disarm` is flushed too — a crash right after it must not leave a stale marker behind.
+    @Test func disarmedMarkerIsGoneOutOfProcess() async throws {
+        let suite = "dev.telltale.tests.canary.\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let canary = CrashCanary.defaults(suite: suite)
+        canary.arm(.smc)
+        canary.disarm(.smc)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        p.arguments = ["read", suite, CrashCanary.keyPrefix + "smc"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
+            p.terminationHandler = { _ in c.resume() }
+            do { try p.run() } catch {
+                p.terminationHandler = nil
+                c.resume(throwing: error)
+            }
+        }
+        let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        #expect(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)   // "does not exist" goes to stderr
+    }
+
     /// The marker must be visible to another process right after `arm` (cfprefsd holds it even if we abort next).
     @Test func armedMarkerIsVisibleOutOfProcess() async throws {
         let suite = "dev.telltale.tests.canary.\(UUID().uuidString)"

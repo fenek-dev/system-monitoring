@@ -33,6 +33,8 @@ public final class HIDTemperatureSensor: Sensor {
         if box == nil { try prepare() }
         guard let box else { throw .unavailable("HID not prepared") }
         let state = box.kick()
+        // S-M5: a read hung past its deadline → stale data is not served as fresh (slot → degraded).
+        if state.stalled { throw .timeout }
         if let last = state.last { return (last.reading, last.capturedNs) }
         if let error = state.error { throw error }
         throw .transient("warming up")
@@ -58,7 +60,14 @@ final class HIDTemperatureBox: Sendable {
         var last: (reading: TemperatureReading, capturedNs: UInt64)?
         var inFlight = false
         var error: SensorError?
+        /// Uptime the in-flight read started.
+        var startedNs: UInt64 = 0
+        /// In the state `kick()` returns: the in-flight read has run past `readDeadlineNs`.
+        var stalled = false
     }
+
+    /// A full read takes 65–80 ms; one still running after this is hung (IOHIDServiceClientCopyEvent never returned).
+    static let readDeadlineNs: UInt64 = 10_000_000_000
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
     private let queue = DispatchQueue(label: "dev.telltale.hid-temps", qos: .utility)
@@ -72,13 +81,18 @@ final class HIDTemperatureBox: Sendable {
 
     var state: State { lock.withLock { $0 } }
 
-    /// Starts a read unless one is in flight; returns the state before the kick.
+    /// Starts a read unless one is in flight (a hung one is never doubled up); returns the state before the kick,
+    /// with `stalled` set when the in-flight read is past its deadline.
     @discardableResult
-    func kick() -> State {
+    func kick(nowNs: UInt64 = w6bUptimeNs()) -> State {
         let (before, start) = lock.withLock { s -> (State, Bool) in
-            let b = s
-            guard !s.inFlight else { return (b, false) }
+            var b = s
+            guard !s.inFlight else {
+                b.stalled = nowNs >= s.startedNs && nowNs - s.startedNs > Self.readDeadlineNs
+                return (b, false)
+            }
             s.inFlight = true
+            s.startedNs = nowNs
             return (b, true)
         }
         if start {

@@ -16,7 +16,8 @@ protocol AnySensorSlot: AnyObject {
 /// - transient/timeout/posix failures reuse the last reading for ≤ 2 intervals, then nil; 3 consecutive failures →
 ///   `.degraded` with backoff 2 s → 60 s;
 /// - unavailable/permission denied → `.unavailable`, `invalidate()`, `prepare()` retried every 5 min;
-/// - crash canary around the first `prepare()`/`sample()`; a marker left by a crashed launch disables the sensor.
+/// - crash canary from the first `prepare()`/`sample()` until the first `.fresh` (or unavailable / invalidate);
+///   a marker left by a crashed launch disables the sensor.
 /// All scheduling uses `ctx.uptimeNs`; `clock` only times the sensor call.
 final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
     static var unavailableRetryNs: UInt64 { 300_000_000_000 }
@@ -72,9 +73,13 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         return (lastCost, costSum / costCount, sorted[max(0, min(sorted.count, rank) - 1)])
     }
 
+    /// Also clears a canary still armed by a warming sensor (unavailable, or a clean `stop()` at quit): the sensor's
+    /// work is torn down, so a marker left behind would disable it at the next launch for nothing. A later attempt
+    /// re-arms it until the first real reading.
     func invalidate() {
         if prepared { sensor.invalidate() }
         prepared = false
+        disarmCanary()
     }
 
     func sample(_ ctx: SampleContext) -> SensorResult<R> {
@@ -119,6 +124,12 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
 
     // MARK: - Private
 
+    private func disarmCanary() {
+        guard armed else { return }
+        armed = false
+        canary.disarm(sensor.id)
+    }
+
     private func checkCanary() {
         if canary.isTripped(sensor.id) {
             disabled = true
@@ -140,16 +151,12 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
 
     private func attempt(now: UInt64, retry: UInt64, window: UInt64, ctx: SampleContext) -> SensorResult<R> {
         lastAttemptNs = now
-        // Canary armed around every call until sample() has returned once (a failed prepare() doesn't count).
-        if !canaryDone {
+        // Canary (S-I2): armed from the first call until the first real reading (`.fresh`), or until the sensor is
+        // ruled unavailable. It stays armed across `.transient`/`.timeout` ("warming up"), so the off-queue work
+        // those sensors start (IOReport setup, HID reads, NStat callbacks) is covered until it has succeeded once.
+        if !canaryDone, !armed {
             armed = true
             canary.arm(sensor.id)
-        }
-        defer {
-            if armed {
-                armed = false
-                canary.disarm(sensor.id)
-            }
         }
         if !prepared {
             do throws(SensorError) {
@@ -164,11 +171,11 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         do throws(SensorError) {
             result = try sensor.sample(ctx)
         } catch {
-            canaryDone = true
             recordCost(since: start)
             return fail(error, now: now, retry: retry, window: window)
         }
         canaryDone = true
+        disarmCanary()
         recordCost(since: start)
         last = (result.reading, result.capturedNs, now)
         consecutiveFailures = 0
@@ -183,7 +190,7 @@ final class SensorSlot<R: Sendable & Codable>: AnySensorSlot {
         switch error {
         case .unavailable(let reason), .permissionDenied(let reason):
             status = .unavailable(reason)
-            invalidate()
+            invalidate()                                     // also disarms: ruled unavailable, nothing left running
             last = nil
             consecutiveFailures = 0
             nextAttemptNs = now &+ Self.unavailableRetryNs

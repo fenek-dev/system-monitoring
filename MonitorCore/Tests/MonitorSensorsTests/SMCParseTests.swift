@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import MonitorModel
 @testable import MonitorSensors
@@ -78,5 +79,54 @@ struct SMCParseTests {
         #expect(!SMCDecoder.isPlausibleTemperature(-40))
         #expect(!SMCDecoder.isPlausibleTemperature(150))
         #expect(!SMCDecoder.isPlausibleTemperature(.nan))
+    }
+
+    // MARK: key sweep (S-M2)
+
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smc-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @Test func sweepRetryBackoff() {
+        let s: UInt64 = 1_000_000_000
+        #expect(SMCKeySweep.retryDelayNs(failures: 1) == 30 * s)
+        #expect(SMCKeySweep.retryDelayNs(failures: 2) == 60 * s)
+        #expect(SMCKeySweep.retryDelayNs(failures: 7) == 1_800 * s)
+        #expect(SMCKeySweep.retryDelayNs(failures: 100) == 1_800 * s)
+    }
+
+    /// A failed sweep is no longer terminal: a later start() past the backoff runs it again.
+    @Test func failedSweepIsRetriedAfterBackoff() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let opens = OSAllocatedUnfairLock(initialState: 0)
+        let sweep = SMCKeySweep(hwModel: "Mac99,9", osBuild: "T1", cacheDirectory: dir) {
+            opens.withLock { $0 += 1 }
+            return 0                                                    // smc_open failed
+        }
+        sweep.start()
+        #expect(sweep.wait() == .failed("smc_open failed"))
+        let now = w6bUptimeNs()
+        sweep.start(nowNs: now)                                         // within backoff: nothing
+        #expect(sweep.current == .failed("smc_open failed") && opens.withLock { $0 } == 1)
+        sweep.start(nowNs: now + SMCKeySweep.retryStartNs + 1)
+        #expect(sweep.wait() == .failed("smc_open failed"))
+        #expect(opens.withLock { $0 } == 2)
+    }
+
+    /// Cached key names must be exactly 4 bytes before they reach smc.c (which reads 4 bytes of the name).
+    @Test func cacheEntriesWithBadKeysAreDropped() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sweep = SMCKeySweep(hwModel: "Mac99,9", osBuild: "T1", cacheDirectory: dir) { 0 }
+        let file = SMCKeySweep.CacheFile(hwModel: "Mac99,9", osBuild: "T1", keyCount: 3, keys: [
+            .init(key: "TC0P", type: "flt ", size: 4), .init(key: "T1", type: "flt ", size: 4),
+            .init(key: "TOOLONG", type: "flt ", size: 4), .init(key: "Tg0K", type: "flt ", size: 99),
+        ])
+        try JSONEncoder().encode(file).write(to: sweep.cacheURL)
+        sweep.start()
+        #expect(sweep.wait() == .done([.init(key: "TC0P", type: "flt ", size: 4)], fromCache: true, durationNs: 0))
     }
 }

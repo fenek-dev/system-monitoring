@@ -81,4 +81,40 @@ import MonitorModel
         let raw = try loadFixture("volume-root")
         #expect(raw.mountPath == "/")
     }
+
+    /// S-I3: network and hidden mounts are filtered out of the mount table before any capacity call — a dead
+    /// SMB/NFS server can't block the sampler.
+    @Test func capacityIsFetchedForLocalBrowsableMountsOnly() throws {
+        let local = UInt32(MNT_LOCAL), hidden = UInt32(MNT_DONTBROWSE)
+        let table: [VolumeSensor.Mount] = [
+            .init(path: "/", from: "/dev/disk3s3s1", flags: local),
+            .init(path: "/System/Volumes/VM", from: "/dev/disk3s6", flags: local | hidden),
+            .init(path: "/Volumes/NAS", from: "//me@nas.local/share", flags: 0),                 // smbfs
+            .init(path: "/Volumes/nfs", from: "nas:/export", flags: UInt32(MNT_RDONLY)),         // nfs
+            .init(path: "/System/Volumes/Data/home", from: "map auto_home", flags: hidden),      // autofs
+            .init(path: "/Volumes/USB", from: "/dev/disk5s1", flags: local),
+        ]
+        var asked: [String] = []
+        let sensor = VolumeSensor(mountTable: { table }) { path in
+            asked.append(path)
+            return URLResourceValues()
+        }
+        let reading = try sensor.sample(SampleContext()).reading
+        #expect(asked == ["/", "/Volumes/USB"])
+        #expect(reading.volumes.map(\.id) == ["/", "/Volumes/USB"])
+        #expect(reading.volumes.map(\.bsdName) == ["disk3s3s1", "disk5s1"])
+    }
+
+    @Test func bsdNameFromMountSource() {
+        #expect(VolumeSensor.bsdName(mountedFrom: "/dev/disk3s3s1") == "disk3s3s1")
+        #expect(VolumeSensor.bsdName(mountedFrom: "//me@nas/share") == nil)
+        #expect(VolumeSensor.bsdName(mountedFrom: "/dev/") == nil)
+        #expect(VolumeSensor.bsdName(mountedFrom: "map auto_home") == nil)
+    }
+
+    /// The live table always holds "/" as a local, browsable mount (no file-system call needed to read it).
+    @Test func systemMountTableHasLocalRoot() {
+        let local = VolumeSensor.localVolumes(VolumeSensor.systemMounts())
+        #expect(local.contains { $0.path == "/" && $0.from.hasPrefix("/dev/disk") })
+    }
 }

@@ -3,7 +3,8 @@ import MonitorModel
 import os
 
 /// Crash canary (ARCHITECTURE §6): a marker is written before a sensor's first `prepare()`/`sample()` of a launch
-/// and cleared once that call returns. A marker still present at the next launch means the sensor crashed the app;
+/// and cleared at its first real reading (`.fresh`), or when it is ruled unavailable / invalidated — warming-up
+/// errors keep it set, so off-queue setup is covered. A marker still present at the next launch means the sensor crashed the app;
 /// that sensor is then disabled ("Disabled after a crash") until `reenableAll()` (Settings "Re-enable sensors").
 public struct CrashCanary: Sendable {
     enum Storage: Sendable {
@@ -58,7 +59,12 @@ public struct CrashCanary: Sendable {
     func disarm(_ id: SensorID) {
         switch storage {
         case .none: break
-        case .defaults(let suite): Self.defaults(suite)?.removeObject(forKey: Self.keyPrefix + id.rawValue)
+        case .defaults(let suite):
+            // Flushed too: a crash (from any cause) before CFPreferences' async flush would leave this marker set
+            // and disable an innocent sensor at the next launch (final review S-M7).
+            guard let d = Self.defaults(suite) else { return }
+            d.removeObject(forKey: Self.keyPrefix + id.rawValue)
+            d.synchronize()
         case .memory(let m): m.remove(id)
         }
     }

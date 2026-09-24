@@ -55,6 +55,25 @@ struct HIDParseTests {
         #expect(calls.withLock { $0 } <= 3)                                  // no read stacking
     }
 
+    /// S-M5: a read hung past its deadline is reported (→ `.timeout`, never the stale reading as fresh), and no
+    /// second read is stacked behind it.
+    @Test func hungReadIsReportedAfterDeadline() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let box = HIDTemperatureBox(catalog: nil) {
+            calls.withLock { $0 += 1 }
+            release.wait()                                                  // hung IOHIDServiceClientCopyEvent
+            return .success([.init(name: "NAND CH0 temp", celsius: 30)])
+        }
+        defer { release.signal() }
+        let s: UInt64 = 1_000_000_000
+        #expect(!box.kick(nowNs: 100 * s).stalled)                          // starts the read
+        #expect(!box.kick(nowNs: 105 * s).stalled)
+        #expect(box.kick(nowNs: 111 * s).stalled)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(calls.withLock { $0 } == 1)
+    }
+
     @Test func readErrorBeforeFirstReadingIsThrown() async throws {
         let sensor = HIDTemperatureSensor(reader: { .failure(.unavailable("no HID temperature services")) })
         try sensor.prepare()

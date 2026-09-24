@@ -91,7 +91,7 @@ enum HostCPUFFI {
         var cpuCount: natural_t = 0
         var info: processor_info_array_t?
         var infoCount: mach_msg_type_number_t = 0
-        let kr = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpuCount, &info, &infoCount)
+        let kr = host_processor_info(w6aHostPort,PROCESSOR_CPU_LOAD_INFO, &cpuCount, &info, &infoCount)
         guard kr == KERN_SUCCESS else { throw w6aMachError(kr, "host_processor_info") }
         guard let info else { throw SensorError.transient("host_processor_info returned no data") }
         defer {
