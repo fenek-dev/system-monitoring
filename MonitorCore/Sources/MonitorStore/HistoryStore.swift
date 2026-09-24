@@ -40,6 +40,14 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     let config: StoreConfig
     let columns: Columns
 
+    private var pendingRecords: [HistoryRecord] = []
+    private var pendingEvents: [HistoryEvent] = []
+    private var lastFlush: Date
+    private var lastMaintenance: Date
+    private var maintaining = false
+    /// Flushes run strictly in order; `flush()` awaits every earlier write (shutdown relies on it).
+    private var writeChain: Task<Void, any Error>?
+
     public init(location: Location, config: StoreConfig = .init()) throws {
         try self.init(location: location, config: config, columns: .current)
     }
@@ -53,15 +61,59 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         self.writer = try StoreDatabase.open(location, columns: columns)
         self.config = config
         self.columns = columns
+        let opened = config.now()
+        self.lastFlush = opened
+        self.lastMaintenance = opened
     }
 
     // MARK: HistoryRecorder
 
-    public func append(_ batch: RecordBatch) async {}
+    /// Buffers; flushes on `flushMaxRecords` or `flushInterval`, then runs maintenance every
+    /// `maintenanceInterval`. Write failures drop the batch and log a fault (ARCHITECTURE §6).
+    public func append(_ batch: RecordBatch) async {
+        if let record = batch.record { pendingRecords.append(record) }
+        pendingEvents.append(contentsOf: batch.events)
+        let now = config.now()
+        guard pendingRecords.count >= config.flushMaxRecords
+            || now.timeIntervalSince(lastFlush) >= config.flushInterval.timeInterval else { return }
+        do { try await flush() } catch {
+            StoreDatabase.log.fault("history flush failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if !maintaining, now.timeIntervalSince(lastMaintenance) >= config.maintenanceInterval.timeInterval {
+            do { try await maintain(now: now) } catch {
+                StoreDatabase.log.fault("history maintenance failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
 
-    public func flush() async throws {}
+    /// Writes everything buffered in one transaction, after any in-flight flush.
+    public func flush() async throws {
+        lastFlush = config.now()
+        let records = pendingRecords
+        let events = pendingEvents
+        pendingRecords.removeAll(keepingCapacity: true)
+        pendingEvents.removeAll(keepingCapacity: true)
+        let previous = writeChain
+        let writer = self.writer
+        let task = Task {
+            _ = await previous?.result
+            guard !records.isEmpty || !events.isEmpty else { return }
+            try await writer.write { db in try RecordWriter.write(records, events, db) }
+        }
+        writeChain = task
+        do { try await task.value } catch {
+            StoreDatabase.log.fault("dropped \(records.count) records, \(events.count) events: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+    }
 
-    public func maintain(now: Date) async throws {}
+    public func maintain(now: Date) async throws {
+        guard !maintaining else { return }
+        maintaining = true
+        defer { maintaining = false }
+        lastMaintenance = now
+        try await flush()
+    }
 
     // MARK: HistoryProvider
 
