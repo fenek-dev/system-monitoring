@@ -27,7 +27,9 @@ public struct RecordBuilder: Sendable {
         var apps: [AppRecord] = []
         var other: AppMetrics?
         for a in frame.apps {
-            let m = AppGrouper.metrics(of: a)
+            // AppGrouper already filled `metrics` (no per-app vector rebuilt per tick); recompute only for a
+            // hand-built sample (tests, replays) that left it empty.
+            let m = AppMetric.allCases.contains { a.metrics[$0] != nil } ? a.metrics : AppGrouper.metrics(of: a)
             if a.identity.key != .other, qualifies(a) {
                 apps.append(AppRecord(identity: a.identity, metrics: m))
             } else {

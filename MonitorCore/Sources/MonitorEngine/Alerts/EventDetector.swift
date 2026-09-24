@@ -59,7 +59,8 @@ public struct EventDetector: Sendable {
         last = (up, now, frame.mode.interval)
         var above = Set<Key>()
         for a in frame.apps {
-            for (metric, value, threshold) in thresholds(a) {
+            for metric in Self.episodeMetrics {
+                let (value, threshold) = reading(a, metric)
                 guard let value, value >= threshold else { continue }
                 let key = Key(app: a.identity.key, metric: metric)
                 above.insert(key)
@@ -118,10 +119,19 @@ public struct EventDetector: Sendable {
 
     // MARK: - Private
 
-    private func thresholds(_ a: AppSample) -> [(AppMetric, Double?, Double)] {
-        [(.cpu, a.cpuPercent, config.cpuPercent), (.gpu, a.gpuPercent, config.gpuPercent),
-         (.netRx, a.netRxBps, config.netBps), (.netTx, a.netTxBps, config.netBps),
-         (.diskRead, a.diskReadBps, config.diskBps), (.diskWrite, a.diskWriteBps, config.diskBps)]
+    /// Episode metrics, in a static list so the per-app loop allocates nothing.
+    private static let episodeMetrics: [AppMetric] = [.cpu, .gpu, .netRx, .netTx, .diskRead, .diskWrite]
+
+    private func reading(_ a: AppSample, _ metric: AppMetric) -> (value: Double?, threshold: Double) {
+        switch metric {
+        case .cpu: (a.cpuPercent, config.cpuPercent)
+        case .gpu: (a.gpuPercent, config.gpuPercent)
+        case .netRx: (a.netRxBps, config.netBps)
+        case .netTx: (a.netTxBps, config.netBps)
+        case .diskRead: (a.diskReadBps, config.diskBps)
+        case .diskWrite: (a.diskWriteBps, config.diskBps)
+        case .memory, .energy: (nil, .infinity)
+        }
     }
 
     private func event(_ e: Episode, _ key: Key, end: Date?) -> HistoryEvent {
