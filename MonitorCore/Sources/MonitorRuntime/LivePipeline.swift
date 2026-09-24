@@ -15,11 +15,14 @@ import os
 @MainActor final class LivePipeline: RuntimePipeline {
     let live: LiveModel
     let history: any HistoryProvider
-    /// false when the file store could not be opened: history runs in memory for this launch (§6).
-    let historyPersistent: Bool
+    /// false when the file store could not be opened: history runs in memory for this launch (§6). The store opens
+    /// off the MainActor (R-M4), so this reads true until `historyReady()` has resolved it.
+    private(set) var historyPersistent: Bool
 
     private let engine: SamplingEngine
-    private let store: HistoryStore?
+    /// Opens the store off the MainActor (open, WAL switch, migration and the orphan-event close can wait on the
+    /// 1.5 s busy timeout); the record pump, queries and shutdown await it.
+    private let opening: Task<OpenedStore, Never>
     private let commandStream: AsyncStream<Command>
     private let commands: AsyncStream<Command>.Continuation
     private var commandTask: Task<Void, Never>?
@@ -36,38 +39,70 @@ import os
     enum Command: Sendable { case start, visibility(UIVisibility), paused(Bool), willSleep, didWake }
 
     nonisolated static let log = Logger(subsystem: "dev.telltale", category: "Runtime")
-    static let databaseName = "history.sqlite"
+    nonisolated static let databaseName = "history.sqlite"
 
     convenience init(dataDirectory: URL, disabledSensors: Set<SensorID>, crashSensor: SensorID?,
                      canarySuite: String? = nil) {
-        let (store, persistent) = Self.openStore(in: dataDirectory)
+        let opening = Task.detached(priority: .userInitiated) {
+            let (store, persistent) = Self.openStore(in: dataDirectory)
+            return OpenedStore(store: store, persistent: persistent)
+        }
         let canary = TelltaleRuntime.canary(suite: canarySuite)
         let engine = SamplingEngine(factory: SensorFactory.live.crashing(crashSensor), disabled: disabledSensors,
                                     canary: canary)
-        self.init(engine: engine, store: store, persistent: persistent)
+        self.init(engine: engine, opening: opening, history: DeferredHistory(opening), persistent: nil)
     }
 
     /// Test seam: any engine (fixture sensors, short intervals) and store (in-memory).
-    init(engine: SamplingEngine, store: HistoryStore?, persistent: Bool = true, live: LiveModel = LiveModel()) {
-        self.engine = engine
-        self.store = store
-        self.historyPersistent = persistent && store != nil
-        self.history = store ?? EmptyHistoryProvider()
-        self.live = live
-        (commandStream, commands) = AsyncStream.makeStream(of: Command.self, bufferingPolicy: .unbounded)
+    convenience init(engine: SamplingEngine, store: HistoryStore?, persistent: Bool = true, live: LiveModel = LiveModel()) {
+        let opened = OpenedStore(store: store, persistent: persistent && store != nil)
+        self.init(engine: engine, opening: Task { opened }, history: store ?? EmptyHistoryProvider(),
+                  persistent: opened.persistent, live: live)
     }
 
-    /// `dataDirectory/history.sqlite`; on failure an in-memory store (logged as a fault), else no store at all.
-    static func openStore(in dataDirectory: URL) -> (HistoryStore?, persistent: Bool) {
+    /// `persistent` nil: unknown until `opening` completes.
+    private init(engine: SamplingEngine, opening: Task<OpenedStore, Never>, history: any HistoryProvider,
+                 persistent: Bool?, live: LiveModel = LiveModel()) {
+        self.engine = engine
+        self.opening = opening
+        self.historyPersistent = persistent ?? true
+        self.history = history
+        self.live = live
+        (commandStream, commands) = AsyncStream.makeStream(of: Command.self, bufferingPolicy: .unbounded)
+        if persistent == nil { Task { [weak self] in await self?.historyReady() } }
+    }
+
+    /// Waits for the store to open and publishes `historyPersistent`.
+    func historyReady() async {
+        let opened = await opening.value
+        historyPersistent = opened.persistent
+    }
+
+    struct OpenedStore: Sendable {
+        let store: HistoryStore?
+        let persistent: Bool
+    }
+
+    /// `RecordConfig`'s thresholds (the engine's, default) for the store's rollup fold.
+    nonisolated static let rollupThresholds: RollupThresholds = {
+        let c = RecordConfig()
+        return RollupThresholds(minCPUPercent: c.minCPUPercent, minNetBps: c.minNetBps, minDiskBps: c.minDiskBps,
+                                minMemory: Double(c.minMemory))
+    }()
+
+    /// `dataDirectory/history.sqlite`; on failure an in-memory store with short retention (logged as a fault,
+    /// R-I3), else no store at all. Blocking: call off the MainActor.
+    nonisolated static func openStore(in dataDirectory: URL) -> (HistoryStore?, persistent: Bool) {
         let url = dataDirectory.appendingPathComponent(databaseName)
         do {
             try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
-            return (try HistoryStore(location: .file(url)), true)
+            return (try HistoryStore(location: .file(url), config: StoreConfig(rollupThresholds: rollupThresholds)), true)
         } catch {
             log.fault("history store at \(url.path, privacy: .public) failed to open: \(error.localizedDescription, privacy: .public); using memory")
         }
         do {
-            return (try HistoryStore(location: .inMemory), false)
+            return (try HistoryStore(location: .inMemory, config: .inMemoryFallback(rollupThresholds: rollupThresholds)),
+                    false)
         } catch {
             log.fault("in-memory history store failed: \(error.localizedDescription, privacy: .public)")
             return (nil, false)
@@ -81,7 +116,8 @@ import os
         state = .running
         let engine = self.engine
         commandTask = Task { await Self.runCommands(commandStream, engine) }
-        recordTask = Task { await Self.pumpRecords(engine.records, into: store) }
+        let opening = self.opening
+        recordTask = Task { await Self.pumpRecords(engine.records, into: opening) }
         frameTask = Task { [weak self] in
             for await frame in engine.liveFrames {
                 guard let self else { return }
@@ -123,11 +159,12 @@ import os
         let started = state == .running
         state = .shutDown
         commands.finish()
-        let (engine, store, commandTask) = (self.engine, self.store, self.commandTask)
+        let (engine, opening, commandTask) = (self.engine, self.opening, self.commandTask)
         let recordTask = started ? self.recordTask : nil
         let task = Task {
             let t0 = ContinuousClock.now
-            await Self.stopAndFlush(engine: engine, store: store, commandTask: commandTask, recordTask: recordTask)
+            await Self.stopAndFlush(engine: engine, store: await opening.value.store, commandTask: commandTask,
+                                    recordTask: recordTask)
             Self.log.notice("runtime shutdown in \(Int((ContinuousClock.now - t0) / .milliseconds(1))) ms")
         }
         shutdownTask = task
@@ -175,8 +212,19 @@ import os
         }
     }
 
-    nonisolated private static func pumpRecords(_ records: AsyncStream<RecordBatch>, into store: HistoryStore?) async {
-        for await batch in records { await store?.append(batch) }
+    /// Batches wait in the engine's unbounded stream until the store has opened. The batch that opens a system
+    /// sleep is flushed at once with everything buffered (R-M8): a Mac that never wakes keeps it.
+    nonisolated private static func pumpRecords(_ records: AsyncStream<RecordBatch>,
+                                                into opening: Task<OpenedStore, Never>) async {
+        let store = await opening.value.store
+        for await batch in records {
+            await store?.append(batch)
+            if batch.events.contains(where: { $0.kind == .systemSleep && $0.end == nil }) {
+                do { try await store?.flush() } catch {
+                    log.error("history flush before sleep failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
     }
 
     nonisolated private static func stopAndFlush(engine: SamplingEngine, store: HistoryStore?,

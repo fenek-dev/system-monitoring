@@ -51,6 +51,13 @@ footprint_mb() {
         | awk '{ v = $1; if ($2 == "KB") v /= 1024; if ($2 == "GB") v *= 1024; printf "%.1f\n", v }'
 }
 
+# Stops the measured instance on every exit path (normal end, a failing step under `set -e`, Ctrl-C), unless --keep.
+cleanup() {
+    trap - EXIT INT TERM
+    if [[ $keep -eq 1 ]]; then return 0; fi
+    if [[ $release -eq 1 ]]; then stop_release; else scripts/run.sh --stop >/dev/null || true; fi
+}
+
 if [[ $release -eq 1 ]]; then
     # Release build in its own derived-data dir; launched and stopped by exact binary path (never other instances).
     REL="$ROOT/.build/xcode-release/Build/Products/Release/Telltale.app"
@@ -58,25 +65,44 @@ if [[ $release -eq 1 ]]; then
     scripts/gen.sh >/dev/null
     xcodebuild -project Telltale.xcodeproj -scheme Telltale -configuration Release -derivedDataPath .build/xcode-release \
         -destination 'platform=macOS,arch=arm64' build 2>&1 | grep -E 'error:|BUILD' | tail -3
-    stop_release() {
+    release_pids() {
         local p
         for p in $(pgrep -x Telltale || true); do
-            [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == "$REL_BIN" ]] && kill -TERM "$p" 2>/dev/null
+            if [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == "$REL_BIN" ]]; then echo "$p"; fi
         done
-        sleep 4
+    }
+    # Graceful quit (SIGTERM → the app's ⌘Q path, store flush ≤ 3 s), then KILL whatever is left after 4 s:
+    # a surviving instance would share the data dir with the next run's.
+    stop_release() {
+        local pids i
+        pids=$(release_pids)
+        if [[ -z "$pids" ]]; then return 0; fi
+        kill -TERM $pids 2>/dev/null || true
+        for i in 1 2 3 4 5 6 7 8; do
+            sleep 0.5
+            pids=$(release_pids)
+            if [[ -z "$pids" ]]; then return 0; fi
+        done
+        echo "perf.sh: release instance ignored SIGTERM; sending KILL" >&2
+        kill -KILL $pids 2>/dev/null || true
     }
     stop_release
     scripts/run.sh --stop >/dev/null
     DATA="${TELLTALE_DATA_DIR:-$HOME/Library/Caches/dev.telltale-dev/$(basename "$ROOT")}"
     mkdir -p "$DATA"
+    trap 'cleanup' EXIT
+    trap 'cleanup; exit 130' INT TERM
     open -n --env "TELLTALE_DATA_DIR=$DATA" "$REL" --args ${args[@]+"${args[@]}"}
-    sleep 2
     pid=""
-    for p in $(pgrep -x Telltale || true); do
-        [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == "$REL_BIN" ]] && pid="$p"
+    for _ in $(seq 1 30); do                                  # a cold launch can take several seconds
+        sleep 0.5
+        pid=$(release_pids | tail -1)
+        if [[ -n "$pid" ]]; then break; fi
     done
     mode="$mode, Release build"
 else
+    trap 'cleanup' EXIT
+    trap 'cleanup; exit 130' INT TERM
     line=$(scripts/run.sh ${args[@]+"${args[@]}"} | tail -1)
     pid=$(echo "$line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
     mode="$mode, Debug build"
@@ -126,9 +152,7 @@ if [[ $bench -eq 1 && -z "$mock" ]]; then
     bench_mode=background; [[ $interactive -eq 1 ]] && bench_mode=interactive
     bench_out=$(scripts/probe.sh --bench --ticks 30 --interval 1 --mode "$bench_mode" 2>&1 | tail -45)
 fi
-if [[ $keep -eq 0 ]]; then
-    if [[ $release -eq 1 ]]; then stop_release; else scripts/run.sh --stop >/dev/null; fi
-fi
+cleanup
 
 mkdir -p docs/perf
 out="docs/perf/$(date +%Y-%m-%d)-${cp}.md"

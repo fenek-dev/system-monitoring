@@ -249,7 +249,56 @@ struct RuntimeHarness {
 
         let (fallback, ok) = LivePipeline.openStore(in: URL(fileURLWithPath: "/dev/null/telltale"))
         #expect(!ok && fallback != nil)                          // in-memory: History still works this launch
+        #expect(await fallback?.config.rawRetention == .seconds(3_600))   // with short retention (R-I3)
+        #expect(await fallback?.config.rollupThresholds == LivePipeline.rollupThresholds)
         try await fallback?.shutdown()
+    }
+
+    /// R-M4: the store opens (WAL, migration, closing orphaned events) off the MainActor. Another connection holds
+    /// the write lock that the orphan close needs: the pipeline is built at once, and queries wait for the open.
+    @Test func storeOpensOffTheMainActor() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("telltale-runtime-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (previous, _) = LivePipeline.openStore(in: dir)
+        let other = try #require(previous)
+        let start = Date(timeIntervalSinceNow: -30)
+        await Self.buffer(3, into: other, base: start)
+        await other.append(RecordBatch(events: [HistoryEvent(kind: .thermalPressure, start: start, level: .elevated)]))
+        try await other.flush()                                 // left open: the previous run "crashed"
+        let locked = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await other.holdWriteLock(seconds: 0.6) { locked.withLock { $0 = true } } }
+        while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+
+        let t0 = ContinuousClock.now
+        let pipeline = LivePipeline(dataDirectory: dir, disabledSensors: Set(SensorID.allCases), crashSensor: nil)
+        #expect(ContinuousClock.now - t0 < .milliseconds(300))   // the open waits ~0.6 s, not the main actor
+        let events = try await pipeline.history.events(in: DateInterval(start: start - 60, duration: 3_600))
+        #expect(ContinuousClock.now - t0 >= .milliseconds(400))
+        let end = try #require(events.count == 1 ? events.first?.end : nil)
+        #expect(abs(end.timeIntervalSince(start + 2)) < 0.001)   // closed at its last sample (ms storage)
+        await pipeline.historyReady()
+        #expect(pipeline.historyPersistent)
+        try await holder.value
+        await pipeline.shutdown()
+        try await other.shutdown()
+    }
+
+    /// R-M8: the batch opening a system sleep is flushed at once (a Mac that never wakes keeps it).
+    @Test func willSleepFlushesTheStore() async throws {
+        let h = try RuntimeHarness()
+        h.pipeline.start()
+        #expect(await h.log.wait(atLeast: 3))
+        await h.store.writesSettled()
+        #expect(try await h.rows() == 0)                         // flush interval is 1 h
+        h.pipeline.systemWillSleep()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while try await h.events("systemSleep") == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(try await h.events("systemSleep") == 1)
+        #expect(try await h.rows() >= 3)
+        h.pipeline.systemDidWake()
+        await h.pipeline.shutdown()
     }
 
     @Test func intervalStatsSummarisePerModeWindows() {
@@ -268,14 +317,21 @@ struct RuntimeHarness {
         #expect(sum.map { $0.p95 >= 5.055 && $0.p95 <= 5.058 } == true)
     }
 
-    @Test func historyPersistentReachesTheFacade() throws {
+    @Test func historyPersistentReachesTheFacade() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("telltale-runtime-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
-        #expect(TelltaleRuntime.make(mode: .live, dataDirectory: dir, disabledSensors: Set(SensorID.allCases))
-            .historyPersistent)
-        #expect(!TelltaleRuntime.make(mode: .live, dataDirectory: URL(fileURLWithPath: "/dev/null/telltale"),
-                                      disabledSensors: Set(SensorID.allCases)).historyPersistent)
-        #expect(TelltaleRuntime.make(mode: .mock(.calm), dataDirectory: dir, disabledSensors: []).historyPersistent)
+        let persistent = TelltaleRuntime.make(mode: .live, dataDirectory: dir, disabledSensors: Set(SensorID.allCases))
+        await persistent.historyReady()
+        #expect(persistent.historyPersistent)
+        await persistent.shutdown()
+        let fallback = TelltaleRuntime.make(mode: .live, dataDirectory: URL(fileURLWithPath: "/dev/null/telltale"),
+                                            disabledSensors: Set(SensorID.allCases))
+        await fallback.historyReady()
+        #expect(!fallback.historyPersistent)
+        await fallback.shutdown()
+        let mock = TelltaleRuntime.make(mode: .mock(.calm), dataDirectory: dir, disabledSensors: [])
+        await mock.historyReady()
+        #expect(mock.historyPersistent)
         let h = try RuntimeHarness()
         #expect(h.pipeline.historyPersistent)
         #expect(!LivePipeline(engine: SamplingEngine(factory: SensorFactory { _ in SensorSuite() }), store: h.store,

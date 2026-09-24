@@ -36,12 +36,30 @@ import Testing
         #expect(summary.bytes == size)
     }
 
-    @Test func headerIsTimeThenEveryMetric() async throws {
+    @Test func headerIsTimeIntervalThenEveryMetric() async throws {
         let store = try await hourStore()
         let url = T.tempDir().appendingPathComponent("export.csv")
         _ = try await store.exportCSV(range: .hour, end: T.t0 + 3_600, to: url)
         let header = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").first.map(String.init)
-        #expect(header == (["time"] + HistoryMetric.allCases.map(\.rawValue)).joined(separator: ","))
+        #expect(header == (["time", "interval_s"] + HistoryMetric.allCases.map(\.rawValue)).joined(separator: ","))
+    }
+
+    /// A forced sample < 1 s after the previous one keeps a distinct timestamp; `interval_s` tells 1 s from 5 s rows.
+    @Test func timestampsCarryMillisecondsAndIntervals() async throws {
+        let store = try HistoryStore(location: .inMemory, config: T.config(TestClock()))
+        await store.append(RecordBatch(record: T.record(at: T.t0, system: [.cpuUsage: 1])))
+        await store.append(RecordBatch(record: T.record(at: T.t0 + 0.25, interval: .seconds(1), system: [.cpuUsage: 2])))
+        await store.append(RecordBatch(record: T.record(at: T.t0 + 1.25, interval: .milliseconds(1_500),
+                                                        system: [.cpuUsage: 3])))
+        try await store.flush()
+        let url = T.tempDir().appendingPathComponent("ms.csv")
+        _ = try await store.exportCSV(range: .hour, end: T.t0 + 60, to: url)
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").dropFirst()
+        #expect(lines.map { $0.split(separator: ",", omittingEmptySubsequences: false).prefix(3).joined(separator: ",") } == [
+            "2026-09-21T14:00:00.000Z,5,1.0",
+            "2026-09-21T14:00:00.250Z,1,2.0",
+            "2026-09-21T14:00:01.250Z,1.5,3.0",
+        ])
     }
 
     @Test func emptyRangeWritesHeaderOnlyAndOverwrites() async throws {
@@ -63,8 +81,8 @@ import Testing
         let summary = try await store.exportCSV(range: .week, end: T.t0 + 600, to: url)
         #expect(summary.rows == 10)
         let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
-        #expect(lines[1].hasPrefix("2026-09-21T14:00:00Z,2.0,"))
-        #expect(lines[2].hasPrefix("2026-09-21T14:01:00Z,"))
+        #expect(lines[1].hasPrefix("2026-09-21T14:00:00.000Z,60,2.0,"))            // a 1 m average covering 60 s
+        #expect(lines[2].hasPrefix("2026-09-21T14:01:00.000Z,60,"))
     }
 
     @Test func failedExportKeepsTheExistingFileAndLeavesNoTemp() async throws {

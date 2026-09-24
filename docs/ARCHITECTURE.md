@@ -1102,7 +1102,7 @@ event(id TEXT PRIMARY KEY, kind TEXT, start INTEGER, end INTEGER, level INTEGER,
 CREATE INDEX event_start ON event(start)
 ```
 
-At every open, after migrations, the store compares metric columns with `HistoryMetric.allCases`/`AppMetric.allCases` and runs `ALTER TABLE … ADD COLUMN <name> REAL` for missing ones (additive metrics need no migration). Range → table: hour/day → `*_raw`; week → `*_1m`; month → `*_15m`. Rollups aggregate completed buckets idempotently (`INSERT OR REPLACE … GROUP BY`), then retention deletes. CSV: `time,<metrics…>`, ISO-8601 UTC, streamed via cursor. DB: `$TELLTALE_DATA_DIR/history.sqlite` or `~/Library/Application Support/Telltale/history.sqlite`. Estimate < 60 MB (target < 200 MB).
+At every open, after migrations, the store compares metric columns with `HistoryMetric.allCases`/`AppMetric.allCases` and runs `ALTER TABLE … ADD COLUMN <name> REAL` for missing ones (additive metrics need no migration). Range → table: hour/day → `*_raw`; week → `*_1m`; month → `*_15m`. Rollups aggregate completed buckets idempotently (`INSERT OR REPLACE … GROUP BY`) and keep only apps whose bucket average passes a `RecordConfig` threshold (the rest fold into `other`), then retention deletes. Events still open at open (a crash/kill left them) end at the last sample at or after their start. Size guard: when the file exceeds 180 MB after maintenance, the oldest raw is pruned early (never the last hour; ranges over it read 1 m rollups) and logged. The in-memory fallback keeps raw 1 h, 1 m 24 h, 15 m 7 d (10 MB guard). A busy write is retried, then carried to the next flush. Quit checkpoints the WAL (TRUNCATE); `journal_size_limit` 8 MB. Open and migration run off the MainActor. CSV: `time,interval_s,<metrics…>`, ISO-8601 UTC with milliseconds, streamed via cursor. DB: `$TELLTALE_DATA_DIR/history.sqlite` or `~/Library/Application Support/Telltale/history.sqlite`; a corrupt file moves to `history.corrupt-<date>.sqlite`. Projection: ~75 MB UI closed, capped at 180 MB with the dashboard open all day (`docs/perf/2026-09-24-db-size.md`; target < 200 MB).
 
 ### 5.10 Services, preferences, navigation (`MonitorModel/Services/*`)
 
@@ -1315,7 +1315,7 @@ struct TTStatusGlyph: View { init(state: AlertState, size: CGFloat = 16, templat
 3. **Assembly**: missing values → snapshot fields `nil`; `frame.sensorHealth` carries reasons; restricted processes per §5.5.
 4. **UI**: every metric renders through `MetricValue(text, unavailableReason:, estimated:)` (§5.12) with the reason from `unavailableReason(…)` (§5.5). Whole-panel absence → `TTEmptyState` (no battery, SMART status-only, approximate thermal map shown as a caption).
 5. **States**: `LivePhase.collecting` until the first frame with rates; History: `coverage()` shorter than range → partial-history treatment (DESIGN "Partial history"); `nil` → empty.
-6. **Store**: open failure → in-memory store + History banner "History unavailable"; write failure → drop batch, `os_log` fault; newer `user_version` → move file aside, start fresh.
+6. **Store**: open failure → in-memory store (short retention) + History banner "History unavailable"; busy write → retry with backoff, then carry the batch to the next flush; other write failure → drop batch, `os_log` fault; newer `user_version` or corrupt file → move file aside, start fresh.
 7. **Actions**: `canControl == false` → disabled items; failures → `TTToast`.
 
 Logging: `os.Logger(subsystem: "dev.telltale", category: <module>)`; `print` only in CLIs.

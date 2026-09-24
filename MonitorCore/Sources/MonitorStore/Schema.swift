@@ -85,6 +85,15 @@ enum Schema {
         }
     }
 
+    static func hasMissingColumns(_ db: Database, _ columns: Columns) throws -> Bool {
+        for level in Level.allCases {
+            let system = Set(try db.columns(in: level.systemTable).map(\.name))
+            let app = Set(try db.columns(in: level.appTable).map(\.name))
+            if !system.isSuperset(of: columns.system) || !app.isSuperset(of: columns.app) { return true }
+        }
+        return false
+    }
+
     private static func addMissing(_ db: Database, table: String, wanted: [String]) throws {
         let existing = Set(try db.columns(in: table).map(\.name))
         for name in wanted where !existing.contains(name) {

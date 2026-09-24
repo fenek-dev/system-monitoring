@@ -28,6 +28,47 @@ enum Retention {
             """)
     }
 
+    struct SizeGuardResult: Sendable, Equatable {
+        /// Raw rows before this were deleted.
+        var rawCutoff: Int64
+        var bytesBefore: Int64, bytesAfter: Int64
+    }
+
+    /// Size guard (ruling R-I2): when the database (`page_count × page_size`) exceeds `capBytes`, deletes the
+    /// oldest raw rows in steps until the used pages fit 90 % of the cap, never at or after `keepFrom` (raw of the
+    /// last hour). Raw that old is already rolled up to 1 m by the pass before. nil when nothing was pruned.
+    /// Inside a transaction; the caller returns the freed pages (`PRAGMA incremental_vacuum`).
+    static func enforceSize(_ db: Database, capBytes: Int64, keepFrom: Int64) throws -> SizeGuardResult? {
+        let pageSize = Int64(try Int.fetchOne(db, sql: "PRAGMA page_size") ?? 4_096)
+        func pages(_ pragma: String) throws -> Int64 { Int64(try Int.fetchOne(db, sql: "PRAGMA \(pragma)") ?? 0) }
+        let fileBytes = try pages("page_count") * pageSize
+        guard fileBytes > capBytes else { return nil }
+        func usedBytes() throws -> Int64 { (try pages("page_count") - pages("freelist_count")) * pageSize }
+        guard var cutoff = try Int64.fetchOne(db, sql: "SELECT MIN(ts) FROM system_raw"), cutoff < keepFrom else {
+            return nil
+        }
+        let target = capBytes / 10 * 9
+        var used = try usedBytes()
+        var pruned = false
+        while used > target, cutoff < keepFrom {
+            cutoff = min(cutoff + max((keepFrom - cutoff) / 8, 60_000), keepFrom)
+            try db.execute(sql: "DELETE FROM system_raw WHERE ts < ?", arguments: [cutoff])
+            try db.execute(sql: "DELETE FROM app_raw WHERE ts < ?", arguments: [cutoff])
+            used = try usedBytes()
+            pruned = true
+        }
+        return pruned ? SizeGuardResult(rawCutoff: cutoff, bytesBefore: fileBytes, bytesAfter: used) : nil
+    }
+
+    /// Oldest raw row when raw was pruned early (a 1 m bucket inside raw retention lies wholly before it), else nil.
+    /// Queries starting before it read 1 m rollups instead of a raw gap.
+    static func rawFloor(_ db: Database, rawCutoff: Int64) throws -> Int64? {
+        guard let oldest = try Int64.fetchOne(db, sql: "SELECT MIN(ts) FROM system_raw") else { return nil }
+        let pruned = try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM system_1m WHERE ts >= ? AND ts <= ?)",
+                                       arguments: [rawCutoff, oldest - Level.minute.resolutionMs]) ?? false
+        return pruned ? oldest : nil
+    }
+
     /// Free pages above which a pass returns them to the OS (4 MB at 4 KB pages); below, SQLite reuses them.
     static let vacuumThresholdPages = 1_024
 

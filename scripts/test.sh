@@ -26,8 +26,14 @@ for filter in "$@"; do
         echo "--"
     fi
     tail -25 "$log"
+    # A filter that matches nothing "passes" with zero tests (a typo'd suite name); count both frameworks' runs.
+    ran=$(grep -Eo 'Test run with [0-9]+ tests?|Executed [0-9]+ tests?' "$log" | grep -Eo '[0-9]+' \
+        | awk '{ s += $1 } END { print s + 0 }')
     if [[ $status -ne 0 ]]; then
         echo "== FAILED: $filter (exit $status)"
+        failed=1
+    elif [[ $ran -eq 0 ]]; then
+        echo "== FAILED: $filter ran zero tests (no test matches the filter)"
         failed=1
     fi
 done
