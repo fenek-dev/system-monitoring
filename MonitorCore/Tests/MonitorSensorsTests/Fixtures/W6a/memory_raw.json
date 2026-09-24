@@ -1,0 +1,23 @@
+{
+  "activeCount" : 1826858,
+  "compressorCount" : 26395,
+  "externalCount" : 871268,
+  "freeCount" : 245646,
+  "freePercent" : 93,
+  "inactiveCount" : 1809109,
+  "internalCount" : 2792169,
+  "pageSize" : 16384,
+  "pageins" : 53189820,
+  "pageouts" : 120295,
+  "pressureLevel" : 1,
+  "purgeableCount" : 31158,
+  "speculativeCount" : 27470,
+  "swapFiles" : 2,
+  "swapTotal" : 2147483648,
+  "swapUsed" : 818020352,
+  "swapins" : 1442557,
+  "swapouts" : 2668900,
+  "total" : 68719476736,
+  "uncompressedInCompressor" : 241833,
+  "wireCount" : 231303
+}
