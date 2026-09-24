@@ -99,6 +99,7 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         let all = assemble(&sa, RawTick(uptimeNs: 3 * sec, memory: fresh(m, 3 * sec)))
         #expect(all.metrics[.memUsed] == Double(4_200 * page))   // regression: not Double(bitPattern:)
         #expect(all.metrics[.swapUsed] == Double(1 << 30))
+        #expect(all.metrics[.memPressureLevel] == 2)                // ICR-12: MemoryPressureLevel.warning.rawValue
         let s = all.memory
         #expect(s.total == 24 << 30)
         #expect(s.appMemory == 3_000 * page)

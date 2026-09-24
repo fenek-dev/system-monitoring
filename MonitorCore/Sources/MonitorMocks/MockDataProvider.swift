@@ -521,6 +521,7 @@ public struct MockDataProvider: Sendable {
         m[.memWired] = memory.wired.map { Double($0) }
         m[.memCompressed] = memory.compressed.map { Double($0) }
         m[.memPressure] = memory.pressureFraction
+        m[.memPressureLevel] = memory.pressureLevel.map { Double($0.rawValue) }     // ICR-12
         m[.swapUsed] = memory.swapUsed.map { Double($0) }
         m[.netRx] = network.rxBps
         m[.netTx] = network.txBps

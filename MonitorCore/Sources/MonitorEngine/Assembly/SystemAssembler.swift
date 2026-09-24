@@ -160,6 +160,7 @@ struct SystemAssembler {
         s.metrics[.memWired] = snap.wired.map { Double($0) }
         s.metrics[.memCompressed] = snap.compressed.map { Double($0) }
         s.metrics[.memPressure] = snap.pressureFraction
+        s.metrics[.memPressureLevel] = snap.pressureLevel.map { Double($0.rawValue) }     // ICR-12
         s.metrics[.swapUsed] = snap.swapUsed.map { Double($0) }
     }
 
