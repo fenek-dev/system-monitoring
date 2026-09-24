@@ -103,7 +103,11 @@ intervals=$(/usr/bin/log show --last "${since_min}m" --style compact \
     --predicate "processID == $pid AND subsystem == \"dev.telltale\" AND category == \"Runtime\"" 2>/dev/null \
     | grep -o 'frame intervals.*' | tail -4 || true)
 
+visibility=$(/usr/bin/log show --last "${since_min}m" --style compact \
+    --predicate "processID == $pid AND subsystem == \"dev.telltale\" AND category == \"Visibility\"" 2>/dev/null \
+    | grep -c 'mode=' || true)
 echo "perf.sh: CPU ${cpu_pct} % of one core over $((end_wall - start_wall)) s; RSS ${rss_stats}; drift ${drift} MB"
+echo "perf.sh: visibility changes during the run (incl. launch): ${visibility}"
 [[ -n "$intervals" ]] && echo "$intervals"
 
 bench_out=""
@@ -123,7 +127,7 @@ if [[ ! -f "$out" ]]; then
         echo
         echo "Machine: $(sysctl -n hw.model), $(sysctl -n machdep.cpu.brand_string), $(( $(sysctl -n hw.memsize) / 1073741824 )) GB, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))."
         echo "Budget (ARCHITECTURE §7, advisory): UI closed < 1 % of one core avg, < 80 MB RSS; interactive ≈ 4–5 %."
-        echo "Build: Debug app from scripts/build.sh; probe bench in release. Shared machine: other agents run builds/tests concurrently."
+        echo "Build: per section (Debug = scripts/build.sh, Release = perf.sh --release); probe bench in release. Shared machine: other agents run builds/tests concurrently."
     } > "$out"
 fi
 {
@@ -132,6 +136,7 @@ fi
     echo
     echo "- CPU: **${cpu_pct} %** of one core (Δ CPU time $(awk -v a="$start_cpu" -v b="$end_cpu" 'BEGIN { printf "%.2f", b - a }') s over $((end_wall - start_wall)) s wall, after ${warmup} s warm-up)"
     echo "- RSS: ${rss_stats}; start ${rss_first} MB → end ${rss_last} MB (drift ${drift} MB)"
+    echo "- Visibility changes logged since launch: ${visibility} (a UI-closed run expects 0; more = someone used the UI)"
     if [[ -n "$intervals" ]]; then
         echo "- Tick periods (LivePipeline log):"
         echo "$intervals" | sed 's/^/  - /'
