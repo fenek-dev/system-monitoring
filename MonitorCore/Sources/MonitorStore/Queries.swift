@@ -108,7 +108,11 @@ enum Queries {
 extension Level {
     /// Range → table: live/hour/day → raw; week → 1 m; month → 15 m.
     static func forRange(_ range: HistoryRange) -> Level {
-        .raw
+        switch range {
+        case .live, .hour, .day: .raw
+        case .week: .minute
+        case .month: .quarter
+        }
     }
 }
 
