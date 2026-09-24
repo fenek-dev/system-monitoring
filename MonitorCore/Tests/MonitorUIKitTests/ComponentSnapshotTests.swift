@@ -8,7 +8,7 @@ import Testing
 @MainActor @Suite struct ComponentSnapshotTests {
     nonisolated static let ids = ["icons", "metric-tiles", "stat-strip", "controls", "bars", "key-value", "states",
                                   "timeline-card", "cpu-usage", "net-throughput", "thermal-lines", "gpu-dual",
-                                  "processes-list", "search-field", "core-bars", "fan-gauges", "treemap"]
+                                  "processes-list", "search-field", "core-bars", "fan-gauges", "treemap", "row-action", "tile-states", "alert-banner", "confirm-dialog", "toast", "top-processes"]
 
     @Test(arguments: ids)
     func galleryItem(id: String) throws {

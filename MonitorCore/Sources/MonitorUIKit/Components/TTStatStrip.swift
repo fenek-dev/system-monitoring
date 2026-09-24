@@ -40,9 +40,15 @@ public struct TTStatStrip: View, Equatable {
                         .font(TTFont.caption)
                         .foregroundStyle(TTColor.textSecondary)
                         .lineLimit(1)
-                    MetricValue(item.text, unavailableReason: item.unavailableReason, font: TTFont.stat)
-                        .foregroundStyle(item.tint ?? TTColor.textPrimary)
-                        .minimumScaleFactor(0.8)
+                    // A hidden unscaled line fixes the `stat` line height; the value overlays it and may scale down
+                    // (≥ 0.8) to the cell width without moving the sub-line.
+                    Text("0").font(TTFont.stat).hidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .overlay(alignment: .leading) {
+                            MetricValue(item.text, unavailableReason: item.unavailableReason, font: TTFont.stat)
+                                .foregroundStyle(item.tint ?? TTColor.textPrimary)
+                                .minimumScaleFactor(0.8)
+                        }
                     if let detail = item.detail {
                         Text(detail)
                             .font(TTFont.caption)
