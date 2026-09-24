@@ -3,7 +3,9 @@ import MonitorModel
 /// Order (ruling, N6): (1) measured Δ ri_energy_nj (v6) for permitted pids;
 /// (2) coalition energy residual for restricted members, same coalition scope and fill/synthetic rules as CoalitionAttributor —
 ///     skipped entirely when v6 is unavailable (residual would equal the whole coalition → double count with step 3);
-/// (3) SoC share (IOReport cpuW × cpu share + gpuW × gpu share) assigned only to pids still without a value.
+/// (3) SoC share (IOReport cpuW × cpu share) assigned only to pids still without a value.
+/// GPU term (ICR-8: v6 `ri_energy_nj` excludes GPU energy): every row with an AGX GPU share additionally gets
+/// IOReport gpuW × its share of the whole GPU (gpuPercent / 100, scaled down if Σ > 100 %); skipped without gpuW.
 public protocol EnergyAttributor: Sendable {
     mutating func watts(processes: [ProcessSample], coalitions: CoalitionDeltas, soc: SoCPowerReading?, dt: Double) -> [ProcessID: Double]
     /// Step 3 used this tick → energyEstimated on those rows.
@@ -80,22 +82,32 @@ public struct RulingEnergyAttributor: EnergyAttributor {
             }
         }
 
-        // (3) SoC share for rows still without a value, outside closed scopes
-        guard let soc, soc.cpuWatts != nil || soc.gpuWatts != nil else { return out }
-        var cpuTotal = 0.0, gpuTotal = 0.0
-        for p in processes {
-            cpuTotal += p.cpuPercent ?? 0
-            gpuTotal += p.gpuPercent ?? 0
+        guard let soc else { return out }
+
+        // (3) CPU-side SoC share for rows still without a value, outside closed scopes (GPU is the separate term below)
+        if let cpuW = soc.cpuWatts {
+            let cpuTotal = processes.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+            if cpuTotal > 0 {
+                for p in processes where out[p.id] == nil {
+                    if let cid = p.coalitionID, closedScopes.contains(cid) { continue }
+                    guard let c = p.cpuPercent else { continue }
+                    out[p.id] = cpuW * c / cpuTotal
+                    estimatedIDs.insert(p.id)
+                    usesSoCShareFallback = true
+                }
+            }
         }
-        for p in processes where out[p.id] == nil {
-            if let cid = p.coalitionID, closedScopes.contains(cid) { continue }
-            var w: Double?
-            if let cpuW = soc.cpuWatts, let c = p.cpuPercent, cpuTotal > 0 { w = (w ?? 0) + cpuW * c / cpuTotal }
-            if let gpuW = soc.gpuWatts, let g = p.gpuPercent, gpuTotal > 0 { w = (w ?? 0) + gpuW * g / gpuTotal }
-            if let w {
-                out[p.id] = w
-                estimatedIDs.insert(p.id)
-                usesSoCShareFallback = true
+
+        // GPU term (ICR-8), every row with an AGX share, restricted and synthetic rows included
+        if let gpuW = soc.gpuWatts {
+            let gpuTotal = processes.reduce(0) { $0 + ($1.gpuPercent ?? 0) }
+            let scale = 1 / max(100, gpuTotal)                  // shares of the whole GPU; never more than all of it
+            for p in processes {
+                guard let g = p.gpuPercent, g > 0 else { continue }
+                let term = gpuW * g * scale
+                let total = (out[p.id] ?? 0) + term
+                out[p.id] = total
+                if total > 0, term / total > 0.1 { estimatedIDs.insert(p.id) }
             }
         }
         return out

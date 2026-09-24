@@ -117,6 +117,59 @@ private let soc = SoCPowerReading(interval: .seconds(1), cpuWatts: 4, gpuWatts: 
         #expect(w.values.reduce(0, +) == 2.0)                // = the coalition, not more
     }
 
+    // MARK: ICR-8 GPU term (v6 excludes GPU energy)
+
+    @Test func gpuOnlyProcessGetsGPUWattsTimesShare() throws {
+        var e = RulingEnergyAttributor()
+        let gpuOnly = row(10, cid: nil, .measured, cpu: 0, gpu: 50, watts: 0.01)    // v6 sees almost nothing
+        let cpuOnly = row(11, cid: nil, .measured, cpu: 100, watts: 3)
+        let w = e.watts(processes: [gpuOnly, cpuOnly], coalitions: CoalitionDeltas(), soc: soc, dt: 1)
+        let got: Double = try #require(w[gpuOnly.id])
+        #expect(abs(got - 1.01) < 1e-12)
+        #expect(w[cpuOnly.id] == 3)
+        #expect(e.estimatedIDs == [gpuOnly.id])                 // GPU term > 10 % of its total
+    }
+
+    @Test func smallGPUTermKeepsMeasuredRowUnestimated() {
+        var e = RulingEnergyAttributor()
+        let r = row(10, cid: nil, .measured, cpu: 100, gpu: 1, watts: 3)          // 0.02 W GPU of 3.02 W
+        _ = e.watts(processes: [r], coalitions: CoalitionDeltas(), soc: soc, dt: 1)
+        #expect(e.estimatedIDs.isEmpty)
+    }
+
+    @Test func restrictedRowsGetGPUTermEvenInClosedScopes() throws {
+        var e = RulingEnergyAttributor()
+        let ps = [row(418, cid: 1, .restricted, gpu: 40), row(419, cid: 1, .restricted), row(-1, cid: 1, .coalition, cpu: 30),
+                  row(50, cid: 1, .measured, cpu: 1, watts: 0.25)]
+        let w = e.watts(processes: ps, coalitions: coalitions([1: 1.0]), soc: soc, dt: 1)
+        #expect(abs(try #require(w[ps[0].id]) - 0.8) < 1e-12)  // 2 W × 40 %
+        #expect(w[ps[1].id] == nil)
+        #expect(abs(try #require(w[.coalitionResidual(1)]) - 0.75) < 1e-12)
+        #expect(e.estimatedIDs.contains(ps[0].id))
+    }
+
+    @Test func gpuTermSkippedWithoutGPUWatts() {
+        var e = RulingEnergyAttributor()
+        let r = row(10, cid: nil, .measured, cpu: 0, gpu: 50, watts: 0.5)
+        let w = e.watts(processes: [r], coalitions: CoalitionDeltas(), soc: SoCPowerReading(cpuWatts: 4), dt: 1)
+        #expect(w[r.id] == 0.5)
+        #expect(e.estimatedIDs.isEmpty)
+    }
+
+    @Test func fallbackModeWithGPUNeverExceedsSoC() {
+        var e = RulingEnergyAttributor()
+        // no v6 anywhere; AGX shares sum above 100 % (per-client overlap) → scaled to the whole GPU
+        let ps = [row(10, cid: nil, .measured, cpu: 100, gpu: 90), row(11, cid: nil, .measured, cpu: 100, gpu: 60),
+                  row(12, cid: nil, .restricted, gpu: 30)]
+        let w = e.watts(processes: ps, coalitions: CoalitionDeltas(), soc: soc, dt: 1)
+        let total = w.values.reduce(0, +)
+        #expect(total <= 4 + 2 + 1e-9)
+        #expect(abs(total - 6) < 1e-9)
+        let expected: Double = 2.0 + 2.0 * 90.0 / 180.0
+        let got: Double = w[ps[0].id] ?? -1
+        #expect(abs(got - expected) < 1e-12)
+    }
+
     @Test func flagResetsEachTick() {
         var e = RulingEnergyAttributor()
         let nilRow = [row(11, cid: nil, .measured, cpu: 50)]

@@ -73,6 +73,10 @@ import Testing
         let system = try #require(f.apps.first { $0.identity.key == .system })
         #expect(abs(system.gpuPercent! - 10) < 1e-9)
         #expect(f.apps.first { $0.identity.key == Self.b.key }?.gpuPercent == 20)
+        // ICR-8: v6 0.1 W + IOReport GPU 2 W × 20 % share → 0.5 W, estimated (GPU term > 10 %)
+        let p20 = try #require(f.processes[pid: 20])
+        #expect(abs(p20.energyWatts! - 0.5) < 1e-9)
+        #expect(p20.energyEstimated)
     }
 
     @Test func energyEstimatedPropagatesToAppsInFallbackMode() throws {
