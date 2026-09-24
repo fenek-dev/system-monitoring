@@ -16,10 +16,14 @@ public struct ShellContext {
     public var appCommands: AppCommands
     public var isSnapshot: Bool
     public var now: Date?
+    /// False when the store fell back to memory (open failure) → History shows "History unavailable" (§6.6).
+    public var historyPersistent: Bool
 
     public init(live: LiveModel, navigation: NavigationModel = NavigationModel(), settings: SettingsStore,
                 history: any HistoryProvider = EmptyHistoryProvider(), processActions: ProcessActions = .noop,
-                appCommands: AppCommands = .noop, isSnapshot: Bool = false, now: Date? = nil) {
+                appCommands: AppCommands = .noop, isSnapshot: Bool = false, now: Date? = nil,
+                historyPersistent: Bool = true) {
+        self.historyPersistent = historyPersistent
         self.live = live
         self.navigation = navigation
         self.settings = settings
@@ -29,6 +33,12 @@ public struct ShellContext {
         self.isSnapshot = isSnapshot
         self.now = now
     }
+}
+
+public extension EnvironmentValues {
+    /// `TelltaleRuntime.historyPersistent`: false when the history store runs in memory (open failure,
+    /// ARCHITECTURE §6.6); HistoryPage (W5c) shows "History unavailable". Default true (renders, previews).
+    @Entry var historyPersistent: Bool = true
 }
 
 public extension View {
@@ -56,6 +66,7 @@ private struct ShellEnvironmentModifier: ViewModifier {
             .environment(\.appCommands, context.appCommands)
             .environment(\.isSnapshot, context.isSnapshot)
             .environment(\.now, context.now)
+            .environment(\.historyPersistent, context.historyPersistent)
             .preferredColorScheme(.dark)
             .environment(\.colorScheme, .dark)
         if context.isSnapshot {
