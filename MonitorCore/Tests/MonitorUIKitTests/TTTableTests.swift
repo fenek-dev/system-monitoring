@@ -46,6 +46,18 @@ import Testing
         #expect(tight[0] == 50)
     }
 
+    @Test func columnWidthsPinSeveralMinimumsAndRedistribute() {
+        // 400 − 4·10 − 60 = 300 flexible; equal shares would be 75. The 120-min and 100-min columns pin,
+        // leaving 300 − 120 − 100 = 80 for the other two (40 each).
+        let w = T.columnWidths([.flexible(min: 120), .flexible(min: 0), .fixed(60), .flexible(min: 100), .flexible(min: 0)],
+                               available: 400, gap: 10)
+        #expect(w == [120, 40, 60, 100, 40])
+        // A weighted column that pins frees its share for the others.
+        let f = T.columnWidths([.fraction(3, min: 0), .fraction(1, min: 200), .flexible(min: 0)], available: 424, gap: 12)
+        // 400 flexible; share of col1 = 80 < 200 → pinned; remaining 200 over weights 3 + 1 → 150, 50.
+        #expect(f == [150, 200, 50])
+    }
+
     @Test func rowMenuModel() {
         let mine = ProcessTarget.process(pid: 2210, name: "Final Cut Pro", path: "/Applications/Final Cut Pro.app", uid: 501)
         let m1 = TTRowActionsMenu.model(target: mine, canControl: true, hasForceQuitHandler: true, ownPID: 1, ownBundleID: nil)
@@ -60,6 +72,11 @@ import Testing
                                    pids: [77])
         let m3 = TTRowActionsMenu.model(target: me, canControl: true, hasForceQuitHandler: true, ownPID: 77, ownBundleID: nil)
         #expect(m3.quitsTelltale && m3.quitEnabled && !m3.forceQuitVisible)
+        let rootApp = ProcessTarget.app(AppIdentity(key: AppKey(kind: .process, id: "/usr/sbin/mds"), displayName: "mds"),
+                                        pids: [300])
+        let m4 = TTRowActionsMenu.model(target: rootApp, canControl: false, hasForceQuitHandler: true, ownPID: 1, ownBundleID: nil)
+        #expect(m4.ownerHeader == "Owned by another user")
+        #expect(!m4.quitEnabled && !m4.forceQuitEnabled && m4.forceQuitVisible && !m4.revealEnabled && !m4.quitsTelltale)
         // No confirm handler → Force Quit disabled (it must always confirm).
         #expect(!TTRowActionsMenu.model(target: mine, canControl: true, hasForceQuitHandler: false, ownPID: 1,
                                         ownBundleID: nil).forceQuitEnabled)

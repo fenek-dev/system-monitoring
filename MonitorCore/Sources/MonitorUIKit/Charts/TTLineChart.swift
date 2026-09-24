@@ -6,8 +6,14 @@ import SwiftUI
 /// space-between, top = upper bound) and the plot (lines only; widths from each series, default 1.5).
 /// Swift Charts (page chart); points capped at 600 in total by min/max decimation (ARCHITECTURE §7).
 /// Gaps break lines (each run is its own mark series). Faint gridlines at quarters.
-public struct TTLineChart: View {
-    struct Mark: Identifiable {
+public struct TTLineChart: View, Equatable {
+    struct LineStyle: Equatable, Sendable {
+        let color: Color
+        let width: CGFloat
+        let dash: [CGFloat]
+    }
+
+    struct Mark: Identifiable, Equatable, Sendable {
         let id: Int
         let run: String
         let time: Date
@@ -18,7 +24,8 @@ public struct TTLineChart: View {
     static let maxTotalPoints = 600
 
     let marks: [Mark]
-    let styles: [(color: Color, width: CGFloat, dash: [CGFloat])]
+    let styles: [LineStyle]
+    let summary: String
     let yDomain: ClosedRange<Double>
     let xDomain: ClosedRange<Date>?
     let labels: [String]
@@ -43,7 +50,8 @@ public struct TTLineChart: View {
             samples = max(samples, ChartSegments.sampleCount(pts))
         }
         self.marks = marks
-        styles = series.map { ($0.color.opacity($0.lineOpacity), $0.lineWidth ?? TTStroke.spark, $0.dash) }
+        styles = series.map { LineStyle(color: $0.color.opacity($0.lineOpacity), width: $0.lineWidth ?? TTStroke.spark, dash: $0.dash) }
+        summary = ChartAccessibility.summary(series, format: yFormat)
         if let minT, let maxT, maxT > minT { xDomain = minT...maxT } else { xDomain = nil }
         labels = (0..<5).map { k in yFormat(yDomain.upperBound - Double(k) / 4 * (yDomain.upperBound - yDomain.lowerBound)) }
         sampleCount = samples
@@ -58,8 +66,11 @@ public struct TTLineChart: View {
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
+            .accessibilityHidden(true)
             plot
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(summary)
     }
 
     @ViewBuilder private var plot: some View {

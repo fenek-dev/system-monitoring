@@ -27,18 +27,21 @@ public extension MonitorModel.Category {
 }
 
 /// DESIGN §2.4 Overview metric tile: card padding 14×16, height 168, VStack gap 6; header (icon 16, title
-/// `body12Strong`, chevron 12); value `display` + unit `displayUnit` (Network: "↓ " before the value);
-/// sub `caption`; spacer; sparkline full width × 40 (line 1.5, fill 0.22). Hover: border white @ 0.14.
-public struct TTMetricTile: View {
+/// `body12Strong`, chevron 12); value `display` with `prefix` ("↓ ", Network) and `unit` in `displayUnit`;
+/// sub `caption`; spacer; sparkline full width × 40 (line 1.5, fill 0.22).
+/// With an `action` the tile is a button: hover border white @ 0.14, pressed bg white @ 0.03.
+public struct TTMetricTile: View, Equatable {
     let category: MonitorModel.Category
     let value: String?
+    let prefix: String?
     let unit: String?
     let detail: String?
     let points: [SeriesPoint]
     let unavailableReason: String?
     let yDomain: ClosedRange<Double>?
-    @State private var hovering = false
+    let action: (@MainActor () -> Void)?
 
+    /// Legacy form: for Network a `unit` of "↓ " is treated as the prefix.
     public init(category: MonitorModel.Category, value: String?, unit: String?, detail: String?, points: [SeriesPoint],
                 unavailableReason: String?) {
         self.init(category: category, value: value, unit: unit, detail: detail, points: points,
@@ -46,15 +49,29 @@ public struct TTMetricTile: View {
     }
 
     /// `yDomain` nil → category default (§5.10), else auto nice ceiling.
-    public init(category: MonitorModel.Category, value: String?, unit: String?, detail: String?, points: [SeriesPoint],
-                unavailableReason: String?, yDomain: ClosedRange<Double>?) {
+    public init(category: MonitorModel.Category, value: String?, prefix: String? = nil, unit: String?, detail: String?,
+                points: [SeriesPoint], unavailableReason: String?, yDomain: ClosedRange<Double>?,
+                action: (@MainActor () -> Void)? = nil) {
         self.category = category
         self.value = value
-        self.unit = unit
+        if prefix == nil, category == .network, let unit, unit.hasPrefix("↓") || unit.hasPrefix("↑") {
+            self.prefix = unit
+            self.unit = nil
+        } else {
+            self.prefix = prefix
+            self.unit = unit
+        }
         self.detail = detail
         self.points = points
         self.unavailableReason = unavailableReason
         self.yDomain = yDomain
+        self.action = action
+    }
+
+    public nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.category == b.category && a.value == b.value && a.prefix == b.prefix && a.unit == b.unit && a.detail == b.detail
+            && a.points == b.points && a.unavailableReason == b.unavailableReason && a.yDomain == b.yDomain
+            && (a.action == nil) == (b.action == nil)
     }
 
     var domain: ClosedRange<Double> {
@@ -64,56 +81,86 @@ public struct TTMetricTile: View {
         return 0...TTFormat.niceCeiling(maxValue, minimum: maxValue > 0 ? 1e-9 : 1)
     }
 
-    private var isAvailable: Bool { value != nil && value != TTFormat.unavailable }
-
     public var body: some View {
-        VStack(alignment: .leading, spacing: TTSpace.x6) {
-            HStack(spacing: TTSpace.x7) {
-                TTIcon(TTIconName.category(category), size: 16)
-                Text(category.ttTitle)
-                    .font(TTFont.body12Strong)
-                    .foregroundStyle(TTColor.textPrimary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                TTIcon(.chevronRight, size: 12)
-            }
-            valueLine.padding(.top, TTSpace.x2)
-            Text(detail ?? "")
-                .font(TTFont.caption)
-                .foregroundStyle(TTColor.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-            TTAreaChart(points, color: TTColor.category(category), yDomain: domain, fillOpacity: TTChartFill.sparkline,
-                        lineWidth: TTStroke.spark)
-                .frame(height: 40)
+        if let action {
+            Button(action: action) { content(pressed: false) }
+                .buttonStyle(TilePressStyle(tile: self))
+        } else {
+            content(pressed: false)
         }
-        .padding(.vertical, TTSpace.tileVerticalPadding + TTStroke.hairline)
-        .padding(.horizontal, TTSpace.cardPadding + TTStroke.hairline)
-        .frame(maxWidth: .infinity, minHeight: 168, maxHeight: 168, alignment: .topLeading)
-        .ttCardBackground(border: hovering ? TTColor.borderPopover : TTColor.borderCard)
-        .contentShape(RoundedRectangle(cornerRadius: TTRadius.card))
-        .onHover { hovering = $0 }
-        .accessibilityElement(children: .combine)
     }
 
-    @ViewBuilder private var valueLine: some View {
-        if !isAvailable {
-            MetricValue(nil, unavailableReason: unavailableReason, font: TTFont.display)
-        } else if category == .network {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(unit ?? "↓ ").font(TTFont.displayUnit).foregroundStyle(TTColor.textSecondary)
-                Text(value ?? "").font(TTFont.display).foregroundStyle(TTColor.textPrimary).lineLimit(1)
+    func content(pressed: Bool) -> some View {
+        TileContent(tile: self, pressed: pressed)
+    }
+
+    private struct TilePressStyle: ButtonStyle {
+        let tile: TTMetricTile
+        func makeBody(configuration: Configuration) -> some View {
+            TileContent(tile: tile, pressed: configuration.isPressed)
+        }
+    }
+
+    private struct TileContent: View {
+        let tile: TTMetricTile
+        let pressed: Bool
+        @State private var hovering = false
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: TTSpace.x6) {
+                HStack(spacing: TTSpace.x7) {
+                    TTIcon(TTIconName.category(tile.category), size: 16)
+                    Text(tile.category.ttTitle)
+                        .font(TTFont.body12Strong)
+                        .foregroundStyle(TTColor.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    TTIcon(.chevronRight, size: 12)
+                }
+                valueLine.padding(.top, TTSpace.x2)
+                Text(tile.detail ?? "")
+                    .font(TTFont.caption)
+                    .foregroundStyle(TTColor.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+                TTAreaChart(tile.points, color: TTColor.category(tile.category), yDomain: tile.domain,
+                            fillOpacity: TTChartFill.sparkline, lineWidth: TTStroke.spark)
+                    .frame(height: 40)
             }
-            .minimumScaleFactor(0.7)
-        } else {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(value ?? "").font(TTFont.display).foregroundStyle(TTColor.textPrimary)
-                if let unit {
-                    Text(TTUnit.spaced(unit)).font(TTFont.displayUnit).foregroundStyle(TTColor.textSecondary)
+            .padding(.vertical, TTSpace.tileVerticalPadding + TTStroke.hairline)
+            .padding(.horizontal, TTSpace.cardPadding + TTStroke.hairline)
+            .frame(maxWidth: .infinity, minHeight: 168, maxHeight: 168, alignment: .topLeading)
+            .ttCardBackground(border: hovering && tile.action != nil ? TTColor.borderPopover : TTColor.borderCard)
+            .overlay {
+                if pressed {
+                    RoundedRectangle(cornerRadius: TTRadius.card, style: .continuous).fill(Color.white.opacity(0.03))
                 }
             }
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .contentShape(RoundedRectangle(cornerRadius: TTRadius.card))
+            .onHover { hovering = $0 }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(tile.category.ttTitle)
+            .accessibilityValue([TTUnit.join(tile.value, tile.unit).map { (tile.prefix ?? "") + $0 } ?? "unavailable",
+                                 tile.detail ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))
+            .accessibilityAddTraits(tile.action != nil ? .isButton : [])
+        }
+
+        @ViewBuilder private var valueLine: some View {
+            if !(tile.value != nil && tile.value != TTFormat.unavailable) {
+                MetricValue(nil, unavailableReason: tile.unavailableReason, font: TTFont.display)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    if let prefix = tile.prefix {
+                        Text(prefix).font(TTFont.displayUnit).foregroundStyle(TTColor.textSecondary)
+                    }
+                    Text(tile.value ?? "").font(TTFont.display).foregroundStyle(TTColor.textPrimary)
+                    if let unit = tile.unit {
+                        Text(TTUnit.spaced(unit)).font(TTFont.displayUnit).foregroundStyle(TTColor.textSecondary)
+                    }
+                }
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            }
         }
     }
 }
