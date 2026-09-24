@@ -157,7 +157,7 @@ public final class FlyoutState {
 /// flyout body (row-order freeze) does not re-render on every move.
 @MainActor @Observable
 public final class FlyoutPointer {
-    public static let space = "flyout"
+    public nonisolated static let space = "flyout"
     public var location: CGPoint?
     public var inside = false
 

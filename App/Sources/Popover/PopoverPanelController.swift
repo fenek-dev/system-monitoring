@@ -29,8 +29,8 @@ final class PopoverPanelController: NSObject {
     private var lastClose: ContinuousClock.Instant?
     /// Top-apps flyout beside the panel (DESIGN §2.22), fed by the rows' hover events; dismissed on close.
     private lazy var flyout = FlyoutPanelController(env: env) { [weak self] in
-        guard let panel = self?.panel else { return nil }
-        return (panel.frame, panel.screen ?? self?.anchorScreen())
+        guard let self, let panel, let view = host?.view else { return nil }
+        return FlyoutPanelController.Popover(window: panel, hostView: view, screen: panel.screen ?? anchorScreen())
     }
 
     /// `shortcuts` handles ⌘Q/⌘,/⌘D while the panel is key (the app is not active, so the main menu does not
@@ -61,8 +61,9 @@ final class PopoverPanelController: NSObject {
         // Visibility first: `live.presentation` must apply the latest frame before the view tree reads it.
         onVisibilityChange(true)
         let root = PopoverContainer(drawsShadow: false) {
-            PopoverRoot(onRowHover: { [weak self] event in self?.rowHover(event) })
+            PopoverRoot(onRowHover: { [weak self] event in self?.flyout.rowHover(event) })
         }
+        .environment(flyout.state)                      // source row keeps its hover fill while its flyout shows
         .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: AnyView(root))
         host.sizingOptions = [.preferredContentSize]
@@ -80,9 +81,11 @@ final class PopoverPanelController: NSObject {
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentViewController = host
         panel.setAccessibilityLabel("Warden")
+        panel.acceptsMouseMovedEvents = true            // flyout safe-triangle aim samples the pointer
 
         self.panel = panel
         self.host = host
+        flyout.activate()
         place()
         sizeObservation = host.observe(\.preferredContentSize, options: [.new]) { [weak self] _, _ in
             Task { @MainActor in self?.place() }
@@ -145,6 +148,7 @@ final class PopoverPanelController: NSObject {
         panel.setFrame(f, display: true)
         placing = false
         reclamp()
+        flyout.reposition()
         Self.log.debug("""
             place anchor=\(String(describing: a), privacy: .public) visible=\(String(describing: screen.visibleFrame), privacy: .public) \
             size=\(String(describing: size), privacy: .public) → \(String(describing: panel.frame), privacy: .public)
@@ -160,6 +164,7 @@ final class PopoverPanelController: NSObject {
             placing = true
             panel.setFrame(c, display: true)
             placing = false
+            flyout.reposition()
         }
         panel.invalidateShadow()
     }
@@ -172,14 +177,6 @@ final class PopoverPanelController: NSObject {
 
     private var placing = false
     private static let log = Logger(subsystem: "dev.telltale", category: "Popover")
-
-    /// Row hover → flyout, with the row's frame converted from the hosting view (SwiftUI `.global`, flipped) to
-    /// screen coordinates.
-    private func rowHover(_ event: PopoverRowHover) {
-        guard let panel, let view = host?.view else { return }
-        let screenRect = panel.convertToScreen(view.convert(event.frame, to: nil))
-        flyout.rowHover(event.category, phase: event.phase, screenRect: screenRect)
-    }
 
     // MARK: Dismissal
 
