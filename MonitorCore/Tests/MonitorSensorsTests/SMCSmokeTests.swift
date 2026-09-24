@@ -12,7 +12,7 @@ extension SMCKeySweep.Phase {
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh SMCSmokeTests`. The E-core experiment (~3 min) additionally needs
 /// `TELLTALE_W6B_ECORE=1`.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive, .offCooperativePool)
 struct SMCSmokeTests {
     /// The M1 Max 14" the catalog and these reference values were measured on.
     static let verifiedModel = "MacBookPro18,4"

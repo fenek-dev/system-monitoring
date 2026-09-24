@@ -4,7 +4,7 @@ import Testing
 @testable import MonitorSensors
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh BatterySmokeTests`. Reference: `ioreg -rn AppleSmartBattery`, `pmset -g batt`.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive, .offCooperativePool)
 struct BatterySmokeTests {
     static let sourceKeys: Set<String> = [
         "Current Capacity", "Max Capacity", "Is Charging", "Is Present", "Power Source State", "Time to Empty",

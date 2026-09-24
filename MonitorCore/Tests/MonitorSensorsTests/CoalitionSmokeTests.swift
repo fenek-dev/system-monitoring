@@ -7,7 +7,7 @@ import Testing
 
 /// Hardware smoke: opt-in, run one suite at a time at checkpoints; never in parallel with other suites or builds
 /// (load-sensitive). `TELLTALE_HW_TESTS=1 swift test --no-parallel --filter CoalitionSmokeTests`.
-@Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6aFixture.hardwareTests), .serialized, .offCooperativePool)
 struct CoalitionSmokeTests {
     @Test func captureUsageFixture() throws {
         guard W6aFixture.capture else { return }

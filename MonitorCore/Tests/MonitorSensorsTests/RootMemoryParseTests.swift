@@ -4,10 +4,10 @@ import Testing
 @testable import MonitorModel
 @testable import MonitorSensors
 
-/// `.serialized`: the box tests block their thread by design (`sample(firstWait:)`, `waitIdle`). Run in parallel they
-/// park up to 7 cooperative-pool threads; once all ncpu cooperative threads are blocked, the kernel admits no
-/// non-overcommit GCD threads, so the box's `.utility` concurrent run queue stalls until a waiter times out.
-@Suite(.serialized) struct RootMemoryParseTests {
+/// `.offCooperativePool`: the box tests block their thread by design (`sample(firstWait:)`, `waitIdle`). On
+/// cooperative-pool threads that starves the process: once all ncpu cooperative threads are blocked, the kernel
+/// admits no non-overcommit GCD threads, so the box's `.utility` concurrent run queue stalls until a waiter times out.
+@Suite(.serialized, .offCooperativePool) struct RootMemoryParseTests {
     @Test func parsesPidAndRSSKilobytesToBytes() {
         let out = "    1  12640\n  418 6086432\n99999      0\n"
         #expect(RootMemoryParser.parse(out) == [1: 12_640 * 1024, 418: 6_086_432 * 1024, 99_999: 0])
@@ -56,8 +56,14 @@ import Testing
         #expect(try RootMemoryParser.reading(" \n").rssByPID.isEmpty)
     }
 
+    /// Runs on dedicated threads: the box's `.utility` concurrent queue can wait hundreds of ms for a thread while
+    /// other suites keep the cooperative pool busy, which the 20–250 ms waits below would report as box failures.
+    static func box(_ runner: @escaping RootMemoryBox.Runner, deadline: Duration = .seconds(2)) -> RootMemoryBox {
+        RootMemoryBox(runner: runner, deadline: deadline, spawn: TestSpawn.dedicatedThread)
+    }
+
     @Test func firstSampleWaitsForTheFirstRun() throws {
-        let box = RootMemoryBox(runner: { _ in "1 4\n2 8\n" })
+        let box = Self.box { _ in "1 4\n2 8\n" }
         let (r, captured) = try box.sample(firstWait: .milliseconds(250))
         #expect(r.rssByPID == [1: 4096, 2: 8192])
         #expect(captured > 0)
@@ -65,7 +71,7 @@ import Testing
 
     @Test func laterSamplesReturnLastResultAndStartNextRun() throws {
         let counter = Counter()
-        let box = RootMemoryBox(runner: { _ in "1 \(counter.next())\n" })
+        let box = Self.box { _ in "1 \(counter.next())\n" }
         let first = try box.sample(firstWait: .milliseconds(250))
         #expect(first.reading.rssByPID[1] == 1024)
         #expect(box.waitIdle(timeout: .seconds(2)))
@@ -82,12 +88,12 @@ import Testing
     }
 
     @Test func runnerFailureIsThrownOnce() throws {
-        let box = RootMemoryBox(runner: { _ in throw SensorError.transient("ps exited with status 1") })
+        let box = Self.box { _ in throw SensorError.transient("ps exited with status 1") }
         #expect(throws: SensorError.transient("ps exited with status 1")) { try box.sample(firstWait: .milliseconds(250)) }
     }
 
     @Test func slowFirstRunTimesOut() throws {
-        let box = RootMemoryBox(runner: { _ in Thread.sleep(forTimeInterval: 0.3); return "1 1\n" })
+        let box = Self.box { _ in Thread.sleep(forTimeInterval: 0.3); return "1 1\n" }
         #expect(throws: SensorError.timeout) { try box.sample(firstWait: .milliseconds(20)) }
         #expect(box.waitIdle(timeout: .seconds(2)))
         #expect(try box.sample(firstWait: .milliseconds(20)).reading.rssByPID == [1: 1024])
@@ -95,7 +101,7 @@ import Testing
 
     /// Review fix: only the very first call waits; a call during an in-flight run returns at once.
     @Test func callDuringInFlightRunDoesNotBlock() throws {
-        let box = RootMemoryBox(runner: { _ in Thread.sleep(forTimeInterval: 0.3); return "1 1\n" })
+        let box = Self.box { _ in Thread.sleep(forTimeInterval: 0.3); return "1 1\n" }
         #expect(throws: SensorError.timeout) { try box.sample(firstWait: .milliseconds(20)) }
         let t0 = ContinuousClock.now
         #expect(throws: SensorError.transient("ps result pending")) { try box.sample(firstWait: .milliseconds(250)) }
@@ -106,7 +112,7 @@ import Testing
     /// Review fix: a hung run is cancelled at its deadline, fails with `.timeout`, and the next run can start.
     @Test func hungRunIsCancelledAtDeadline() throws {
         let cancelled = Counter()
-        let box = RootMemoryBox(runner: { token in
+        let box = Self.box({ token in
             let done = DispatchSemaphore(value: 0)
             token.onCancel { _ = cancelled.next(); done.signal() }
             done.wait()                                   // hangs until cancelled
@@ -122,7 +128,7 @@ import Testing
     }
 
     @Test func resetForgetsLastReading() throws {
-        let box = RootMemoryBox(runner: { _ in "1 1\n" })
+        let box = Self.box { _ in "1 1\n" }
         _ = try box.sample(firstWait: .milliseconds(250))
         #expect(box.waitIdle(timeout: .seconds(2)))
         box.reset()

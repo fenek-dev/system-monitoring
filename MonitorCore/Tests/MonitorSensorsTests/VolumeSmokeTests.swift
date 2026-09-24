@@ -8,7 +8,7 @@ import MonitorModel
 ///
 /// `.serialized`: avoids the same class of concurrent-hardware-access flakiness confirmed in
 /// SMARTSmokeTests (Swift Testing runs a suite's tests concurrently by default).
-@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
+@Suite(.serialized, .offCooperativePool, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
 struct VolumeSmokeTests {
     @Test func rootVolumeMatchesDFAndDiskutil() throws {
         let sensor = VolumeSensor()

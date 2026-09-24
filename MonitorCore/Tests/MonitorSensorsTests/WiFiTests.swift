@@ -49,7 +49,8 @@ import Testing
 }
 
 /// Hermetic: fake 10 ms read, no CoreWLAN.
-@Suite struct WiFiSensorCycleTests {
+/// `.offCooperativePool`: `sample()` waits for the first read by design (up to 200 ms).
+@Suite(.offCooperativePool) struct WiFiSensorCycleTests {
     static func sensor(calls: OSAllocatedUnfairLock<Int>) -> WiFiSensor {
         let box = WiFiBox {
             calls.withLock { $0 += 1 }
@@ -92,7 +93,7 @@ import Testing
 }
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh WiFiSmokeTests` (capture: `TELLTALE_CAPTURE=1`).
-@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized, .offCooperativePool)
 struct WiFiSmokeTests {
     /// `system_profiler SPAirPortDataType` "Current Network Information" of the first interface.
     static func profiler() throws -> (phy: String?, channel: Int?, band: Double?, width: Int?, rssi: Int?, noise: Int?, rate: Double?) {
