@@ -72,6 +72,7 @@ public final class SMCSensor: Sensor {
 
     public func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: SMCReading, capturedNs: UInt64) {
         if conn == 0 { try prepare() }
+        sweep.start()                          // no-op unless a failed sweep's retry backoff has passed (S-M2)
         resolveGenericIfReady()
         var r = SMCReading(catalogMatched: model != nil)
         var reads = 0, failures = 0
@@ -102,7 +103,11 @@ public final class SMCSensor: Sensor {
                 }
             }
         }
-        if reads > 0 && failures == reads { throw .transient("SMC: all \(reads) reads failed") }
+        if reads > 0 && failures == reads {
+            // The user client may be torn down (dead io_connect_t): close it, so the next attempt reopens (S-M1).
+            invalidate()
+            throw .transient("SMC: all \(reads) reads failed")
+        }
         return (r, w6bUptimeNs())
     }
 

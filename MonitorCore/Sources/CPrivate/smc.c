@@ -19,9 +19,16 @@ _Static_assert(sizeof(SMCParam) == 80, "SMCParam layout");
 
 enum { kSMCUserClient = 2, kSMCReadKey = 5, kSMCGetKeyFromIndex = 8, kSMCGetKeyInfo = 9 };
 
+// Never reads past the string's NUL: a key shorter than 4 chars is zero-padded (and simply won't match any key).
 static uint32_t fourcc(const char *s) {
-    return ((uint32_t)(uint8_t)s[0] << 24) | ((uint32_t)(uint8_t)s[1] << 16) |
-           ((uint32_t)(uint8_t)s[2] << 8) | (uint32_t)(uint8_t)s[3];
+    uint32_t v = 0;
+    int ended = 0;
+    for (int i = 0; i < 4; i++) {
+        uint8_t ch = ended ? 0 : (uint8_t)s[i];
+        if (ch == 0) ended = 1;
+        v = (v << 8) | ch;
+    }
+    return v;
 }
 
 static kern_return_t call(io_connect_t c, SMCParam *in, SMCParam *out) {
