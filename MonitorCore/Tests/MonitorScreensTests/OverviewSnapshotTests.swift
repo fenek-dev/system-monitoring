@@ -66,6 +66,11 @@ struct OverviewSnapshotTests {
         #expect(RangeSeriesReaderBucket.end(t, range: .hour) == Date(timeIntervalSince1970: 1_000_020))   // 15-s buckets
         #expect(RangeSeriesReaderBucket.end(t, range: .day) == Date(timeIntervalSince1970: 1_000_200))    // 5-min
         #expect(HistoryRange.hour.lastTitle == "Last hour")
+        // Fix4: after a range switch the old range's bucket end is never used.
+        typealias Reader = RangeSeriesReader<EmptyView>
+        let old = Reader.LoadKey(range: .day, bucketEnd: Date(timeIntervalSince1970: 1_000_200))
+        #expect(Reader.storeEnd(clock: old, range: .hour, fallback: t) == Date(timeIntervalSince1970: 1_000_020))
+        #expect(Reader.storeEnd(clock: old, range: .day, fallback: t) == Date(timeIntervalSince1970: 1_000_200))
         let ctx = ScreenFixture.context(.calm, page: .overview)
         ctx.navigation.range = .hour
         let view = DashboardRoot()

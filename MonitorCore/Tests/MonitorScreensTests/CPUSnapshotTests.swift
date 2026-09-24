@@ -129,6 +129,36 @@ struct CPUSnapshotTests {
         #expect(ActionFeedback.message(.quit, .cancelled, name: "x") == nil)
     }
 
+    /// Fix4: an ordinary coalition residual row (pid −1, `.coalition`) is NOT an exited row — it keeps its PID cell,
+    /// regular name style and menu/inline actions.
+    @Test func coalitionResidualIsNotExited() {
+        var p = Self.process(-1, cpu: 40)
+        p.provenance = .coalition
+        #expect(!p.isExitedResidualRow)
+        #expect(InlineActionsCell.state(target: p.target, selected: false, canControl: false,
+                                        exited: p.isExitedResidualRow) == .menu)
+        var app = Self.template
+        app.id = ProcessID(pid: -2, startTimeUs: 0)
+        #expect(app.isExitedResidualRow)
+    }
+
+    /// Fix4 optional: without the shell's confirm presenter (outside a dashboard window) the host installs no
+    /// Force Quit handler, so Force Quit is not offered.
+    @Test func hostWithoutPresenterInstallsNoForceQuit() {
+        let seen = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        struct Probe: View {
+            let seen: OSAllocatedUnfairLock<Bool?>
+            @Environment(\.requestForceQuit) private var request
+            var body: some View {
+                let installed = request != nil
+                seen.withLock { $0 = installed }
+                return Color.clear
+            }
+        }
+        _ = SnapshotRenderer.render(Probe(seen: seen).processActionsHost(), size: CGSize(width: 10, height: 10))
+        #expect(seen.withLock { $0 } == false)
+    }
+
     /// A10 / ICR-13: the synthetic "Exited processes" row has no PID, no actions, italic secondary name.
     @Test func exitedResidualRow() {
         var p = Self.process(-2, cpu: 150)   // ranks second, so the row is visible

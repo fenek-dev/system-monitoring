@@ -33,7 +33,8 @@ struct RangeSeriesReader<Content: View>: View {
     @Environment(\.now) private var now
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
     @State private var storedKey: LoadKey?
-    @State private var bucketEnd: Date?
+    /// Latest bucket end reported by `BucketClock`, tagged with its range (cleared on a range switch).
+    @State private var clock: LoadKey?
 
     init(_ metrics: [HistoryMetric], @ViewBuilder content: @escaping (RangeSeries) -> Content) {
         self.metrics = metrics
@@ -48,16 +49,24 @@ struct RangeSeriesReader<Content: View>: View {
     /// End of the display bucket containing `date` (bucket boundaries on the epoch).
     static func bucketEnd(_ date: Date, range: HistoryRange) -> Date { RangeSeriesReaderBucket.end(date, range: range) }
 
+    /// Store end for `range`: the clock's bucket end only if it was reported for this range, else the fallback
+    /// date's bucket end — so the first read after a switch never uses the old range's bucket.
+    static func storeEnd(clock: LoadKey?, range: HistoryRange, fallback: Date) -> Date {
+        if let clock, clock.range == range { return clock.bucketEnd }
+        return bucketEnd(fallback, range: range)
+    }
+
     var body: some View {
         let range = nav.range
         if range == .live {
             content(RangeSeries(range: .live, end: now ?? live.lastUpdate ?? Date(),
                                 points: Dictionary(uniqueKeysWithValues: metrics.map { ($0, live.series($0)) })))
         } else {
-            let end = bucketEnd.map { Self.bucketEnd($0, range: range) } ?? Self.bucketEnd(now ?? Date(), range: range)
+            let end = Self.storeEnd(clock: clock, range: range, fallback: now ?? Date())
             let key = LoadKey(range: range, bucketEnd: end)
             content(RangeSeries(range: range, end: end, points: storedKey?.range == range ? stored : [:]))
-                .background(BucketClock(range: range) { bucketEnd = $0 })
+                .background(BucketClock(range: range) { clock = LoadKey(range: range, bucketEnd: $0) })
+                .onChange(of: range) { clock = nil }
                 .task(id: key) {
                     let loaded = try? await history.series(metrics, range: range, end: end, bucket: nil)
                     guard !Task.isCancelled else { return }
@@ -361,13 +370,19 @@ extension View {
 
 extension ProcessSample {
     /// ICR-13 synthetic row (`ProcessID.exitedResidual`, pid −2): no PID, no row actions, italic secondary,
-    /// estimated. Until W7 makes the id public, detected as a synthetic pid with coalition provenance (coordinator).
-    var isExitedResidualRow: Bool { id.pid < 0 && provenance == .coalition }
+    /// estimated. Coalition residual rows (pid −1) are NOT exited rows. TODO(W7): use `ProcessID.exitedResidual`
+    /// once it is public on dev.
+    var isExitedResidualRow: Bool { id.pid == W5a.exitedResidualPID }
+}
+
+extension W5a {
+    /// ICR-13 synthetic pid of the "Exited processes" row (local until W7 publishes `ProcessID.exitedResidual`).
+    static let exitedResidualPID: Int32 = -2
 }
 
 extension AppSample {
     /// An app group made only of synthetic rows (the ICR-13 exited-processes row).
-    var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy { $0.pid < 0 } }
+    var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy { $0.pid == W5a.exitedResidualPID } }
 }
 
 /// Name cell for an ICR-13 row: tile + italic `textSecondary` name.
