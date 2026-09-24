@@ -36,12 +36,23 @@ public enum HistoryText {
         }
     }
 
-    /// Cached per (format, calendar) — per thread, since `DateFormatter` isn't Sendable.
+    static let formatterCacheCap = 32
+
+    /// Formatters cached on this thread (tests).
+    static var cachedFormatterCount: Int {
+        Thread.current.threadDictionary.allKeys.compactMap { $0 as? String }.filter { $0.hasPrefix("tt.history.df|") }
+            .count
+    }
+
+    /// Cached per (format, calendar) — per thread, since `DateFormatter` isn't Sendable; capped at 32 entries.
     static func formatter(fixed format: String, _ calendar: Calendar) -> DateFormatter {
         let locale = calendar.locale ?? Locale(identifier: "en_US_POSIX")
         let key = "tt.history.df|\(format)|\(calendar.identifier)|\(calendar.timeZone.identifier)|\(locale.identifier)"
         let cache = Thread.current.threadDictionary
         if let f = cache[key] as? DateFormatter { return f }
+        // Bounded: time zone/locale changes mint new keys; drop our entries past the cap.
+        let ours = cache.allKeys.compactMap { $0 as? String }.filter { $0.hasPrefix("tt.history.df|") }
+        if ours.count >= formatterCacheCap { ours.forEach { cache.removeObject(forKey: $0) } }
         let f = DateFormatter()
         f.calendar = calendar
         f.locale = locale
@@ -288,7 +299,41 @@ public struct HistoryChip: Identifiable, Equatable, Sendable {
             placed.replaceSubrange(i...(i + 1), with: [kept])
             i = max(0, i - 1)
         }
-        return placed
+        return settle(placed, width: width, fold: { a, b in
+            let keepA = a.event.level != b.event.level ? a.event.level > b.event.level : a.event.start <= b.event.start
+            var kept = keepA ? a : b
+            kept.hidden = a.hidden + b.hidden + 1
+            kept.pillWidth = pill(kept.hidden)
+            return kept
+        })
+    }
+
+    /// Total width of chip + "+n" pill.
+    public var groupWidth: CGFloat { width + (hidden > 0 ? Self.gap + pillWidth : 0) }
+
+    /// Keeps every chip + pill group inside [0, width] as a sequence: groups that don't fit together are folded,
+    /// then a forward pass pushes groups right of their left neighbour and a backward pass pulls them inside the
+    /// right edge and left of their right neighbour. `x` stays the chip's centre.
+    static func settle(_ chips: [HistoryChip], width: CGFloat, fold: (HistoryChip, HistoryChip) -> HistoryChip)
+        -> [HistoryChip] {
+        var out = chips.sorted { $0.x < $1.x }
+        func total() -> CGFloat { out.reduce(0) { $0 + $1.groupWidth } + gap * CGFloat(max(0, out.count - 1)) }
+        while out.count > 1 && total() > width {
+            // Fold the tightest neighbours first.
+            let i = (0..<(out.count - 1)).min { out[$0 + 1].left - out[$0].right < out[$1 + 1].left - out[$1].right } ?? 0
+            out.replaceSubrange(i...(i + 1), with: [fold(out[i], out[i + 1])])
+        }
+        var lefts = out.map(\.left)
+        for i in lefts.indices {
+            let floor = i == 0 ? 0 : lefts[i - 1] + out[i - 1].groupWidth + gap
+            lefts[i] = max(lefts[i], floor)
+        }
+        for i in lefts.indices.reversed() {
+            let ceiling = i == lefts.count - 1 ? width : lefts[i + 1] - gap
+            lefts[i] = min(lefts[i], ceiling - out[i].groupWidth)
+        }
+        for i in out.indices { out[i].x = lefts[i] + out[i].width / 2 }
+        return out
     }
 }
 
