@@ -7,6 +7,12 @@ import Testing
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh AssertionSmokeTests`.
 @Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
 struct AssertionSmokeTests {
+    /// Independent of the implementation's tables: IOPMLib.h sleep-preventing types incl. legacy names.
+    static let preventingPmsetTypes: Set<String> = [
+        "PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep", "PreventSystemSleep",
+        "NoIdleSleepAssertion", "NoDisplaySleepAssertion",
+    ]
+
     /// Plist-safe copy: pid keys as strings, only plist value types kept.
     static func plistSafe(_ raw: [AnyHashable: Any]) -> [String: [[String: Any]]] {
         var out: [String: [[String: Any]]] = [:]
@@ -55,7 +61,7 @@ struct AssertionSmokeTests {
             // "pid N(name with spaces): [0x…] HH:MM:SS Type named: …"
             let afterID = s.split(separator: "]", maxSplits: 1).dropFirst().first ?? ""
             let type = afterID.split(separator: " ").dropFirst().first.map(String.init) ?? ""
-            if SleepAssertionParser.sleepPreventing.contains(SleepAssertionParser.canonical(type)) { pending = pid }
+            if Self.preventingPmsetTypes.contains(type) { pending = pid }
         }
         resolvePending()
         let ours = Set(r.byPID.keys)

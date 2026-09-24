@@ -12,6 +12,7 @@ struct RootMemorySmokeTests {
         try sensor.prepare()
         let r = try sensor.sample(SampleContext()).reading.rssByPID
         let ref = try W6aFixture.run(["/bin/ps", "-Ao", "pid=,user=,rss="])
+        let refLines = ref.split(separator: "\n").count
         var compared = 0, within = 0
         for line in ref.split(separator: "\n") {
             let f = line.split(separator: " ", omittingEmptySubsequences: true)
@@ -22,8 +23,9 @@ struct RootMemorySmokeTests {
             if ratio > 0.7 && ratio < 1.3 { within += 1 }
         }
         print("W6a rootMemory: pids=\(r.count) rootCompared=\(compared) within±30%=\(within) launchd=\((r[1] ?? 0) >> 20)MB")
-        #expect(r.count > 500)
+        #expect(abs(r.count - refLines) <= max(refLines / 20, 10))   // same pid set ± churn
         #expect(r[1] != nil)
+        #expect(compared > 0)
         #expect(within >= compared * 9 / 10)
     }
 
@@ -31,7 +33,7 @@ struct RootMemorySmokeTests {
         var ns: [UInt64] = []
         for _ in 0..<10 {
             let t = w6aUptimeNs()
-            _ = RootMemoryParser.parse(try RootMemoryFFI.runPS())
+            _ = RootMemoryParser.parse(try RootMemoryFFI.runPS(RunCancellation()))
             ns.append(w6aUptimeNs() - t)
         }
         let sensor = RootMemorySensor()

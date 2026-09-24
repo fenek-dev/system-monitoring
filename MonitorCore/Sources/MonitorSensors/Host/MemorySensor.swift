@@ -100,7 +100,7 @@ enum MemoryFFI {
                 host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
             }
         }
-        guard kr == KERN_SUCCESS else { throw SensorError.posix(kr, "host_statistics64(HOST_VM_INFO64)") }
+        guard kr == KERN_SUCCESS else { throw w6aMachError(kr, "host_statistics64(HOST_VM_INFO64)") }
         return stats
     }
 
@@ -121,9 +121,12 @@ enum MemoryFFI {
         return nil
     }
 
-    static func raw(pageSize: UInt64, total: UInt64) throws(SensorError) -> MemoryRaw {
+    static func raw(pageSize: UInt64, total: UInt64, swapFiles: Int?) throws(SensorError) -> MemoryRaw {
         let s = try vmStatistics()
-        let swap = sysctlValue("vm.swapusage", xsw_usage.self)
+        // A failed swap read must not look like "no swap": fail the sample (the slot reuses the last reading).
+        guard let swap = sysctlValue("vm.swapusage", xsw_usage.self) else {
+            throw SensorError.transient("sysctl vm.swapusage failed")
+        }
         return MemoryRaw(
             pageSize: pageSize,
             total: total,
@@ -141,9 +144,9 @@ enum MemoryFFI {
             pageouts: s.pageouts,
             swapins: s.swapins,
             swapouts: s.swapouts,
-            swapTotal: swap?.xsu_total ?? 0,
-            swapUsed: swap?.xsu_used ?? 0,
-            swapFiles: swapFileCount(),
+            swapTotal: swap.xsu_total,
+            swapUsed: swap.xsu_used,
+            swapFiles: swapFiles,
             pressureLevel: sysctlValue("kern.memorystatus_vm_pressure_level", Int32.self),
             freePercent: sysctlValue("kern.memorystatus_level", Int32.self)
         )
@@ -167,6 +170,9 @@ public final class MemorySensor: Sensor {
 
     private var pageSize: UInt64 = 0
     private var total: UInt64 = 0
+    /// Swap files change rarely: directory listing refreshed at most every 30 s.
+    private var swapFiles: (count: Int?, readNs: UInt64)?
+    static let swapFileRefreshNs: UInt64 = 30_000_000_000
 
     public init() {}
 
@@ -181,11 +187,16 @@ public final class MemorySensor: Sensor {
 
     public func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: MemoryReading, capturedNs: UInt64) {
         if pageSize == 0 { try prepare() }
-        let raw = try MemoryFFI.raw(pageSize: pageSize, total: total)
+        let now = w6aUptimeNs()
+        if swapFiles == nil || (w6aCounterDelta(now, swapFiles!.readNs) ?? .max) >= Self.swapFileRefreshNs {
+            swapFiles = (MemoryFFI.swapFileCount(), now)
+        }
+        let raw = try MemoryFFI.raw(pageSize: pageSize, total: total, swapFiles: swapFiles?.count)
         return (MemoryParser.reading(raw), w6aUptimeNs())
     }
 
     public func invalidate() {
         pageSize = 0
+        swapFiles = nil
     }
 }

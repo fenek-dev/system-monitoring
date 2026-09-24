@@ -5,17 +5,16 @@ import MonitorModel
 // MARK: - Parse layer (pure)
 
 enum SleepAssertionParser {
-    /// Legacy names IOPMLib.h documents as aliases of the modern types (findings/extras.md §3).
+    /// Legacy names IOPMLib.h documents as aliases of the modern types (`kIOPMAssertionTypeNoIdleSleep`,
+    /// `kIOPMAssertionTypeNoDisplaySleep`; findings/extras.md §3).
     static let aliases: [String: String] = [
         "NoIdleSleepAssertion": "PreventUserIdleSystemSleep",
         "NoDisplaySleepAssertion": "PreventUserIdleDisplaySleep",
-        "DenySystemSleep": "PreventSystemSleep",
     ]
 
-    /// Canonical types that keep the Mac (or its display) awake — what "Preventing sleep" means.
+    /// Canonical IOPMLib.h types that keep the Mac (or its display) awake — what "Preventing sleep" means.
     static let sleepPreventing: Set<String> = [
         "PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep", "PreventSystemSleep",
-        "InternalPreventSleep", "InternalPreventDisplaySleep",
     ]
 
     static func canonical(_ type: String) -> String { aliases[type] ?? type }
@@ -54,7 +53,7 @@ enum SleepAssertionFFI {
     static func copyByProcess() throws(SensorError) -> [AnyHashable: Any] {
         var dict: Unmanaged<CFDictionary>?
         let kr = IOPMCopyAssertionsByProcess(&dict)
-        guard kr == kIOReturnSuccess else { throw SensorError.posix(kr, "IOPMCopyAssertionsByProcess") }
+        guard kr == kIOReturnSuccess else { throw w6aIOReturnError(kr, "IOPMCopyAssertionsByProcess") }
         guard let d = dict?.takeRetainedValue() else { return [:] }   // no assertions at all
         guard let typed = d as? [AnyHashable: Any] else { throw SensorError.transient("IOPMCopyAssertionsByProcess: unexpected type") }
         return typed

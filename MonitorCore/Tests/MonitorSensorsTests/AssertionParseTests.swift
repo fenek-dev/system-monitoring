@@ -15,7 +15,7 @@ import Testing
         let raw: [AnyHashable: Any] = [
             NSNumber(value: 10): [Self.a("NoIdleSleepAssertion"), Self.a("PreventUserIdleSystemSleep"),
                                   Self.a("NoDisplaySleepAssertion")],
-            NSNumber(value: 11): [Self.a("DenySystemSleep")],
+            NSNumber(value: 11): [Self.a("PreventSystemSleep"), Self.a("DenySystemSleep")],   // not an IOPMLib.h type
         ]
         let r = SleepAssertionParser.reading(raw)
         #expect(r.byPID == [10: ["PreventUserIdleDisplaySleep", "PreventUserIdleSystemSleep"], 11: ["PreventSystemSleep"]])

@@ -29,6 +29,13 @@ import Testing
         #expect(second == [CoreTicks(user: UInt64(UInt32.max) + 11, system: 150, idle: 1_000, nice: 0)])
     }
 
+    @Test func backwardsJumpIsAResetNotAHugeStep() {
+        var acc = TickAccumulator()
+        _ = acc.update([[1_000, 0, 0, 0]])
+        let r = acc.update([[10, 0, 0, 0]])                   // counter reset to 0, then +10
+        #expect(r == [CoreTicks(user: 1_010)])
+    }
+
     @Test func accumulatorRebaselinesWhenCoreCountChanges() {
         var acc = TickAccumulator()
         _ = acc.update([[100, 0, 0, 0]])

@@ -11,7 +11,8 @@ struct MemorySmokeTests {
         guard W6aFixture.capture else { return }
         let sensor = MemorySensor()
         try sensor.prepare()
-        let raw = try MemoryFFI.raw(pageSize: MemoryFFI.pageSize(), total: MemoryFFI.sysctlValue("hw.memsize", UInt64.self) ?? 0)
+        let raw = try MemoryFFI.raw(pageSize: MemoryFFI.pageSize(), total: MemoryFFI.sysctlValue("hw.memsize", UInt64.self) ?? 0,
+                                    swapFiles: MemoryFFI.swapFileCount())
         let vm = try W6aFixture.run(["/usr/bin/vm_stat"])
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]

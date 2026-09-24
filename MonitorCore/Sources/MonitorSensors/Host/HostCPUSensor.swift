@@ -42,9 +42,11 @@ struct TickAccumulator {
         return totals
     }
 
-    /// Modular 32-bit difference: correct across one wrap.
+    /// Modular 32-bit difference: correct across one wrap. A "step" above 2^31 is a backwards jump (counter reset,
+    /// not ~249 days of ticks within one interval): count from zero instead.
     private static func step(_ new: UInt32, _ old: UInt32) -> UInt64 {
-        UInt64(new.subtractingReportingOverflow(old).partialValue)
+        let d = new.subtractingReportingOverflow(old).partialValue
+        return d > UInt32(1) << 31 ? UInt64(new) : UInt64(d)
     }
 }
 
@@ -90,7 +92,8 @@ enum HostCPUFFI {
         var info: processor_info_array_t?
         var infoCount: mach_msg_type_number_t = 0
         let kr = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpuCount, &info, &infoCount)
-        guard kr == KERN_SUCCESS, let info else { throw SensorError.posix(kr, "host_processor_info") }
+        guard kr == KERN_SUCCESS else { throw w6aMachError(kr, "host_processor_info") }
+        guard let info else { throw SensorError.transient("host_processor_info returned no data") }
         defer {
             vm_deallocate(mach_task_self_, vm_address_t(UInt(bitPattern: info)),
                           vm_size_t(Int(infoCount) * MemoryLayout<integer_t>.stride))

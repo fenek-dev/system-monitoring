@@ -15,8 +15,12 @@ struct HostCPUSmokeTests {
     }
 
     @Test func busyFractionMatchesTop() throws {
+        let yes = try W6aFixture.spawnYes()   // controlled load: ≥ 1 core busy
+        defer { yes.terminate(); yes.waitUntilExit() }
+        Thread.sleep(forTimeInterval: 0.3)
         let sensor = HostCPUSensor()
         try sensor.prepare()
+        // Our window [a, b] brackets top's 2 s window.
         let a = try sensor.sample(SampleContext()).reading
         let top = try W6aFixture.run(["/usr/bin/top", "-l", "2", "-s", "2", "-n", "0"])
         let b = try sensor.sample(SampleContext()).reading
@@ -37,6 +41,8 @@ struct HostCPUSmokeTests {
         #expect(b.cores.count == ProcessInfo.processInfo.activeProcessorCount)
         #expect(p == HostCPUFFI.sysctlInt("hw.perflevel0.logicalcpu"))
         #expect(ours > 0 && ours <= 100)
+        #expect(topBusy >= 0)
+        #expect(abs(ours - topBusy) <= max(0.3 * topBusy, 5))   // ±30 %, 5-point floor for idle noise
         #expect(b.loadAverage.count == 3)
     }
 

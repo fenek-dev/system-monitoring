@@ -46,8 +46,15 @@ import Testing
 
     // MARK: async box (fake runner)
 
+    @Test func garbageOutputIsTransientButBlankIsEmpty() throws {
+        #expect(throws: SensorError.transient("ps output had no parseable pid/rss lines")) {
+            try RootMemoryParser.reading("ps: illegal option\nusage: ps …\n")
+        }
+        #expect(try RootMemoryParser.reading(" \n").rssByPID.isEmpty)
+    }
+
     @Test func firstSampleWaitsForTheFirstRun() throws {
-        let box = RootMemoryBox(runner: { "1 4\n2 8\n" })
+        let box = RootMemoryBox(runner: { _ in "1 4\n2 8\n" })
         let (r, captured) = try box.sample(firstWait: .milliseconds(250))
         #expect(r.rssByPID == [1: 4096, 2: 8192])
         #expect(captured > 0)
@@ -55,32 +62,70 @@ import Testing
 
     @Test func laterSamplesReturnLastResultAndStartNextRun() throws {
         let counter = Counter()
-        let box = RootMemoryBox(runner: { "1 \(counter.next())\n" })
+        let box = RootMemoryBox(runner: { _ in "1 \(counter.next())\n" })
         let first = try box.sample(firstWait: .milliseconds(250))
         #expect(first.reading.rssByPID[1] == 1024)
-        box.waitIdle()
+        #expect(box.waitIdle(timeout: .seconds(2)))
         #expect(counter.value == 1)                                  // the first sample started exactly one run
         let second = try box.sample(firstWait: .milliseconds(250))   // last completed (run 1), starts run 2
         #expect(second.reading.rssByPID[1] == 1024)
         #expect(second.capturedNs == first.capturedNs)
-        box.waitIdle()
+        #expect(box.waitIdle(timeout: .seconds(2)))
         let third = try box.sample(firstWait: .milliseconds(250))    // run 2
         #expect(third.reading.rssByPID[1] == 2048)
         #expect(third.capturedNs > first.capturedNs)
-        box.waitIdle()
+        #expect(box.waitIdle(timeout: .seconds(2)))
         #expect(counter.value == 3)
     }
 
     @Test func runnerFailureIsThrownOnce() throws {
-        let box = RootMemoryBox(runner: { throw SensorError.posix(5, "ps") })
-        #expect(throws: SensorError.posix(5, "ps")) { try box.sample(firstWait: .milliseconds(250)) }
+        let box = RootMemoryBox(runner: { _ in throw SensorError.transient("ps exited with status 1") })
+        #expect(throws: SensorError.transient("ps exited with status 1")) { try box.sample(firstWait: .milliseconds(250)) }
     }
 
     @Test func slowFirstRunTimesOut() throws {
-        let box = RootMemoryBox(runner: { Thread.sleep(forTimeInterval: 0.3); return "1 1\n" })
+        let box = RootMemoryBox(runner: { _ in Thread.sleep(forTimeInterval: 0.3); return "1 1\n" })
         #expect(throws: SensorError.timeout) { try box.sample(firstWait: .milliseconds(20)) }
-        box.waitIdle()
+        #expect(box.waitIdle(timeout: .seconds(2)))
         #expect(try box.sample(firstWait: .milliseconds(20)).reading.rssByPID == [1: 1024])
+    }
+
+    /// Review fix: only the very first call waits; a call during an in-flight run returns at once.
+    @Test func callDuringInFlightRunDoesNotBlock() throws {
+        let box = RootMemoryBox(runner: { _ in Thread.sleep(forTimeInterval: 0.3); return "1 1\n" })
+        #expect(throws: SensorError.timeout) { try box.sample(firstWait: .milliseconds(20)) }
+        let t0 = ContinuousClock.now
+        #expect(throws: SensorError.transient("ps result pending")) { try box.sample(firstWait: .milliseconds(250)) }
+        #expect(ContinuousClock.now - t0 < .milliseconds(5))
+        #expect(box.waitIdle(timeout: .seconds(2)))
+    }
+
+    /// Review fix: a hung run is cancelled at its deadline, fails with `.timeout`, and the next run can start.
+    @Test func hungRunIsCancelledAtDeadline() throws {
+        let cancelled = Counter()
+        let box = RootMemoryBox(runner: { token in
+            let done = DispatchSemaphore(value: 0)
+            token.onCancel { _ = cancelled.next(); done.signal() }
+            done.wait()                                   // hangs until cancelled
+            throw SensorError.transient("killed")
+        }, deadline: .milliseconds(100))
+        #expect(throws: SensorError.timeout) { try box.sample(firstWait: .milliseconds(1_000)) }
+        #expect(cancelled.value == 1)
+        #expect(box.runsStarted == 1)
+        #expect(throws: SensorError.transient("ps result pending")) { try box.sample(firstWait: .milliseconds(1)) }
+        #expect(box.runsStarted == 2)                     // not stuck behind the hung run
+        #expect(box.waitIdle(timeout: .seconds(2)))
+        #expect(cancelled.value == 2)
+    }
+
+    @Test func resetForgetsLastReading() throws {
+        let box = RootMemoryBox(runner: { _ in "1 1\n" })
+        _ = try box.sample(firstWait: .milliseconds(250))
+        #expect(box.waitIdle(timeout: .seconds(2)))
+        box.reset()
+        let r = try box.sample(firstWait: .milliseconds(250))   // waits again for a fresh run
+        #expect(r.reading.rssByPID == [1: 1024])
+        #expect(box.runsStarted >= 2)
     }
 
     @Test func cadenceIsThirtySecondsGatedOnDemand() {
