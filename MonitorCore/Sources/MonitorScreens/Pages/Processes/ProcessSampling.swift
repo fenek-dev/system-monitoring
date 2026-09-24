@@ -55,12 +55,16 @@ public struct LiveProcessSampler: ProcessSampling {
 
     public func sample(pid: Int32, name: String) async -> ProcessSampleResult {
         let executable = executable, timeout = timeout, arguments = arguments
-        return await Task.detached(priority: .utility) {
-            Self.run(executable: executable, timeout: timeout, arguments: arguments, pid: pid, name: name)
-        }.value
+        // `run` blocks for 3–19 s; keep it on GCD, never on a cooperative-pool thread.
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: Self.run(executable: executable, timeout: timeout,
+                                                        arguments: arguments, pid: pid, name: name))
+            }
+        }
     }
 
-    /// Blocking body (runs on the detached utility task).
+    /// Blocking body (runs on a GCD utility queue).
     nonisolated static func run(executable: URL, timeout: TimeInterval,
                                 arguments: @Sendable (Int32, String) -> [String], pid: Int32,
                                 name: String) -> ProcessSampleResult {
