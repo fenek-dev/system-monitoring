@@ -138,6 +138,31 @@ import MonitorModel
         #expect(p.frame(at: 50).interval == nil)
     }
 
+    /// DESIGN §3.15 "First launch": the very first sample can't have anything that needs a delta between
+    /// two samples yet (CPU%, GPU%, network/disk rates, per-app rates) — only instantaneous reads
+    /// (memory levels, temperatures) are available. Regression for the "rendered byte-identical to .calm"
+    /// bug: the scenario changed `interval` but left every other field's real numbers in place.
+    @Test func collectingHasNoRateDerivedFieldsButKeepsInstantaneousOnes() {
+        let f = MockDataProvider(scenario: .collecting).frame(at: 0)
+
+        #expect(f.cpu.usage == nil)
+        #expect(f.cpu.user == nil)
+        #expect(f.cpu.cores.isEmpty)
+        #expect(f.gpu.usage == nil)
+        #expect(f.network.rxBps == nil)
+        #expect(f.network.txBps == nil)
+        #expect(f.disk.readBps == nil)
+        #expect(f.disk.writeBps == nil)
+        #expect(f.apps.allSatisfy { $0.cpuPercent == nil && $0.netRxBps == nil && $0.energyWatts == nil })
+        #expect(f.processes.allSatisfy { $0.cpuPercent == nil && $0.diskReadBps == nil })
+        #expect(f.connections.isEmpty)
+
+        // Instantaneous reads (no delta needed) stay real.
+        #expect(f.memory.used != nil)
+        #expect(f.thermals.socAverage != nil)
+        #expect(f.apps.allSatisfy { $0.memory != nil })
+    }
+
     // MARK: - Restricted / coalition rows
 
     @Test func restrictedHasManyRestrictedAndCoalitionRows() {
@@ -181,10 +206,15 @@ import MonitorModel
     @Test(arguments: MockScenario.allCases)
     func networkAndDiskSumsMatchSystemTotals(_ scenario: MockScenario) {
         let f = MockDataProvider(scenario: scenario).frame(at: 0)
-        let rxSum = f.apps.compactMap(\.netRxBps).reduce(0, +)
-        let txSum = f.apps.compactMap(\.netTxBps).reduce(0, +)
-        #expect(abs(rxSum - (f.network.rxBps ?? 0)) < 0.001)
-        #expect(abs(txSum - (f.network.txBps ?? 0)) < 0.001)
+        // `.sensorsUnavailable` deliberately hides per-app/process network (it comes only from
+        // `networkFlows`) while the interface-level total stays up, so the two sides don't reconcile —
+        // that asymmetry is the point, not a bug.
+        if scenario != .sensorsUnavailable {
+            let rxSum = f.apps.compactMap(\.netRxBps).reduce(0, +)
+            let txSum = f.apps.compactMap(\.netTxBps).reduce(0, +)
+            #expect(abs(rxSum - (f.network.rxBps ?? 0)) < 0.001)
+            #expect(abs(txSum - (f.network.txBps ?? 0)) < 0.001)
+        }
 
         let readSum = f.apps.compactMap(\.diskReadBps).reduce(0, +)
         let writeSum = f.apps.compactMap(\.diskWriteBps).reduce(0, +)
