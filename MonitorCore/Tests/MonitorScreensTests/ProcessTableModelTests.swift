@@ -203,6 +203,51 @@ struct ProcessTableBuildTests {
     }
 }
 
+@Suite("ProcessTableModel — ICR-13 exited processes")
+struct ProcessTableExitedTests {
+    /// Docker Desktop plus an "Exited processes" residual (pid −2) with the highest CPU of the table.
+    static func input(_ mode: NavigationModel.ProcessesMode, expanded: Set<AppKey> = []) -> ProcessTableInput {
+        var t = PT.table()
+        let exited = ProcessSample(id: ProcessID(pid: -2, startTimeUs: 77), name: "", user: "arthur", uid: PT.me,
+                                   isCurrentUser: true, app: PT.docker, provenance: .coalition, cpuPercent: 300,
+                                   diskReadBps: 1e6, energyWatts: 2, energyEstimated: true)
+        t.processes.append(exited)
+        t.apps = PT.group(t.processes, names: [PT.docker: "Docker Desktop"],
+                          bundles: [PT.docker: "/Applications/Docker.app"])
+        return ProcessTableInput(processes: t.processes, apps: t.apps, mode: mode, expanded: expanded, processCount: 612)
+    }
+
+    @Test func staysWithItsAppAndHasNoActions() {
+        let procs = ProcessTableModel.build(Self.input(.processes))
+        let names = procs.lines.map(\.name)
+        let i = names.firstIndex(of: "Exited processes")!
+        #expect(procs.lines[i - 1].appKey == PT.docker)                    // after its app's last row, not first
+        #expect(i != 0)
+        let row = procs.lines[i]
+        #expect(row.isExitedResidual && row.target == nil && row.pid == nil && row.kindLabel == nil)
+        #expect(row.cpuEstimated && row.energyEstimated)
+        #expect(!ProcessTableModel.availability(for: row, serviceCanControl: true).canForceQuit)
+        #expect(ProcessTableModel.inspectedApp(row: row, detailExpanded: true) == nil)
+    }
+
+    @Test func namedExitedRowHasNoDuplicateKind() {
+        var input = Self.input(.processes)
+        if let i = input.processes.firstIndex(where: { $0.id.pid == -2 }) { input.processes[i].name = "Exited processes" }
+        let row = ProcessTableModel.build(input).lines.first { $0.isExitedResidual }!
+        #expect(row.name == "Exited processes")
+        #expect(row.kindLabel == nil)                                      // not "Exited processes · Exited processes"
+    }
+
+    @Test func lastChildOfItsAppAndNotCountedAsAProcess() {
+        let apps = ProcessTableModel.build(Self.input(.apps, expanded: [PT.docker]))
+        let docker = apps.lines.first { $0.id == .app(PT.docker) }!
+        #expect(docker.kindLabel == "App · 2 processes")
+        let kids = apps.lines.filter { $0.depth == 1 && $0.appKey == PT.docker }
+        #expect(kids.last?.isExitedResidual == true)
+        #expect(docker.target.map { if case .app(_, let pids) = $0 { !pids.contains(-2) } else { false } } == true)
+    }
+}
+
 @Suite("ProcessTableModel — actions by owner")
 struct ProcessTableActionTests {
     @Test func ownedRowsEnabledOthersDisabledWithOwner() {
@@ -217,6 +262,24 @@ struct ProcessTableActionTests {
         // The service can still veto an owned row.
         let vetoed = ProcessTableModel.availability(for: row("Xcode"), serviceCanControl: false)
         #expect(!vetoed.canQuit && !vetoed.canForceQuit)
+    }
+
+    /// Telltale itself: Quit (quits Telltale), never Force Quit — same rule as the row menu.
+    @Test func telltaleItselfIsNeverForceQuit() {
+        let out = ProcessTableModel.build(PT.input(mode: .processes))
+        let xcode = out.lines.first { $0.name == "Xcode" }!
+        let selfProcess = ProcessTableModel.availability(for: xcode, serviceCanControl: true, ownPID: 1842,
+                                                         ownBundleID: "dev.telltale.Telltale")
+        #expect(selfProcess == ProcessActionAvailability(canQuit: true, canForceQuit: false, disabledHelp: nil,
+                                                         isSelf: true))
+        let apps = ProcessTableModel.build(PT.input())
+        let xcodeApp = apps.lines.first { $0.name == "Xcode" }!
+        let selfApp = ProcessTableModel.availability(for: xcodeApp, serviceCanControl: true, ownPID: 9,
+                                                     ownBundleID: PT.xcode.id)
+        #expect(selfApp.isSelf && !selfApp.canForceQuit)
+        let other = ProcessTableModel.availability(for: xcode, serviceCanControl: true, ownPID: 9,
+                                                   ownBundleID: "dev.telltale.Telltale")
+        #expect(!other.isSelf && other.canForceQuit)
     }
 
     @Test func appGroupsNeedEveryMemberOwned() {
@@ -375,6 +438,13 @@ struct ProcessTableObservableTests {
         #expect(ProcessTableModel.inspectedApp(row: backend, detailExpanded: true) == PT.docker)
         #expect(ProcessTableModel.inspectedApp(row: backend, detailExpanded: false) == nil)
         #expect(ProcessTableModel.inspectedApp(row: nil, detailExpanded: true) == nil)
+    }
+
+    /// Regression: memory must convert by value (`Double.init` on UInt64 resolved to `Double(bitPattern:)`).
+    @Test func memoryValueIsNumeric() {
+        let out = ProcessTableModel.build(PT.input(mode: .processes))
+        let xcode = out.lines.first { $0.name == "Xcode" }!
+        #expect(xcode.value(.memory) == 4_000_000_000)
     }
 
     @Test func mockCalmScenarioBuilds() {

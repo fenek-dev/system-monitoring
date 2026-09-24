@@ -71,11 +71,15 @@ enum PopoverModel {
             r.domain = 0...100
         case .power:
             r.subtitle = live.power.battery == nil && live.device.hasBattery ? nil : W5a.batteryPhrase(live.power.battery)
-            r.value = TTFormat.watts(live.power.packageWatts)
+            // Package from IOReport; if the Energy Model is missing, the SMC system power so the row never
+            // shows "—" while the Mac reports its draw (CP2).
+            let w = W5a.packageWatts(live.power) ?? live.power.systemWatts
+            r.value = TTFormat.watts(w)
+            if w != nil { r.unavailableReason = nil }
         case .disk:
             r.subtitle = TTFormat.ratePair(read: live.disk.readBps, write: live.disk.writeBps)
             if let v = live.disk.bootVolume {
-                r.value = TTFormat.storage(v.availableImportantBytes ?? v.availableBytes, style: .capacity)
+                r.value = ShellFormat.freeSpace(v)   // one owner of the free-space rule (W4)
                 r.unavailableReason = nil
             } else {
                 r.unavailableReason = reason ?? "Boot volume not reported"
@@ -98,32 +102,10 @@ enum PopoverModel {
 
     // MARK: Expansion
 
-    struct AppLine: Equatable, Identifiable {
-        var id: AppKey { key }
-        var key: AppKey
-        var identity: AppIdentity
-        var name: String
-        var value: String
-    }
-
-    /// Top 3 apps for the category's key (ARCHITECTURE §5.5) with the DESIGN §2.22 metric per row.
-    static func expansion(_ c: MonitorModel.Category, live: LiveModel, units: UnitPreferences) -> [AppLine] {
-        live.topApps(c, count: 3).map { a in
-            let value: String = switch c {
-            case .cpu: TTFormat.cpuPercent(a.cpuPercent)
-            case .gpu: TTFormat.cpuPercent(a.gpuPercent)
-            case .memory: TTFormat.memory(a.memory, style: .detail)
-            case .network: TTFormat.rate(sum(a.netRxBps, a.netTxBps), units: units)
-            case .thermals, .power: TTFormat.appWatts(a.energyWatts)
-            case .disk: TTFormat.diskRate(sum(a.diskReadBps, a.diskWriteBps))
-            }
-            return AppLine(key: a.identity.key, identity: a.identity, name: a.name, value: value)
-        }
-    }
-
-    private static func sum(_ a: Double?, _ b: Double?) -> Double? {
-        if a == nil && b == nil { return nil }
-        return (a ?? 0) + (b ?? 0)
+    /// Top 3 app groups for the category's key (ARCHITECTURE §5.5, cached per apply by `LiveModel`); `TTPopoverRow`
+    /// formats the DESIGN §2.22 metric per line.
+    static func expansionApps(_ c: MonitorModel.Category, live: LiveModel) -> [AppSample] {
+        live.topApps(c, count: 3)
     }
 
     // MARK: Top consumer
@@ -142,8 +124,9 @@ enum PopoverModel {
                          TTFormat.cpuPercentInteger(app.gpuPercent) + " GPU"]
             return Consumer(app: app, detail: parts.joined(separator: " · "))
         }
-        guard let app = live.topApps(.cpu, count: 4).first(where: { $0.identity.key.kind != .system })
-            ?? live.topConsumer else { return nil }
+        // The whole CPU ranking (cached per apply), first non-system group; no energy fallback (DESIGN §3.1).
+        guard let app = live.topApps(.cpu, count: Int.max).first(where: { $0.identity.key.kind != .system })
+        else { return nil }
         let parts = [TTFormat.cpuPercentInteger(app.cpuPercent) + " CPU",
                      TTFormat.memory(app.memory, style: .headline)]
         return Consumer(app: app, detail: parts.joined(separator: " · "))
@@ -221,7 +204,6 @@ struct PopoverActions {
     var actions: ProcessActions
     var live: LiveModel
 
-    func openPage(_ c: MonitorModel.Category) { commands.openDashboard(c.dashboardPage) }
     func openApp(_ key: AppKey) { commands.inspectApp(key) }
     func openDashboard() { commands.openDashboard(.overview) }
     func openHistory() { commands.openDashboard(.history) }

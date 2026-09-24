@@ -14,7 +14,10 @@ public struct ProcessesPage: View {
     @Environment(\.processActions) private var actions
     @Environment(\.processesDetailOnAppear) private var detailOnAppear
     @Environment(\.processesExpandSelectionOnAppear) private var expandOnAppear
+    @Environment(\.processesExpandOnAppear) private var expandKeysOnAppear
     @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(\.presentConfirmDialog) private var confirmDialog
+    @Environment(\.appCommands) private var appCommands
     @State private var table = ProcessTableModel()
     @State private var coordinator = ProcessActionCoordinator()
     @State private var inspector = AppInspectorModel()
@@ -47,8 +50,12 @@ public struct ProcessesPage: View {
                 .frame(minHeight: Self.listMinHeight, maxHeight: .infinity)
             AppInspector(row: selectedRow, availability: availability, detailExpanded: detailExpanded,
                          onToggleDetail: toggleDetail,
-                         onQuit: { target in Task { await coordinator.quit(target) } },
-                         onForceQuit: { coordinator.requestForceQuit($0) },
+                         onQuit: { target in
+                             if availability.isSelf { appCommands.quitTelltale() } else {
+                                 Task { await coordinator.quit(target) }
+                             }
+                         },
+                         onForceQuit: { forceQuit($0) },
                          model: inspector)
                 .layoutPriority(1)
         }
@@ -61,11 +68,10 @@ public struct ProcessesPage: View {
                 .accessibilityLabel("Search processes")
         }
         .environment(\.processActions, ownedActions)
-        .environment(\.requestForceQuit, { [coordinator] target in coordinator.requestForceQuit(target) })
+        .environment(\.requestForceQuit, { target in forceQuit(target) })
         .environment(\.onProcessActionResult, { [coordinator] target, result in
             coordinator.report(target, result, force: false)
         })
-        .overlay { forceQuitDialog }
         .background { shortcuts(selectedRow, availability) }
         .focusable()
         .focusEffectDisabled()
@@ -86,6 +92,7 @@ public struct ProcessesPage: View {
                 refresh()
                 detailExpanded = detailOnAppear ?? (nav.selection != nil)
                 if expandOnAppear, case .app(let key)? = nav.selection { table.setExpanded(key, true) }
+                for key in expandKeysOnAppear { table.setExpanded(key, true) }
                 publishInspectedApp()
             }
         }
@@ -170,20 +177,23 @@ public struct ProcessesPage: View {
 
     // MARK: Dialog & keys
 
-    @ViewBuilder private var forceQuitDialog: some View {
-        if let target = coordinator.pendingForceQuit {
-            TTConfirmDialog(title: ProcessActionCoordinator.dialogTitle(target),
-                            message: ProcessActionCoordinator.dialogMessage,
-                            confirmTitle: "Force Quit",
-                            onConfirm: { Task { await coordinator.confirmForceQuit() } },
-                            onCancel: { coordinator.cancelForceQuit() })
+    /// Force Quit always confirms through the shell's window-level dialog (`\.presentConfirmDialog`).
+    private func forceQuit(_ target: ProcessTarget) {
+        if let presenter = confirmDialog {
+            let confirm: ProcessActionCoordinator.Confirm = { title, message, confirmTitle in
+                await presenter.confirm(title: title, message: message, confirmTitle: confirmTitle)
+            }
+            coordinator.confirm = confirm
+        } else {
+            coordinator.confirm = nil
         }
+        Task { await coordinator.forceQuit(target) }
     }
 
     private func shortcuts(_ row: ProcessRow?, _ availability: ProcessActionAvailability) -> some View {
         ZStack {
             Button("Force Quit") {
-                if let t = row?.target, availability.canForceQuit { coordinator.requestForceQuit(t) }
+                if let t = row?.target, availability.canForceQuit { forceQuit(t) }
             }
             .keyboardShortcut(.delete, modifiers: .command)
             Button("Search") { searchFocused = true }
@@ -236,4 +246,6 @@ extension EnvironmentValues {
     @Entry var processesDetailOnAppear: Bool? = nil
     /// Expand the selected app group when the page appears (snapshot tests).
     @Entry var processesExpandSelectionOnAppear: Bool = false
+    /// App groups expanded when the page appears (snapshot tests).
+    @Entry var processesExpandOnAppear: Set<AppKey> = []
 }

@@ -357,6 +357,13 @@ public enum TTFormat {
         niceCeiling(bps / 1e6, minimum: 1) * 1e6
     }
 
+    /// Nice rate ceiling in bytes/s whose value is "nice" in the **display** unit (§5.10): bytes → MB/s steps
+    /// (≥ 1 MB/s); bits (network setting) → Mbps steps (≥ 1 Mbps), so the legend reads "scale 40 Mbps", not "320 Mbps".
+    public static func niceRateCeiling(_ bps: Double, units: UnitPreferences) -> Double {
+        guard units.networkRate == .bits else { return niceRateCeiling(bps) }
+        return niceCeiling(bps * 8 / 1e6, minimum: 1) * 1e6 / 8
+    }
+
     /// Legend scale label for a nice ceiling: "40 MB/s", "2 GB/s" (integer in its unit).
     public static func rateScale(_ bps: Double, units: UnitPreferences) -> String {
         let bits = units.networkRate == .bits

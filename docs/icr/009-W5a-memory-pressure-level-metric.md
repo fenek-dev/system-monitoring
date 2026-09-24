@@ -1,6 +1,8 @@
 # ICR 009 (W5a): `HistoryMetric.memPressureLevel` for the level-colored Memory pressure chart
 
-Number is provisional; the controller may renumber.
+Number is provisional; the controller may renumber. **Accepted as ICR-12** (W7 a9ba2e7), with a ruling that
+replaces the "max" aggregate below: buckets keep the time-weighted average; the consumer maps v > 2.5 → critical,
+v > 1.0 → warning, else normal. `MemoryPage` reads it (interim removed).
 
 ## What
 

@@ -139,6 +139,37 @@ struct ShellSettingsStoreTests {
         #expect(ScreenCatalog.snapshotSettings().defaults is InMemoryDefaults)
     }
 
+    @Test func inMemoryDefaultsCoverEveryTypedAPIAndLeaveStandardUntouched() throws {
+        let standardBefore = UserDefaults.standard.dictionaryRepresentation().keys.filter { $0.hasPrefix("tt.") }
+        let d = InMemoryDefaults()
+        d.register(defaults: ["tt.reg": 7, "tt.int": 1])
+        #expect(d.integer(forKey: "tt.reg") == 7 && d.integer(forKey: "tt.int") == 1)
+        d.set(42, forKey: "tt.int")
+        d.set(2.5, forKey: "tt.double")
+        d.set(Float(1.5), forKey: "tt.float")
+        d.set(true, forKey: "tt.bool")
+        d.set(URL(fileURLWithPath: "/tmp/x"), forKey: "tt.url")
+        d.set(["a": 1], forKey: "tt.dict")
+        d.set(["x", "y"], forKey: "tt.strings")
+        d.set(Data([1, 2]), forKey: "tt.data")
+        d.set("12", forKey: "tt.numericString")
+        #expect(d.integer(forKey: "tt.int") == 42)                                  // value beats registration
+        #expect(d.double(forKey: "tt.double") == 2.5 && d.float(forKey: "tt.float") == 1.5)
+        #expect(d.bool(forKey: "tt.bool") && d.integer(forKey: "tt.numericString") == 12)
+        #expect(d.url(forKey: "tt.url")?.path == "/tmp/x")
+        #expect(d.dictionary(forKey: "tt.dict")?["a"] as? Int == 1)
+        #expect(d.stringArray(forKey: "tt.strings") == ["x", "y"] && d.data(forKey: "tt.data") == Data([1, 2]))
+        #expect(d.dictionaryRepresentation()["tt.reg"] as? Int == 7)
+        d.removeObject(forKey: "tt.int")
+        #expect(d.integer(forKey: "tt.int") == 1)                                   // back to the registered value
+        // nothing reached the app's standard domain (and a second instance shares nothing)
+        for key in ["tt.int", "tt.double", "tt.float", "tt.bool", "tt.url", "tt.dict", "tt.reg"] {
+            #expect(UserDefaults.standard.object(forKey: key) == nil, "\(key)")
+            #expect(InMemoryDefaults().object(forKey: key) == nil, "\(key)")
+        }
+        #expect(UserDefaults.standard.dictionaryRepresentation().keys.filter { $0.hasPrefix("tt.") } == standardBefore)
+    }
+
     @Test func suitePerDataDirectoryIsStable() {
         let a = SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a/"))
         #expect(a == SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a")))

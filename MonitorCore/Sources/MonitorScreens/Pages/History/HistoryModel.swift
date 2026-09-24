@@ -2,14 +2,14 @@ import Dispatch
 import Foundation
 import MonitorLive
 import MonitorModel
+import MonitorUIKit
 import Observation
-import os
 
 // DESIGN §3.13 History: range windows, lanes, events, the scrub cursor (Live pins it to now), the "At" treemap
 // (`appShares(at: cursor)`, throttled ≤ 10/s while scrubbing; range change cancels in-flight queries) and CSV export.
 
-/// Buckets of one History range. 24H/7D/30D are calendar-aligned (the 24H axis is `00:00 … 24:00` and its title
-/// the day, DESIGN §2.12/§3.13); 1H and Live end now. `latest` is the bucket containing now.
+/// Buckets of one History range. 24H/7D/30D are calendar-aligned in the injected calendar (the 24H axis is
+/// `00:00 … 24:00` and its title the day, DESIGN §2.12/§3.13); 1H and Live end now. `latest` = bucket containing now.
 public struct HistoryWindow: Equatable, Sendable {
     public var range: HistoryRange
     public var start: Date
@@ -17,7 +17,24 @@ public struct HistoryWindow: Equatable, Sendable {
     public var count: Int
     public var latest: Int
 
+    public init(range: HistoryRange, start: Date, bucket: TimeInterval, count: Int, latest: Int) {
+        self.range = range
+        self.start = start
+        self.bucket = bucket
+        self.count = count
+        self.latest = latest
+    }
+
     public var end: Date { start.addingTimeInterval(bucket * Double(count)) }
+
+    /// End of the newest bucket: the stored ranges' "now" (never the ticking clock).
+    public var dataEnd: Date { start.addingTimeInterval(bucket * Double(latest + 1)) }
+
+    /// First local day of a calendar-aligned window (`start` may sit up to one bucket before local midnight
+    /// after snapping to the store grid).
+    public func firstDay(_ calendar: Calendar) -> Date {
+        calendar.startOfDay(for: start.addingTimeInterval(bucket))
+    }
 
     public func time(at index: Int) -> Date { start.addingTimeInterval(bucket * Double(clamp(index))) }
 
@@ -37,14 +54,21 @@ public struct HistoryWindow: Equatable, Sendable {
         switch range {
         case .live, .hour:
             let count = Int((Double(range.duration?.components.seconds ?? 60) / bucket).rounded())
-            let end = (now.timeIntervalSince1970 / bucket).rounded(.up) * bucket
-            return HistoryWindow(range: range, start: Date(timeIntervalSince1970: end - bucket * Double(count)),
+            // The newest bucket is the one containing `now` (labelled by its start, like the store's buckets).
+            let newest = (now.timeIntervalSince1970 / bucket).rounded(.down) * bucket
+            return HistoryWindow(range: range, start: Date(timeIntervalSince1970: newest - bucket * Double(count - 1)),
                                  bucket: bucket, count: count, latest: count - 1)
         case .day, .week, .month:
             let days = range == .day ? 1 : (range == .week ? 7 : 30)
             let today = calendar.startOfDay(for: now)
-            let start = calendar.date(byAdding: .day, value: -(days - 1), to: today) ?? today
-            let count = Int((Double(days) * 86_400 / bucket).rounded())
+            let midnight = calendar.date(byAdding: .day, value: -(days - 1), to: today) ?? today
+            // Snap to the store's epoch-aligned bucket grid (30D: 2-h buckets vs. an odd UTC offset would put the
+            // newest local bucket between two stored ones and leave it empty); at most one bucket earlier.
+            let start = Date(timeIntervalSince1970: (midnight.timeIntervalSince1970 / bucket).rounded(.down) * bucket)
+            // Cover through the next local midnight (DST days are 23/25 h; the snap adds up to one bucket), so the
+            // bucket containing `now` always exists.
+            let localEnd = calendar.date(byAdding: .day, value: 1, to: today) ?? today.addingTimeInterval(86_400)
+            let count = max(1, Int((localEnd.timeIntervalSince(start) / bucket).rounded(.up)))
             var w = HistoryWindow(range: range, start: start, bucket: bucket, count: count, latest: 0)
             w.latest = w.index(of: now)
             return w
@@ -73,10 +97,10 @@ public struct ShareQueryThrottle: Equatable, Sendable {
         return .fireNow
     }
 
-    /// The scheduled trailing fire ran.
+    /// The scheduled trailing fire ran (counted at its scheduled time, so an early wake-up can't raise the rate).
     public mutating func firedScheduled(at now: Double) {
+        lastFire = max(now, scheduled ?? now)
         scheduled = nil
-        lastFire = now
     }
 
     public mutating func reset() {
@@ -116,16 +140,35 @@ public enum TreemapMetric: String, CaseIterable, Sendable {
     public var treemapMetric: AppMetric { appMetrics[0] }
 }
 
+/// Where Export CSV writes (DESIGN §3.13). The app runs an `NSSavePanel` sheet on the dashboard window
+/// (`SavePanelExportDestination`); tests inject a stub.
+public protocol HistoryExportDestination: Sendable {
+    /// nil = cancelled.
+    @MainActor func chooseDestination(suggestedName: String) async -> URL?
+}
+
+/// Inline status under Export CSV.
+public enum HistoryExportStatus: Equatable, Sendable {
+    case exported(rows: Int)
+    case failed(String)
+
+    public var text: String {
+        switch self {
+        case .exported(let rows): "Exported \(rows.formatted()) rows"
+        case .failed(let why): "Export failed: \(why)"
+        }
+    }
+}
+
 @MainActor @Observable
 public final class HistoryModel {
     public enum LoadState: Equatable, Sendable { case idle, loading, loaded, failed(String) }
 
     public private(set) var window: HistoryWindow
-    /// Lane values per bucket (`window.count` long; nil = gap).
+    /// Values per bucket (`window.count` long; nil = gap) for the lanes and `memPressureLevel` (bands).
     public private(set) var lanes: [HistoryMetric: [Double?]] = [:]
     public private(set) var events: [HistoryEvent] = []
     public private(set) var coverage: DateInterval?
-    public private(set) var coverageKnown = false
     public private(set) var loadState: LoadState = .idle
     public private(set) var cursor: Int
     public private(set) var pinned: Bool
@@ -138,17 +181,29 @@ public final class HistoryModel {
     public private(set) var otherCount = 0
     /// Cursor time the current `shares` belong to (nil = live apps).
     public private(set) var sharesTime: Date?
-    public private(set) var exportStatus: String?
+    public private(set) var exportStatus: HistoryExportStatus?
 
     /// Lane metrics (DESIGN §3.13).
     public nonisolated static let laneMetrics: [HistoryMetric] = [.cpuUsage, .gpuUsage, .memPressure, .netRx, .socTemp,
                                                                    .packageWatts]
+    /// Queried series: the lanes plus ICR-12 `memPressureLevel` (memory bands).
+    public nonisolated static let seriesMetrics: [HistoryMetric] = laneMetrics + [.memPressureLevel]
     public nonisolated static let shareLimit = 24
-    /// Bands and chips come from these event kinds.
+
     @ObservationIgnored public var provider: any HistoryProvider
-    @ObservationIgnored public var calendar: Calendar
+    /// The page's calendar (environment time zone + locale). Changing it drops the layout caches; the page then
+    /// re-selects the range so the window is rebuilt in the new zone.
+    @ObservationIgnored public var calendar: Calendar {
+        didSet {
+            bandCache = nil
+            chipCache = nil
+        }
+    }
+    /// Band layouts computed (tests: the cache is hit on scrub, missed on range/width changes).
+    @ObservationIgnored public private(set) var bandLayoutCount = 0
     @ObservationIgnored private var throttle = ShareQueryThrottle()
     @ObservationIgnored private let clock: @Sendable () -> Double
+    @ObservationIgnored private let sleepUntil: @Sendable (Double) async -> Void
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var shareTask: Task<Void, Never>?
     @ObservationIgnored private var trailingTask: Task<Void, Never>?
@@ -156,14 +211,26 @@ public final class HistoryModel {
     @ObservationIgnored private var liveApps: [AppSample] = []
     /// Unpinned Live cursor keeps its timestamp while the window moves.
     @ObservationIgnored private var liveCursorTime: Date?
-    /// Number of provider share queries started (tests: ≤ 10/s).
-    @ObservationIgnored public private(set) var shareQueryCount = 0
+    @ObservationIgnored private var bandCache: (key: LayoutKey, bands: [HistoryBand])?
+    @ObservationIgnored private var chipCache: (key: LayoutKey, chips: [HistoryChip])?
 
-    public init(range: HistoryRange = .day, now: Date = Date(), provider: any HistoryProvider,
-                calendar: Calendar = .current, clock: @escaping @Sendable () -> Double = HistoryModel.monotonicSeconds) {
+    private struct LayoutKey: Equatable {
+        var events: [HistoryEvent]
+        var memory: [Double?]
+        var window: HistoryWindow
+        var width: CGFloat
+    }
+
+    /// - Parameters:
+    ///   - calendar: the environment's calendar/time zone (London in snapshots) — never `Calendar.current`.
+    ///   - clock/sleepUntil: monotonic seconds and "sleep until" for the scrub throttle (tests inject a manual clock).
+    public init(range: HistoryRange = .day, now: Date, provider: any HistoryProvider, calendar: Calendar,
+                clock: @escaping @Sendable () -> Double = HistoryModel.monotonicSeconds,
+                sleepUntil: @escaping @Sendable (Double) async -> Void = HistoryModel.sleepUntilMonotonic) {
         self.provider = provider
         self.calendar = calendar
         self.clock = clock
+        self.sleepUntil = sleepUntil
         let w = HistoryWindow.make(range, now: now, calendar: calendar)
         window = w
         cursor = w.latest
@@ -174,14 +241,40 @@ public final class HistoryModel {
         Double(DispatchTime.now().uptimeNanoseconds) / 1e9
     }
 
+    public nonisolated static func sleepUntilMonotonic(_ t: Double) async {
+        let wait = t - monotonicSeconds()
+        if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+    }
+
     public var range: HistoryRange { window.range }
     public var cursorTime: Date { window.time(at: cursor) }
     public var isAtLatest: Bool { cursor == window.latest }
+    /// "Now" + Live badge only while pinned — i.e. only on the Live range (ruling).
+    public var showsLiveBadge: Bool { range == .live && pinned }
+
+    /// End of the leading "No data yet" region: [window.start, first stored sample), never into the future
+    /// (DESIGN §3.15). Data wins over `coverage()` (a store reporting no/late coverage never hides samples).
+    public var noDataUntil: Date? {
+        guard range != .live, loadState == .loaded else { return nil }
+        let firstIndex = Self.laneMetrics.compactMap { m in lanes[m]?.firstIndex { $0 != nil } }.min()
+        let firstData = firstIndex.map { window.time(at: $0) }
+        let boundary: Date
+        switch (firstData, coverage?.start) {
+        case let (d?, c?): boundary = min(d, c)
+        case let (d?, nil): boundary = d
+        case let (nil, c?): boundary = c
+        case (nil, nil): boundary = window.dataEnd                          // empty: up to now, not beyond
+        }
+        let until = min(boundary, window.dataEnd)
+        guard until > window.start.addingTimeInterval(window.bucket * 0.5) else { return nil }
+        return until
+    }
 
     // MARK: Range
 
     /// Switches range: new window, cursor at the latest bucket (pinned on Live), cancels in-flight loads/queries.
-    public func select(_ range: HistoryRange, now: Date) {
+    /// `restoring` (first appear only) puts the cursor back on a remembered moment inside the new window.
+    public func select(_ range: HistoryRange, now: Date, restoring: Date? = nil) {
         generation += 1
         loadTask?.cancel()
         shareTask?.cancel()
@@ -194,10 +287,14 @@ public final class HistoryModel {
         isScrubbing = false
         lanes = [:]
         events = []
+        coverage = nil
         shares = []
         otherCount = 0
         sharesTime = nil
         loadState = range == .live ? .loaded : .loading
+        if let t = restoring, range != .live, t >= window.start, t < window.end {
+            cursor = window.index(of: t)
+        }
     }
 
     /// Loads series, events and coverage for a stored range, then the shares at the cursor.
@@ -207,7 +304,7 @@ public final class HistoryModel {
         let w = window
         let provider = provider
         do {
-            async let series = provider.series(Self.laneMetrics, range: w.range, end: w.end)
+            async let series = provider.series(Self.seriesMetrics, range: w.range, end: w.end)
             async let evts = provider.events(in: DateInterval(start: w.start, end: w.end))
             async let cov = provider.coverage()
             let (s, e, c) = try await (series, evts, cov)
@@ -216,7 +313,7 @@ public final class HistoryModel {
             await queryShares(at: cursorTime, generation: gen)
         } catch {
             guard gen == generation, !Task.isCancelled else { return }
-            loadState = .failed("\(error)")
+            loadState = .failed(error.localizedDescription)
         }
     }
 
@@ -226,49 +323,12 @@ public final class HistoryModel {
         loadTask = Task { [weak self] in await self?.load() }
     }
 
-    /// Snapshot renders (no run-loop wait): performs the load off the main actor and waits up to `timeout`.
-    public func loadSynchronously(timeout: TimeInterval = 2) {
-        guard range != .live else { return }
-        let w = window, provider = provider, metric = metric
-        let t = cursorTime
-        typealias Payload = ([HistoryMetric: [SeriesPoint]], [HistoryEvent], DateInterval?, [[AppShare]])
-        let box = OSAllocatedUnfairLock<Result<Payload, any Error>?>(initialState: nil)
-        let done = DispatchSemaphore(value: 0)
-        Task.detached {
-            do {
-                let s = try await provider.series(Self.laneMetrics, range: w.range, end: w.end)
-                let e = try await provider.events(in: DateInterval(start: w.start, end: w.end))
-                let c = try await provider.coverage()
-                var sh: [[AppShare]] = []
-                for m in metric.appMetrics {
-                    sh.append(try await provider.appShares(at: t, metric: m, range: w.range, limit: Self.shareLimit))
-                }
-                let payload: Payload = (s, e, c, sh)
-                box.withLock { $0 = .success(payload) }
-            } catch {
-                box.withLock { $0 = .failure(error) }
-            }
-            done.signal()
-        }
-        guard done.wait(timeout: .now() + timeout) == .success, let result = box.withLock({ $0 }) else { return }
-        switch result {
-        case .success(let (s, e, c, sh)):
-            apply(series: s, events: e, coverage: c)
-            setShares(sh, at: t)
-        case .failure(let error):
-            loadState = .failed("\(error)")
-        }
-    }
-
     private func apply(series: [HistoryMetric: [SeriesPoint]], events: [HistoryEvent], coverage: DateInterval?) {
         var out: [HistoryMetric: [Double?]] = [:]
-        for m in Self.laneMetrics {
-            out[m] = Self.bucketed(series[m] ?? [], window: window)
-        }
+        for m in Self.seriesMetrics { out[m] = Self.bucketed(series[m] ?? [], window: window) }
         lanes = out
         self.events = events.sorted { $0.start < $1.start }
         self.coverage = coverage
-        coverageKnown = true
         loadState = .loaded
     }
 
@@ -276,7 +336,9 @@ public final class HistoryModel {
     public nonisolated static func bucketed(_ points: [SeriesPoint], window: HistoryWindow) -> [Double?] {
         var values = [Double?](repeating: nil, count: window.count)
         for p in points {
-            let i = Int((p.time.timeIntervalSince(window.start) / window.bucket).rounded())
+            // Floor: the store's epoch-aligned buckets may be offset from a local-midnight window (30D: 2-h buckets
+            // vs. an odd UTC offset); each point lands in the window bucket containing its start.
+            let i = Int((p.time.timeIntervalSince(window.start) / window.bucket + 1e-6).rounded(.down))
             guard i >= 0, i < window.count else { continue }
             if let v = p.value, v.isFinite { values[i] = v }
         }
@@ -287,16 +349,13 @@ public final class HistoryModel {
 
     /// One Live tick: the last 60 s from the live model. Pinned → cursor on the newest bucket and the treemap
     /// from live apps; unpinned → the cursor keeps its timestamp while the window moves.
-    public func applyLive(series: [HistoryMetric: [SeriesPoint]], now: Date, apps: [AppSample],
-                          coverage: DateInterval? = nil) {
+    public func applyLive(series: [HistoryMetric: [SeriesPoint]], now: Date, apps: [AppSample]) {
         guard range == .live else { return }
         window = HistoryWindow.make(.live, now: now, calendar: calendar)
         var out: [HistoryMetric: [Double?]] = [:]
-        for m in Self.laneMetrics { out[m] = Self.bucketed(series[m] ?? [], window: window) }
+        for m in Self.seriesMetrics { out[m] = Self.bucketed(series[m] ?? [], window: window) }
         lanes = out
         liveApps = apps
-        self.coverage = coverage
-        coverageKnown = coverage != nil
         loadState = .loaded
         if pinned {
             cursor = window.latest
@@ -317,10 +376,12 @@ public final class HistoryModel {
 
     // MARK: Cursor
 
-    /// Moves the cursor (slider, lane drag, ←/→, chip click). Live re-pins on the newest bucket.
+    /// Moves the cursor (slider, lane drag, ←/→, chip click). Live re-pins on the newest bucket. Same bucket → no-op.
     public func scrub(to index: Int, interactive: Bool = true) {
-        let i = window.clamp(index)
-        if interactive { isScrubbing = true }
+        // Never past the newest bucket: later ones are the future on the calendar-aligned ranges.
+        let i = min(window.clamp(index), window.latest)
+        if interactive, !isScrubbing { isScrubbing = true }
+        guard i != cursor else { return }
         cursor = i
         if range == .live {
             pinned = i == window.latest
@@ -330,9 +391,10 @@ public final class HistoryModel {
     }
 
     public func endScrub() {
-        isScrubbing = false
+        if isScrubbing { isScrubbing = false }
     }
 
+    /// ← / → (DESIGN §3.13): one bucket.
     public func step(_ delta: Int) { scrub(to: cursor + delta, interactive: false) }
 
     /// Chip click: cursor to the event's start.
@@ -345,6 +407,49 @@ public final class HistoryModel {
         liveCursorTime = nil
         cursor = window.latest
         setShares(Self.liveShares(liveApps, metric: metric), at: nil)
+    }
+
+    // MARK: Layout caches (bands/chips re-laid out only when events, memory levels, window or width change)
+
+    public func bands(width: CGFloat) -> [HistoryBand] {
+        let key = LayoutKey(events: events, memory: lanes[.memPressureLevel] ?? [], window: window, width: width)
+        if let c = bandCache, c.key == key { return c.bands }
+        let bands = HistoryBand.layout(events, memoryLevels: key.memory, window: window, width: width,
+                                       openEnd: window.dataEnd)
+        bandCache = (key, bands)
+        bandLayoutCount += 1
+        return bands
+    }
+
+    /// Band kinds present in the range (legend), width-independent — never touches the layout cache.
+    public var legendKinds: [HistoryBandKind] {
+        let present = Set(HistoryBand.layout(events, memoryLevels: lanes[.memPressureLevel] ?? [], window: window,
+                                             width: 1, openEnd: window.dataEnd).map(\.kind))
+        return HistoryBandKind.allCases.filter(present.contains)
+    }
+
+    public func chips(width: CGFloat, measure: (String) -> CGFloat) -> [HistoryChip] {
+        let key = LayoutKey(events: events, memory: [], window: window, width: width)
+        if let c = chipCache, c.key == key { return c.chips }
+        let (range, calendar) = (range, calendar)
+        let chips = HistoryChip.layout(events, window: window, width: width,
+                                       label: { HistoryText.chipLabel($0, range: range, calendar: calendar) },
+                                       measure: measure)
+        chipCache = (key, chips)
+        return chips
+    }
+
+    /// Cursor time for the "At" card: "14:35", or "Tue 09:10" on 7D/30D (ruling: day-less times are ambiguous there).
+    public var cursorLabel: String { HistoryText.moment(cursorTime, range: range, calendar: calendar) }
+
+    /// The "At" note for the cursor bucket (DESIGN §3.13), with the SoC peak over each thermal episode.
+    public func note(units: UnitPreferences) -> String {
+        HistoryText.note(events, at: cursorTime, bucket: window.bucket, openEnd: window.dataEnd, units: units,
+                         socPeak: { [lanes, window] interval in
+                             guard let soc = lanes[.socTemp] else { return nil }
+                             let a = window.index(of: interval.start), b = window.index(of: interval.end)
+                             return soc[min(a, b)...max(a, b)].compactMap { $0 }.max()
+                         })
     }
 
     // MARK: Shares
@@ -362,10 +467,10 @@ public final class HistoryModel {
         case .fireNow:
             fireShareQuery()
         case .schedule(let at):
-            let wait = max(0, at - clock())
             let gen = generation
+            let sleepUntil = sleepUntil
             trailingTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(wait))
+                await sleepUntil(at)
                 guard let self, !Task.isCancelled, gen == self.generation else { return }
                 self.throttle.firedScheduled(at: self.clock())
                 self.fireShareQuery()
@@ -383,7 +488,6 @@ public final class HistoryModel {
     }
 
     private func queryShares(at time: Date, generation gen: Int) async {
-        shareQueryCount += 1
         let provider = provider, metric = metric, range = range
         do {
             var results: [[AppShare]] = []
@@ -400,8 +504,8 @@ public final class HistoryModel {
 
     private func setShares(_ raw: [[AppShare]], at time: Date?) {
         let r = Self.treemapShares(Self.sumByApp(raw))
-        shares = r.shares
-        otherCount = r.otherCount
+        if shares != r.shares { shares = r.shares }
+        if otherCount != r.otherCount { otherCount = r.otherCount }
         sharesTime = time
     }
 
@@ -454,17 +558,18 @@ public final class HistoryModel {
 
     // MARK: Export
 
-    /// Export CSV (DESIGN §3.13): asks for a destination (`NSSavePanel` in the app), then `exportCSV` of the
-    /// current range at display resolution.
+    /// Export CSV (DESIGN §3.13): asks the destination service, then `exportCSV` of the current range at display
+    /// resolution. Status: rows written, or the error's description inline; cancel leaves it unchanged.
     @discardableResult
-    public func export(destination: @MainActor () async -> URL?) async -> ExportSummary? {
-        guard let url = await destination() else { return nil }
+    public func export(to destination: any HistoryExportDestination) async -> ExportSummary? {
+        let name = "Telltale History \(range.label).csv"
+        guard let url = await destination.chooseDestination(suggestedName: name) else { return nil }
         do {
             let summary = try await provider.exportCSV(range: range, end: window.end, to: url)
-            exportStatus = "Exported \(summary.rows.formatted()) rows"
+            exportStatus = .exported(rows: summary.rows)
             return summary
         } catch {
-            exportStatus = "Export failed"
+            exportStatus = .failed(error.localizedDescription)
             return nil
         }
     }

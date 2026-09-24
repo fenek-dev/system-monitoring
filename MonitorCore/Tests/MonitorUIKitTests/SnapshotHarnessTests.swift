@@ -41,9 +41,14 @@ import Testing
         let a = try #require(SnapshotRenderer.render(TTColor.bgCard, size: CGSize(width: 10, height: 10), path: .imageRenderer))
         let b = try #require(SnapshotRenderer.render(Probe(), size: CGSize(width: 10, height: 10), path: .imageRenderer))
         #expect(SnapshotImage.compare(a, a).fraction == 0)
+        #expect(SnapshotImage.compare(a, a).diffImage == nil)
         let d = SnapshotImage.compare(a, b)
         #expect(abs(d.fraction - 0.5) < 0.01)
-        #expect(d.diffImage != nil)
+        let diff = try #require(d.diffImage)
+        // Left half equal → golden (bgCard 0x232326) dimmed to 1/4; right half differs → opaque red.
+        let dim = pixel(diff, 2, 10), red = pixel(diff, 17, 10)
+        #expect(abs(Int(dim.0) - 0x23 / 4) <= 1 && abs(Int(dim.2) - 0x26 / 4) <= 1 && dim.3 == 255, "dimmed \(dim)")
+        #expect(red == (255, 0, 0, 255), "red \(red)")
         let c = try #require(SnapshotRenderer.render(Probe(), size: CGSize(width: 12, height: 10), path: .imageRenderer))
         #expect(SnapshotImage.compare(a, c).sizeMismatch)
     }

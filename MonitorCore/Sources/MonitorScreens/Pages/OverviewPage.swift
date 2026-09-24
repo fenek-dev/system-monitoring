@@ -11,17 +11,21 @@ public struct OverviewPage: View {
     public init() {}
 
     public var body: some View {
-        FlexPage(minContentHeight: 168 + 276 + 200 + 2 * TTSpace.gridGap) {
-            OverviewTiles()
-            GridRow(columns: 3, spans: [2, 1], minHeight: 276) {
-                OverviewTimelineCard()
-                VStack(spacing: TTSpace.gridGap) {
-                    OverviewPowerCard()
-                    OverviewDiskCard()
+        // One reader feeds the tiles and the timeline (same five metrics, one store read per bucket).
+        RangeSeriesReader(OverviewTiles.metrics) { s in
+            FlexPage(minContentHeight: 168 + 276 + 200 + 2 * TTSpace.gridGap) {
+                OverviewTiles(series: s)
+                GridRow(columns: 3, spans: [2, 1], minHeight: 276) {
+                    OverviewTimelineCard(series: s)
+                    VStack(spacing: TTSpace.gridGap) {
+                        OverviewPowerCard()
+                        OverviewDiskCard()
+                    }
                 }
+                OverviewTopProcessesCard()
+                    .frame(minHeight: 200, maxHeight: .infinity, alignment: .top)
             }
-            OverviewTopProcessesCard()
-                .frame(minHeight: 200, maxHeight: .infinity, alignment: .top)
+            .processActionsHost()
         }
     }
 }
@@ -30,6 +34,7 @@ public struct OverviewPage: View {
 
 /// DESIGN §3.4.1: five `TTMetricTile`s (`grid5`); click navigates to the category page.
 struct OverviewTiles: View {
+    let series: RangeSeries
     @Environment(LiveModel.self) private var live
     @Environment(NavigationModel.self) private var nav
     @Environment(\.unitPreferences) private var units
@@ -37,13 +42,11 @@ struct OverviewTiles: View {
     static let metrics: [HistoryMetric] = [.cpuUsage, .gpuUsage, .memUsed, .netRx, .socTemp]
 
     var body: some View {
-        RangeSeriesReader(Self.metrics) { s in
-            GridRow(columns: 5) {
-                ForEach(Self.tiles(s, live: live, units: units), id: \.category) { t in
-                    TTMetricTile(category: t.category, value: t.value, prefix: t.prefix, unit: t.unit, detail: t.detail,
-                                 points: t.points, unavailableReason: t.reason, yDomain: t.domain) {
-                        nav.page = t.category.dashboardPage
-                    }
+        GridRow(columns: 5) {
+            ForEach(Self.tiles(series, live: live, units: units), id: \.category) { t in
+                TTMetricTile(category: t.category, value: t.value, prefix: t.prefix, unit: t.unit, detail: t.detail,
+                             points: t.points, unavailableReason: t.reason, yDomain: t.domain) {
+                    nav.page = t.category.dashboardPage
                 }
             }
         }
@@ -122,26 +125,27 @@ struct OverviewTiles: View {
 /// DESIGN §3.4.2: card gap 12, min 276: header (range title + "Open History"), 5 × `TTTimelineRow` (gap 4), axis
 /// inset 96; extra height goes below the axis.
 struct OverviewTimelineCard: View {
+    let series: RangeSeries
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
 
     var body: some View {
-        RangeSeriesReader(OverviewTiles.metrics) { s in
-            TTCard(spacing: TTSpace.gridGap) {
-                TTCardHeader(s.range.lastTitle) { PageLink("Open History", to: .history) }
-                VStack(spacing: TTSpace.x4) {
-                    ForEach(rows(s), id: \.label) { r in
-                        TTTimelineRow(label: r.label, icon: nil, value: r.value, unavailableReason: r.reason,
-                                      points: r.points, color: r.color, yDomain: r.domain)
-                    }
+        let s = series
+        TTCard(spacing: TTSpace.gridGap) {
+            TTCardHeader(s.range.lastTitle) { PageLink("Open History", to: .history) }
+            VStack(spacing: TTSpace.x4) {
+                ForEach(rows(s), id: \.label) { r in
+                    TTTimelineRow(label: r.label, icon: nil, value: r.value, unavailableReason: r.reason,
+                                  points: r.points, color: r.color, yDomain: r.domain)
+                        .equatable()
                 }
-                TTTimeAxis(range: s.range, end: s.end)
-                    .frame(width: 480)
-                    .padding(.leading, 96)
-                    .fillBelow()
             }
-            .frame(maxHeight: .infinity, alignment: .top)
+            TTTimeAxis(range: s.range, end: s.end)
+                .frame(width: 480)
+                .padding(.leading, 96)
+                .fillBelow()
         }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     struct Row {
@@ -183,7 +187,7 @@ struct OverviewPowerCard: View {
     var body: some View {
         let p = live.power
         let reason = unavailableReason(.packageWatts, health: live.sensorHealth)
-        let package = splitUnit(TTFormat.watts(p.packageWatts))
+        let package = splitUnit(TTFormat.watts(W5a.packageWatts(p)))
         TTCard(spacing: TTSpace.x10) {
             TTCardHeader("Power", icon: "power") { PageLink("Details", to: .power) }
             HStack(alignment: .lastTextBaseline) {
@@ -215,7 +219,7 @@ struct OverviewPowerCard: View {
     }
 
     private func segments(_ p: PowerSnapshot) -> [TTSegmentBar.Segment] {
-        guard let total = p.packageWatts, total > 0 else { return [] }
+        guard let total = W5a.packageWatts(p), total > 0 else { return [] }
         return [(p.cpuWatts, TTColor.cpu), (p.gpuWatts, TTColor.gpu), (p.aneWatts, TTColor.power),
                 (p.dramWatts, TTColor.dram)]
             .map { TTSegmentBar.Segment(($0.0 ?? 0) / total, $0.1) }
@@ -245,7 +249,7 @@ struct OverviewDiskCard: View {
             HStack(spacing: 16) {
                 Text("Read " + TTFormat.diskRate(d.readBps))
                 Text("Write " + TTFormat.diskRate(d.writeBps))
-                if let v { Text(TTFormat.storage(Self.free(v), style: .capacity) + " free") }
+                if let v { Text(ShellFormat.freeSpace(v) + " free") }   // one owner of the free-space rule (W4)
             }
             .font(TTFont.body12).foregroundStyle(TTColor.textSecondary).monospacedDigit().lineLimit(1)
             .fillBelow()
@@ -253,7 +257,7 @@ struct OverviewDiskCard: View {
         .frame(minHeight: 120, maxHeight: .infinity, alignment: .top)
     }
 
-    static func free(_ v: VolumeInfo) -> UInt64 { v.availableImportantBytes ?? v.availableBytes }
+    static func free(_ v: VolumeInfo) -> UInt64 { W5a.freeBytes(v) }
     static func usedFraction(_ v: VolumeInfo) -> Double {
         v.totalBytes > 0 ? Double(v.totalBytes - min(free(v), v.totalBytes)) / Double(v.totalBytes) : 0
     }
@@ -285,8 +289,12 @@ struct OverviewTopProcessesCard: View {
             TTCardHeader("Top processes") { PageLink("All processes", to: .processes) }
             FitRows { n in   // "as many as fit (≈4 at the default size)"
                 TTTable(rows: Array(rows.prefix(n)), columns: columns(health), selection: $selection, sort: $sort,
-                        rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) }, children: nil,
-                        style: TTTableStyle(scrolls: false, emptyMessage: "No processes"), onDoubleClick: open)
+                        rowMenu: { a in
+                            a.isExitedResidualOnly ? AnyView(EmptyView()) : AnyView(TTRowActionsMenu(target: a.target))
+                        }, children: nil,
+                        // Pre-sorted by CPU before the prefix; the table must not re-sort (header sorting is off).
+                        style: TTTableStyle(sortsRows: false, scrolls: false, emptyMessage: "No processes"),
+                        onDoubleClick: open)
             }
         }
     }
@@ -305,9 +313,13 @@ struct OverviewTopProcessesCard: View {
     private func columns(_ health: [SensorID: SensorStatus]) -> [TTTable<AppSample>.Column] {
         let units = units
         return [
-            .init(id: "name", title: "Process", width: .fraction(2.2, min: 0)) { AnyView(AppNameCell(app: $0)) },
+            .init(id: "name", title: "Process", width: .fraction(2.2, min: 0)) { a in
+                a.isExitedResidualOnly ? AnyView(ExitedNameCell(identity: a.identity, name: a.name))
+                    : AnyView(AppNameCell(app: a))
+            },
             .init(id: "cpu", title: "CPU", width: .fraction(1, min: 0), alignment: .trailing, sortKey: \.cpuPercent) {
-                metricCell(TTFormat.cpuPercent($0.cpuPercent), reason: unavailableReason(.cpu, $0, health: health))
+                metricCell(TTFormat.cpuPercent($0.cpuPercent), reason: unavailableReason(.cpu, $0, health: health),
+                           estimated: $0.isExitedResidualOnly)
             },
             .init(id: "gpu", title: "GPU", width: .fraction(1, min: 0), alignment: .trailing) {
                 metricCell(TTFormat.cpuPercent($0.gpuPercent), reason: unavailableReason(.gpu, $0, health: health))
@@ -323,8 +335,8 @@ struct OverviewTopProcessesCard: View {
                 metricCell(TTFormat.appWatts($0.energyWatts), reason: unavailableReason(.energy, $0, health: health),
                            estimated: $0.energyEstimated)
             },
-            .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) {
-                AnyView(TTRowActionsButton(target: $0.target, name: $0.name))
+            .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) { a in
+                a.isExitedResidualOnly ? AnyView(EmptyView()) : AnyView(TTRowActionsButton(target: a.target, name: a.name))
             },
         ]
     }

@@ -25,7 +25,7 @@ public struct CPUPage: View {
             CPUConsumersCard(selection: initialSelection)
                 .frame(minHeight: 130, maxHeight: .infinity, alignment: .top)
         }
-        .forceQuitHost()
+        .processActionsHost()
     }
 }
 
@@ -49,7 +49,7 @@ struct CPUStatStrip: View {
             .init(id: "user", label: "User", value: TTFormat.percent(c.user, digits: 1), unavailableReason: reason),
             .init(id: "system", label: "System", value: TTFormat.percent(c.system, digits: 1), unavailableReason: reason),
             .init(id: "idle", label: "Idle", value: TTFormat.percent(c.idle, digits: 1), unavailableReason: reason),
-            .init(id: "load", label: "Load average", value: TTFormat.loadAverage(c.loadAverage), detail: "1 · 5 · 15 min",
+            .init(id: "load", label: "Load average", value: W5a.loadAverage(c.loadAverage), detail: "1 · 5 · 15 min",
                   unavailableReason: loadReason ?? "Not reported"),
             .init(id: "threads", label: "Threads", value: TTFormat.count(c.threadCount),
                   detail: c.processCount.map { "in \(TTFormat.count($0)) processes" },
@@ -75,6 +75,7 @@ struct CPUClusterCard: View {
         let coreKind: CoreKind = isP ? .performance : .efficiency
         let cores = live.cpu.cores.filter { $0.kind == coreKind }
         let count = cluster?.coreCount ?? (isP ? live.device.performanceCores : live.device.efficiencyCores)
+        let reasons = Self.reasons(clusters: live.cpu.clusters, health: live.sensorHealth)
         TTCard(spacing: TTSpace.gridGap) {
             TTCardHeader(isP ? "Performance cores" : "Efficiency cores") {
                 TTBadge("\(TTFormat.count(count)) cores", dot: color)
@@ -85,17 +86,16 @@ struct CPUClusterCard: View {
                 TTCoreBars(cores: cores, kind: coreKind, color: color)
             }
             HStack(spacing: 18) {
-                MetricValue(Self.frequency(cluster), unavailableReason: "Frequency not in the chip catalog",
-                            font: TTFont.caption)
+                MetricValue(Self.frequency(cluster), unavailableReason: reasons.frequency, font: TTFont.caption)
                 HStack(spacing: 0) {
                     Text("Active residency ")
-                    MetricValue(TTFormat.percent(cluster?.activeResidency), unavailableReason: "Not reported by IOReport",
+                    MetricValue(TTFormat.percent(cluster?.activeResidency), unavailableReason: reasons.ioReport,
                                 font: TTFont.caption)
                 }
                 if isP {   // the E footer (298 wide) has room for two items only (DESIGN §3.5.3)
                     HStack(spacing: 0) {
                         Text("Cluster power ")
-                        MetricValue(TTFormat.watts(cluster?.watts), unavailableReason: "Not reported by IOReport",
+                        MetricValue(TTFormat.watts(cluster?.watts), unavailableReason: reasons.ioReport,
                                     font: TTFont.caption)
                     }
                 }
@@ -104,6 +104,17 @@ struct CPUClusterCard: View {
             .fillBelow()
         }
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Footer tooltips: IOReport fields take the SoC sensor's own reason (fallback "Not reported by IOReport");
+    /// frequency has none while collecting (no clusters yet), else "Not reported".
+    static func reasons(clusters: [ClusterSnapshot], health: [SensorID: SensorStatus])
+        -> (frequency: String?, ioReport: String) {
+        let soc: String? = switch health[.soc] {
+        case .unavailable(let r)?, .disabled(let r)?: r
+        default: nil
+        }
+        return (clusters.isEmpty ? nil : (soc ?? "Not reported"), soc ?? "Not reported by IOReport")
     }
 
     /// "4.12 GHz of 4.51 GHz"; the maximum is dropped when unknown; nil → "—".
@@ -128,6 +139,7 @@ struct CPUUsageCard: View {
             TTCard(spacing: TTSpace.x10) {
                 TTCardHeader("Usage") { TTLegend([user, system]) }
                 TTStackedArea([user, system], yDomain: 0...1, outline: TTColor.cpuLine.opacity(TTChartFill.cpuOutline))
+                    .equatable()
                     .frame(minHeight: 110, maxHeight: .infinity)
                     .accessibilityLabel(ChartAccessibility.summary([user, system]))
                 TTTimeAxis(range: s.range, end: s.end)
@@ -149,24 +161,37 @@ struct CPUConsumersCard: View {
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var selection: ProcessID?
     @State private var sort: (column: String, descending: Bool) = ("cpu", true)
+    @State private var cache = RankCache<ProcessSample>()
 
     init(selection: ProcessID?) { _selection = State(initialValue: selection) }
 
-    /// Top 50 by CPU (the table sorts what it is given; the long tail never shows here).
-    static func rows(_ live: LiveModel) -> [ProcessSample] {
-        Array(live.processes
-            .sorted { ($0.cpuPercent ?? -1) > ($1.cpuPercent ?? -1) }
-            .prefix(50))
+    static let cap = 50
+
+    /// Top 50 by % CPU, descending, nil last, stable — sorted before the cap (the table does not re-sort).
+    nonisolated static func rank(_ processes: [ProcessSample]) -> [ProcessSample] {
+        let keyed = processes.enumerated().map { (i: $0.offset, v: $0.element.cpuPercent, p: $0.element) }
+        return Array(keyed.sorted { a, b in
+            switch (a.v, b.v) {
+            case let (x?, y?): x != y ? x > y : a.i < b.i
+            case (.some, nil): true
+            case (nil, .some): false
+            case (nil, nil): a.i < b.i
+            }
+        }.prefix(cap).map(\.p))
     }
 
+    static func rows(_ live: LiveModel) -> [ProcessSample] { rank(live.processes) }
+
     var body: some View {
-        let rows = Self.rows(live)
+        let rows = cache.rows(version: live.appsVersion) { Self.rank(live.processes) }
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Top CPU consumers") { PageLink("All processes", to: .processes) }
             FitRows { n in
                 TTTable(rows: isSnapshot ? Array(rows.prefix(n)) : rows, columns: columns(), selection: $selection,
-                        sort: $sort, rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) }, children: nil,
-                        style: TTTableStyle(emptyMessage: "No processes"), onDoubleClick: open)
+                        sort: $sort, rowMenu: { p in
+                            p.isExitedResidualRow ? AnyView(EmptyView()) : AnyView(TTRowActionsMenu(target: p.target))
+                        }, children: nil,
+                        style: TTTableStyle(sortsRows: false, emptyMessage: "No processes"), onDoubleClick: open)
             }
         }
     }
@@ -182,10 +207,14 @@ struct CPUConsumersCard: View {
         let selected = selection
         let live = live
         return [
-            .init(id: "name", title: "Process", width: .fraction(2, min: 0)) {
-                AnyView(TTNameCell(identity: live.app($0.app)?.identity, name: $0.name))
+            .init(id: "name", title: "Process", width: .fraction(2, min: 0)) { p in
+                p.isExitedResidualRow
+                    ? AnyView(ExitedNameCell(identity: live.app(p.app)?.identity, name: p.name))
+                    : AnyView(TTNameCell(identity: live.app(p.app)?.identity, name: p.name))
             },
-            .init(id: "pid", title: "PID", width: .fixed(70), alignment: .trailing) { AnyView(Text(String($0.pid))) },
+            .init(id: "pid", title: "PID", width: .fixed(70), alignment: .trailing) { p in
+                AnyView(Text(p.isExitedResidualRow ? "" : String(p.pid)))   // ICR-13: no PID
+            },
             .init(id: "user", title: "User", width: .fixed(110)) {
                 AnyView(Text($0.user ?? "—").foregroundStyle(TTColor.textSecondary).truncationMode(.tail))
             },
@@ -201,7 +230,8 @@ struct CPUConsumersCard: View {
                            reason: $0.threads == nil ? "Not available for this process" : nil)
             },
             .init(id: "actions", title: "", width: .fixed(170)) { p in
-                AnyView(InlineActionsCell(target: p.target, name: p.name, selected: selected == p.id))
+                AnyView(InlineActionsCell(target: p.target, name: p.name, selected: selected == p.id,
+                                          exited: p.isExitedResidualRow))
             },
         ]
     }

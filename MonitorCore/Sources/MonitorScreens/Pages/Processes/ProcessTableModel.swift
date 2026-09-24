@@ -1,6 +1,8 @@
+import Darwin
 import Foundation
 import MonitorLive
 import MonitorModel
+import MonitorUIKit
 import Observation
 
 // DESIGN §3.12 Processes table: Apps/Processes toggle, sort by column, live search, app → process expansion
@@ -136,12 +138,15 @@ public struct ProcessRow: Identifiable, Equatable, Sendable {
     public var foreignOwner: String?
     /// Action target; nil for synthetic rows and the summary line.
     public var target: ProcessTarget?
+    /// ICR-13 "Exited processes" row (`ProcessID.exitedResidual`, pid −2): estimated, no actions, no detail, kept
+    /// with its app when sorting.
+    public var isExitedResidual: Bool = false
 
     public func value(_ c: ProcessColumn) -> Double? {
         switch c {
         case .cpu: cpu
         case .gpu: gpu
-        case .memory: memory.map(Double.init)
+        case .memory: memory.map { Double($0) }   // not `Double.init` (resolves to Double(bitPattern:))
         case .network: network
         case .disk: disk
         case .energy: energy
@@ -197,11 +202,14 @@ public struct ProcessActionAvailability: Equatable, Sendable {
     public var canQuit: Bool
     public var canForceQuit: Bool
     public var disabledHelp: String?
+    /// Telltale itself (DESIGN §2.25): Quit quits Telltale; Force Quit is hidden and never offered.
+    public var isSelf: Bool
 
-    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?) {
+    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?, isSelf: Bool = false) {
         self.canQuit = canQuit
         self.canForceQuit = canForceQuit
         self.disabledHelp = disabledHelp
+        self.isSelf = isSelf
     }
 }
 
@@ -297,7 +305,7 @@ public final class ProcessTableModel {
     /// The app whose connections the engine should sample (ICR-10): the selected row's group, and only while the
     /// inspector detail is expanded.
     public nonisolated static func inspectedApp(row: ProcessRow?, detailExpanded: Bool) -> AppKey? {
-        guard detailExpanded, let row, row.rowKind != .restrictedSummary else { return nil }
+        guard detailExpanded, let row, row.rowKind != .restrictedSummary, !row.isExitedResidual else { return nil }
         return row.appKey
     }
 
@@ -364,7 +372,7 @@ public extension ProcessTableModel {
                 var row = appRow(app, members: ms, responsible: responsible[key], health: input.health)
                 row.hasChildren = visible.count > 1 || hidden > 0
                 var kids = visible.map { processRow($0, responsibleID: responsible[$0.app]?.id, health: input.health) }
-                kids = sorted(kids, by: input.sort, descending: input.descending)
+                kids = keepingExitedWithApp(sorted(kids, by: input.sort, descending: input.descending))
                 if hidden > 0 {
                     kids.append(summaryRow(key: key, hidden: hidden, identity: app.identity))
                 }
@@ -398,7 +406,7 @@ public extension ProcessTableModel {
                 out.index[r.id] = r
                 if query.isEmpty || matches(p) { rows.append(r) }
             }
-            rows = sorted(rows, by: input.sort, descending: input.descending)
+            rows = keepingExitedWithApp(sorted(rows, by: input.sort, descending: input.descending))
             for i in rows.indices { rows[i].parity = i % 2 }
             out.lines = rows
             for app in input.apps where app.identity.key != .other {
@@ -415,7 +423,17 @@ public extension ProcessTableModel {
 
     /// DESIGN §2.25 / §3.12: Quit/Force Quit only when every member is owned by the current user (and the
     /// injected service agrees); otherwise disabled with "Owned by {user}".
-    nonisolated static func availability(for row: ProcessRow, serviceCanControl: Bool) -> ProcessActionAvailability {
+    /// The self rule is `TTRowActionsMenu.model(…)`'s (`forceQuitVisible == false` ⇔ Telltale), so menu, inspector and
+    /// ⌘⌫ agree.
+    nonisolated static func availability(for row: ProcessRow, serviceCanControl: Bool, ownPID: Int32 = getpid(),
+                                         ownBundleID: String? = Bundle.main.bundleIdentifier) -> ProcessActionAvailability {
+        if let target = row.target {
+            let menu = TTRowActionsMenu.model(target: target, canControl: serviceCanControl, hasForceQuitHandler: true,
+                                              ownPID: ownPID, ownBundleID: ownBundleID)
+            if !menu.forceQuitVisible {
+                return ProcessActionAvailability(canQuit: true, canForceQuit: false, disabledHelp: nil, isSelf: true)
+            }
+        }
         guard row.target != nil, row.ownedByCurrentUser else {
             return ProcessActionAvailability(canQuit: false, canForceQuit: false,
                                              disabledHelp: "Owned by \(row.foreignOwner ?? row.user ?? "root")")
@@ -541,21 +559,55 @@ public extension ProcessTableModel {
         let owned = !synthetic && p.provenance == .measured ? p.isCurrentUser : false
         let target: ProcessTarget? = synthetic ? nil
             : .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid)
-        let kind = processKind(p, responsibleID: responsibleID)
+        let exited = isExitedResidual(p.id)
+        let rawKind = exited ? (p.name.isEmpty ? nil : exitedName) : processKind(p, responsibleID: responsibleID)
+        // Never "Exited processes · Exited processes": a kind equal to the name is dropped.
+        let kind = rawKind == p.name ? nil : rawKind
         // An app's main process shows its bundle ("/Applications/Final Cut Pro.app", DESIGN §3.12 inspector).
         let displayPath = kind == "App" ? p.path.map(trimmedBundle) : p.path
-        return ProcessRow(
-            id: .process(p.id), rowKind: .process, depth: 0, parity: 0, name: p.name,
+        var row = ProcessRow(
+            id: .process(p.id), rowKind: .process, depth: 0, parity: 0,
+            name: exited && p.name.isEmpty ? exitedName : p.name,
             kindLabel: kind,
             identity: AppIdentity(key: p.app, displayName: p.name, bundlePath: p.path.map(trimmedBundle)),
             pid: synthetic ? nil : p.pid, user: p.user, uid: p.uid, provenance: p.provenance,
             cpu: p.cpuPercent, gpu: p.gpuPercent, memory: p.memory,
             network: sum(p.netRxBps, p.netTxBps), disk: sum(p.diskReadBps, p.diskWriteBps), energy: p.energyWatts,
             reasons: processReasons(p, health: health),
-            cpuEstimated: p.provenance == .coalition, energyEstimated: p.energyEstimated,
+            cpuEstimated: p.provenance == .coalition || exited, energyEstimated: p.energyEstimated || exited,
             hasChildren: false, isExpanded: false, processCount: 1, threads: p.threads, path: displayPath,
             appKey: p.app, ownedByCurrentUser: owned,
             foreignOwner: owned ? nil : (p.user ?? "uid \(p.uid)"), target: target)
+        row.isExitedResidual = exited
+        if exited {
+            // ICR-13 carries CPU, disk and energy only; the other cells are not tracked (not "Requires root").
+            let na = "Not tracked for exited processes"
+            row.reasons = ProcessCellReasons(cpu: row.reasons.cpu, gpu: row.gpu == nil ? na : nil,
+                                             memory: row.memory == nil ? na : nil,
+                                             network: row.network == nil ? na : nil,
+                                             disk: row.reasons.disk, energy: row.reasons.energy)
+        }
+        return row
+    }
+
+    /// ICR-13: `ProcessID.exitedResidual` rows carry pid −2 (coalition residual rows are −1, so the pid alone
+    /// separates them; switch to `ProcessID.exitedResidual` once W7 makes it public).
+    nonisolated static func isExitedResidual(_ id: ProcessID) -> Bool { id.pid == -2 }
+    nonisolated static let exitedName = "Exited processes"
+
+    /// Keeps each "Exited processes" row directly after the last row of its app (ICR-13), whatever the sort.
+    nonisolated static func keepingExitedWithApp(_ rows: [ProcessRow]) -> [ProcessRow] {
+        let exited = rows.filter(\.isExitedResidual)
+        guard !exited.isEmpty else { return rows }
+        var out = rows.filter { !$0.isExitedResidual }
+        for e in exited {
+            if let i = out.lastIndex(where: { $0.appKey == e.appKey && $0.rowKind != .restrictedSummary }) {
+                out.insert(e, at: i + 1)
+            } else {
+                out.append(e)
+            }
+        }
+        return out
     }
 
     private nonisolated static func appRow(_ app: AppSample, members: [ProcessSample], responsible: ProcessSample?,
@@ -564,7 +616,9 @@ public extension ProcessTableModel {
         // Coalition groups (no readable member) are "System" rows (DESIGN §3.12 rule 3).
         let coalitionOnly = !members.isEmpty && members.allSatisfy { $0.provenance != .measured }
         let base = coalitionOnly ? "System" : baseKind(key: key, representative: responsible ?? members.first)
-        let count = max(app.processIDs.count, members.count)
+        // The ICR-13 "Exited processes" pseudo-row is not a process.
+        let count = max(app.processIDs.filter { !isExitedResidual($0) }.count,
+                        members.filter { !isExitedResidual($0.id) }.count)
         let real = members.filter { !$0.id.isSynthetic }
         let foreign = members.first { !$0.isCurrentUser || $0.provenance != .measured }
         let owned = !real.isEmpty && foreign == nil

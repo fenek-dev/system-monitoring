@@ -116,6 +116,25 @@ enum W5a {
         return fans.map(\.rpm).reduce(0, +) / Double(fans.count)
     }
 
+    /// Package watts (IOReport Energy Model): the assembled package, else the sum of the reported components.
+    static func packageWatts(_ p: PowerSnapshot) -> Double? {
+        if let w = p.packageWatts { return w }
+        let parts = [p.cpuWatts, p.gpuWatts, p.aneWatts, p.dramWatts].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.reduce(0, +)
+    }
+
+    /// Free space (ruling CP2): the volume's available capacity (statfs available / container free, as `diskutil`
+    /// reports it) — not "available for important usage", which includes purgeable space.
+    static func freeBytes(_ v: VolumeInfo) -> UInt64 { v.availableBytes }
+
+    /// Load average (DESIGN §5.7: 2 decimals, " · "); with a two-digit load, 1 decimal so the stat cell still fits
+    /// ("27.5 · 26.8 · 25.1" instead of a truncated "27.50 · 26.84 ·…").
+    static func loadAverage(_ values: [Double]?) -> String {
+        guard let values, values.contains(where: { $0 >= 10 }),
+              values.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return TTFormat.loadAverage(values) }
+        return values.map { TTFormat.number($0, digits: 1) }.joined(separator: " · ")
+    }
+
     /// Battery phrase for the popover / Overview (DESIGN §5.8): "82% · 5 h 40 m left"; no battery → "AC power".
     static func batteryPhrase(_ b: BatterySnapshot?) -> String? {
         guard let b, let pct = b.percent else { return b == nil ? "AC power" : nil }

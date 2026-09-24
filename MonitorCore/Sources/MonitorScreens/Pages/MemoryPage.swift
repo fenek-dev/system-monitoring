@@ -20,7 +20,7 @@ public struct MemoryPage: View {
             MemoryConsumersCard()
                 .frame(minHeight: 130, maxHeight: .infinity, alignment: .top)
         }
-        .forceQuitHost()
+        .processActionsHost()
     }
 }
 
@@ -41,9 +41,9 @@ struct MemoryStatStrip: View {
             .init(id: "used", label: "Used", value: TTFormat.memory(m.used, style: .headline),
                   detail: m.total > 0 ? "of " + TTFormat.memory(m.total, style: .total) : nil, tint: TTColor.mem,
                   unavailableReason: reason),
-            // TODO(W3): the level word is colored (Warning amber, Critical red); TTStatStrip has no detail tint yet.
+            // §3.7.1: the level word is colored — Normal textTertiary, Warning amber, Critical red.
             .init(id: "pressure", label: "Memory pressure", value: TTFormat.percent(m.pressureFraction),
-                  detail: m.pressureLevel?.title, unavailableReason: reason),
+                  detail: m.pressureLevel?.title, unavailableReason: reason, detailTint: m.pressureLevel?.color),
             .init(id: "swap", label: "Swap used", value: TTFormat.memory(m.swapUsed, style: .swap),
                   detail: m.swapTotal.map { "of \(TTFormat.memory($0, style: .swap)) allocated" },
                   unavailableReason: reason ?? "Not reported by vm.swapusage"),
@@ -115,16 +115,15 @@ struct MemoryCompositionCard: View {
 /// (flex, fill × 150) colored by the OS level — the span i → i+1 takes sample i's level, line and fill switch
 /// together; axis. (No fixed-% threshold bands: the color follows the OS level, DESIGN §6.16.)
 struct MemoryPressureCard: View {
-    @Environment(LiveModel.self) private var live
-
     var body: some View {
-        RangeSeriesReader([.memPressure]) { s in
+        RangeSeriesReader([.memPressure, .memPressureLevel]) { s in
             TTCard(spacing: TTSpace.x10) {
                 TTCardHeader("Memory pressure") {
                     TTLegend(items: [("Normal", TTColor.mem), ("Warning", TTColor.statusElevated),
                                      ("Critical", TTColor.statusCritical)])
                 }
-                MemoryPressureChart(points: s[.memPressure], levels: Self.levels(s[.memPressure], live: live))
+                MemoryPressureChart(points: s[.memPressure],
+                                    levels: Self.levels(s[.memPressureLevel], count: s[.memPressure].count))
                     .frame(minHeight: 150, maxHeight: .infinity)
                 TTTimeAxis(range: s.range, end: s.end)
             }
@@ -132,9 +131,18 @@ struct MemoryPressureCard: View {
         }
     }
 
-    /// Per-sample OS level. TODO(ICR 009): read `.memPressureLevel`; until then every sample takes the current level.
-    static func levels(_ points: [SeriesPoint], live: LiveModel) -> [MemoryPressureLevel] {
-        Array(repeating: live.memory.pressureLevel ?? .normal, count: points.count)
+    /// Per-sample OS level from `.memPressureLevel` (ICR-12). Store buckets hold a time-weighted average of the raw
+    /// value (1/2/4): > 2.5 → critical, > 1.0 → warning, else normal. A missing level (gap, or rows stored before
+    /// ICR-12) is `.normal`; arrays are aligned to the pressure series by index.
+    static func levels(_ raw: [SeriesPoint], count: Int) -> [MemoryPressureLevel] {
+        (0..<count).map { i in
+            guard i < raw.count, let v = raw[i].value else { return .normal }
+            return level(v)
+        }
+    }
+
+    static func level(_ v: Double) -> MemoryPressureLevel {
+        v > 2.5 ? .critical : (v > 1.0 ? .warning : .normal)
     }
 }
 
@@ -144,32 +152,45 @@ struct MemoryPressureChart: View {
     let points: [SeriesPoint]
     let levels: [MemoryPressureLevel]
 
-    /// Runs as (level, points with everything outside [start, end + 1] blanked).
-    static func runs(_ points: [SeriesPoint], _ levels: [MemoryPressureLevel]) -> [(MemoryPressureLevel, [SeriesPoint])] {
-        guard points.count == levels.count, !points.isEmpty else { return [] }
-        var out: [(MemoryPressureLevel, [SeriesPoint])] = []
+    struct Run: Equatable {
+        var level: MemoryPressureLevel
+        /// Sample indices drawn by this run: its own samples plus the next run's first (the span into the change).
+        var range: ClosedRange<Int>
+    }
+
+    /// Runs of equal level; a trailing single sample (no span after it) draws nothing and is dropped.
+    static func runs(_ levels: [MemoryPressureLevel]) -> [Run] {
+        guard levels.count >= 2 else { return [] }
+        var out: [Run] = []
         var start = 0
-        for i in 1...points.count where i == points.count || levels[i] != levels[start] {
-            let end = min(i, points.count - 1)
-            let masked = points.enumerated().map { j, p in
-                (start...end).contains(j) ? p : SeriesPoint(time: p.time, value: nil)
-            }
-            out.append((levels[start], masked))
+        for i in 1...levels.count where i == levels.count || levels[i] != levels[start] {
+            let end = min(i, levels.count - 1)
+            if end > start { out.append(Run(level: levels[start], range: start...end)) }
             start = i
         }
         return out
     }
 
     var body: some View {
-        let runs = Self.runs(points, levels)
-        ZStack {
+        let n = points.count
+        let runs = points.count == levels.count ? Self.runs(levels) : []
+        ZStack(alignment: .topLeading) {
             TTAreaChart([], color: .clear, yDomain: 0...1, grid: 4, showsCollecting: false)
             if ChartSegments.sampleCount(points) < 2 {
                 TTEmptyState(.collecting(since: nil))
             } else {
-                ForEach(runs.indices, id: \.self) { i in
-                    TTAreaChart(runs[i].1, color: runs[i].0.chartColor, yDomain: 0...1,
-                                fillOpacity: TTChartFill.memoryPressure, lineWidth: TTStroke.spark, showsCollecting: false)
+                // Each run is its own slice, drawn in the sub-frame its samples occupy (x = i/(N−1)·w).
+                GeometryReader { geo in
+                    let step = geo.size.width / CGFloat(max(n - 1, 1))
+                    ForEach(runs.indices, id: \.self) { i in
+                        let r = runs[i].range
+                        TTAreaChart(Array(points[r]), color: runs[i].level.chartColor, yDomain: 0...1,
+                                    fillOpacity: TTChartFill.memoryPressure, lineWidth: TTStroke.spark,
+                                    showsCollecting: false)
+                            .equatable()
+                            .frame(width: step * CGFloat(r.count - 1), height: geo.size.height)
+                            .offset(x: step * CGFloat(r.lowerBound))
+                    }
                 }
             }
         }
@@ -202,6 +223,7 @@ struct MemorySwapCard: View {
                 TTAreaChart(s[.swapUsed], color: TTColor.memCompressed,
                             yDomain: 0...Double(max(m.swapTotal ?? 1, 1)), fillOpacity: TTChartFill.swap,
                             lineWidth: TTStroke.spark, showsCollecting: reason == nil)
+                    .equatable()
                     .frame(height: 50)
                 TTKeyValueList(rows: [
                     .init("Swap-ins", TTFormat.perSecond(m.swapInsPerSec), unavailableReason: reason),
@@ -225,29 +247,58 @@ struct MemoryConsumersCard: View {
     @State private var selection: AppKey?
     @State private var sort: (column: String, descending: Bool) = ("memory", true)
 
-    static func rows(_ live: LiveModel) -> [AppSample] {
-        live.apps.filter { $0.identity.key != .other }
-            .sorted { Double($0.memory ?? 0) > Double($1.memory ?? 0) }
+    @State private var cache = RankCache<AppSample>()
+
+    /// App groups by memory descending (stable; nil last); pre-sorted, the table does not re-sort.
+    nonisolated static func rank(_ apps: [AppSample]) -> [AppSample] {
+        apps.enumerated().filter { $0.element.identity.key != .other }
+            .sorted { a, b in
+                switch (a.element.memory, b.element.memory) {
+                case let (x?, y?): x != y ? x > y : a.offset < b.offset
+                case (.some, nil): true
+                case (nil, .some): false
+                case (nil, nil): a.offset < b.offset
+                }
+            }
+            .map(\.element)
+    }
+
+    static func rows(_ live: LiveModel) -> [AppSample] { rank(live.apps) }
+
+    /// "—" tooltip for memory: groups with members we cannot read (restricted / coalition-only) show the §3.12
+    /// root-memory wording; otherwise the sensor's reason.
+    static func memoryReason(_ a: AppSample, health: [SensorID: SensorStatus]) -> String? {
+        guard a.memory == nil else { return nil }
+        if a.hiddenProcessCount > 0 || a.coalitionResidual != nil {
+            return "Requires root · updated when Processes is open"
+        }
+        return unavailableReason(.memory, a, health: health)
     }
 
     var body: some View {
-        let rows = Self.rows(live)
+        let rows = cache.rows(version: live.appsVersion) { Self.rank(live.apps) }
         let health = live.sensorHealth
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Top memory consumers") { PageLink("All processes", to: .processes) }
             FitRows { n in
                 TTTable(rows: isSnapshot ? Array(rows.prefix(n)) : rows, columns: [
-                    .init(id: "name", title: "Process", width: .fraction(2, min: 0)) { AnyView(AppNameCell(app: $0)) },
+                    .init(id: "name", title: "Process", width: .fraction(2, min: 0)) { a in
+                        a.isExitedResidualOnly ? AnyView(ExitedNameCell(identity: a.identity, name: a.name))
+                            : AnyView(AppNameCell(app: a))
+                    },
                     .init(id: "memory", title: "Memory", width: .fixed(90), alignment: .trailing,
-                          sortKey: { $0.memory.map(Double.init) }) {
-                        metricCell(TTFormat.memory($0.memory, style: .detail),
-                                   reason: unavailableReason(.memory, $0, health: health))
+                          sortKey: { $0.memory.map { Double($0) } }) {
+                        metricCell(TTFormat.memory($0.memory, style: .detail), reason: Self.memoryReason($0, health: health),
+                                   estimated: $0.isExitedResidualOnly)
                     },
-                    .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) {
-                        AnyView(TTRowActionsButton(target: $0.target, name: $0.name))
+                    .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) { a in
+                        a.isExitedResidualOnly ? AnyView(EmptyView())
+                            : AnyView(TTRowActionsButton(target: a.target, name: a.name))
                     },
-                ], selection: $selection, sort: $sort, rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
-                children: nil, style: TTTableStyle(emptyMessage: "No processes"), onDoubleClick: { app in
+                ], selection: $selection, sort: $sort, rowMenu: { a in
+                    a.isExitedResidualOnly ? AnyView(EmptyView()) : AnyView(TTRowActionsMenu(target: a.target))
+                },
+                children: nil, style: TTTableStyle(sortsRows: false, emptyMessage: "No processes"), onDoubleClick: { app in
                     nav.selection = .app(app.identity.key)
                     nav.page = .processes
                 })

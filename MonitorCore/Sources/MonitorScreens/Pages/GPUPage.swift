@@ -10,23 +10,32 @@ public struct GPUPage: View {
     public init() {}
 
     public var body: some View {
-        GPUPageContent()
+        GPUMediaGate()
     }
 }
 
-struct GPUPageContent: View {
+/// Reads only whether media-engine data exists and hands the layout a Bool, so a GPU tick re-evaluates this
+/// one-line gate and the cards that show GPU values — not the whole page.
+struct GPUMediaGate: View {
     @Environment(LiveModel.self) private var live
 
     var body: some View {
-        let hasMedia = !live.gpu.mediaEngines.isEmpty
+        GPUPageContent(hasMedia: !live.gpu.mediaEngines.isEmpty).equatable()
+    }
+}
+
+struct GPUPageContent: View, Equatable {
+    let hasMedia: Bool
+
+    var body: some View {
         FlexPage(minContentHeight: 82 + (hasMedia ? 293 : 250) + 130 + 2 * TTSpace.gridGap) {
-            TTStatStrip(Self.statItems(live))
+            GPUStatStrip()
             GridRow(columns: 3, spans: [2, 1], minHeight: hasMedia ? 293 : 250) {
                 GPUUtilizationCard()
                 VStack(spacing: TTSpace.gridGap) {
                     if hasMedia {
                         GPUNeuralEngineCard(flexes: false)
-                        GPUMediaEnginesCard(engines: live.gpu.mediaEngines)
+                        GPUMediaEnginesCard()
                     } else {
                         GPUNeuralEngineCard(flexes: true)   // fills the column; sparkline 250 − 94
                     }
@@ -35,8 +44,14 @@ struct GPUPageContent: View {
             GPUClientsCard()
                 .frame(minHeight: 130, maxHeight: .infinity, alignment: .top)
         }
-        .forceQuitHost()
+        .processActionsHost()
     }
+}
+
+struct GPUStatStrip: View {
+    @Environment(LiveModel.self) private var live
+
+    var body: some View { TTStatStrip(Self.statItems(live)) }
 
     static func statItems(_ live: LiveModel) -> [TTStatStrip.Item] {
         let g = live.gpu
@@ -76,6 +91,7 @@ struct GPUUtilizationCard: View {
                 TTCardHeader("Utilization & frequency") { TTLegend([util, freq]) }
                 TTDualChart(solid: util, dashed: freq, yDomain: 0...1,
                             dashedDomain: live.gpu.maxFrequencyMHz.map { 0...$0 })
+                    .equatable()
                     .frame(minHeight: 160, maxHeight: .infinity)
                     .accessibilityLabel(ChartAccessibility.summary([util, freq]))
                 TTTimeAxis(range: s.range, end: s.end)
@@ -113,6 +129,7 @@ struct GPUNeuralEngineCard: View {
                 TTAreaChart(s[.aneWatts], color: TTColor.power, yDomain: W5a.autoDomain(s[.aneWatts], minimum: 1),
                             fillOpacity: TTChartFill.ane, lineWidth: TTStroke.spark,
                             showsCollecting: w != nil || unavailableReason(.aneWatts, health: live.sensorHealth) == nil)
+                    .equatable()
                     .frame(minHeight: 44, maxHeight: flexes ? .infinity : 44)
             }
             .frame(minHeight: 138, maxHeight: flexes ? .infinity : nil, alignment: .top)
@@ -124,11 +141,18 @@ struct GPUNeuralEngineCard: View {
 // MARK: - Media engines
 
 /// DESIGN §3.6.4: padding 14, gap 7, min 143; rows (VStack gap 5): name | "22%" or "idle" (`body12`), thin `gpu`
-/// bar. Shown only when IOReport exposes media-engine residency; no codec suffix.
+/// bar. Shown only when IOReport exposes media-engine residency; no codec suffix. Ruling (W6b): this chip exposes one
+/// combined channel, reported as a single "Media engine" row — the card renders whatever rows the sensor gives.
 struct GPUMediaEnginesCard: View {
-    let engines: [MediaEngineReading]
+    @Environment(LiveModel.self) private var live
+
+    /// "idle" below 0.5 % (a rounded "0%" would read as a measurement), else integer percent.
+    static func valueText(_ fraction: Double) -> String {
+        fraction < 0.005 ? "idle" : TTFormat.percent(fraction)
+    }
 
     var body: some View {
+        let engines = live.gpu.mediaEngines
         TTCard(padding: TTSpace.cardPaddingMediaEngines, spacing: TTSpace.x7) {
             TTCardHeader("Media engines")
             ForEach(engines, id: \.name) { e in
@@ -136,7 +160,7 @@ struct GPUMediaEnginesCard: View {
                     HStack {
                         Text(e.name).foregroundStyle(TTColor.textPrimary)
                         Spacer(minLength: 8)
-                        Text(e.activeFraction > 0 ? TTFormat.percent(e.activeFraction) : "idle")
+                        Text(Self.valueText(e.activeFraction))
                             .foregroundStyle(TTColor.textSecondary).monospacedDigit()
                     }
                     .font(TTFont.body12).lineLimit(1)
@@ -159,13 +183,29 @@ struct GPUClientsCard: View {
     @State private var selection: AppKey?
     @State private var sort: (column: String, descending: Bool) = ("gpu", true)
 
-    static func rows(_ live: LiveModel) -> [AppSample] {
-        live.apps.filter { $0.identity.key != .other && (($0.gpuPercent ?? 0) > 0 || ($0.gpuTimeNs ?? 0) > 0) }
-            .sorted { ($0.gpuPercent ?? 0) > ($1.gpuPercent ?? 0) }
+    @State private var cache = RankCache<AppSample>()
+
+    /// GPU clients by % GPU descending (stable); pre-sorted, the table does not re-sort.
+    nonisolated static func rank(_ apps: [AppSample]) -> [AppSample] {
+        apps.enumerated()
+            .filter { $0.element.identity.key != .other && (($0.element.gpuPercent ?? 0) > 0 || ($0.element.gpuTimeNs ?? 0) > 0) }
+            .sorted { a, b in
+                let x = a.element.gpuPercent ?? 0, y = b.element.gpuPercent ?? 0
+                return x != y ? x > y : a.offset < b.offset
+            }
+            .map(\.element)
+    }
+
+    static func rows(_ live: LiveModel) -> [AppSample] { rank(live.apps) }
+
+    /// GPU time "—" tooltip keyed on the GPU time itself (not % GPU).
+    static func gpuTimeReason(_ a: AppSample, health: [SensorID: SensorStatus]) -> String? {
+        guard a.gpuTimeNs == nil else { return nil }
+        return unavailableReason(.gpu, a, health: health) ?? "No GPU time recorded this session"
     }
 
     var body: some View {
-        let rows = Self.rows(live)
+        let rows = cache.rows(version: live.appsVersion) { Self.rank(live.apps) }
         let health = live.sensorHealth
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("GPU clients") { PageLink("All processes", to: .processes) }
@@ -177,13 +217,13 @@ struct GPUClientsCard: View {
                                    reason: unavailableReason(.gpu, $0, health: health))
                     },
                     .init(id: "time", title: "GPU time", width: .fixed(90), alignment: .trailing) {
-                        metricCell(TTFormat.cpuTime($0.gpuTimeNs), reason: unavailableReason(.gpu, $0, health: health))
+                        metricCell(TTFormat.cpuTime($0.gpuTimeNs), reason: Self.gpuTimeReason($0, health: health))
                     },
                     .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) {
                         AnyView(TTRowActionsButton(target: $0.target, name: $0.name))
                     },
                 ], selection: $selection, sort: $sort, rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
-                children: nil, style: TTTableStyle(emptyMessage: "No GPU clients"), onDoubleClick: { app in
+                children: nil, style: TTTableStyle(sortsRows: false, emptyMessage: "No GPU clients"), onDoubleClick: { app in
                     nav.selection = .app(app.identity.key)
                     nav.page = .processes
                 })

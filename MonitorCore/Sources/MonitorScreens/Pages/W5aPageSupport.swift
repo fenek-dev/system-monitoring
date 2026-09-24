@@ -18,9 +18,11 @@ struct RangeSeries {
     subscript(_ m: HistoryMetric) -> [SeriesPoint] { points[m] ?? [] }
 }
 
-/// Reads `metrics` for `NavigationModel.range` and hands them to `content`. Store reads run in a `.task` keyed by
-/// range and the display-bucket–rounded end, so a stored range reloads once per bucket, not per tick. A range
-/// switch clears the previous range's data at once (charts show "Collecting…" until the store answers).
+/// Reads `metrics` for `NavigationModel.range` and hands them to `content`.
+/// - Live: `LiveModel.series` (re-evaluates per tick, the charts scroll).
+/// - Stored ranges: the body never reads the tick. A tiny `BucketClock` child observes the clock and publishes the
+///   display-bucket end only when it changes; the store is read in a `.task` keyed by (range, bucket end), and the
+///   chart end is that bucket end. A range switch shows no data until the store answers ("Collecting…").
 struct RangeSeriesReader<Content: View>: View {
     let metrics: [HistoryMetric]
     @ViewBuilder let content: (RangeSeries) -> Content
@@ -30,35 +32,70 @@ struct RangeSeriesReader<Content: View>: View {
     @Environment(\.historyProvider) private var history
     @Environment(\.now) private var now
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
-    @State private var storedRange: HistoryRange?
+    @State private var storedKey: LoadKey?
+    /// Latest bucket end reported by `BucketClock`, tagged with its range (cleared on a range switch).
+    @State private var clock: LoadKey?
 
     init(_ metrics: [HistoryMetric], @ViewBuilder content: @escaping (RangeSeries) -> Content) {
         self.metrics = metrics
         self.content = content
     }
 
-    private struct LoadKey: Equatable {
+    struct LoadKey: Equatable {
         var range: HistoryRange
         var bucketEnd: Date
     }
 
+    /// End of the display bucket containing `date` (bucket boundaries on the epoch).
+    static func bucketEnd(_ date: Date, range: HistoryRange) -> Date { RangeSeriesReaderBucket.end(date, range: range) }
+
+    /// Store end for `range`: the clock's bucket end only if it was reported for this range, else the fallback
+    /// date's bucket end — so the first read after a switch never uses the old range's bucket.
+    static func storeEnd(clock: LoadKey?, range: HistoryRange, fallback: Date) -> Date {
+        if let clock, clock.range == range { return clock.bucketEnd }
+        return bucketEnd(fallback, range: range)
+    }
+
     var body: some View {
         let range = nav.range
-        let end = now ?? live.lastUpdate ?? Date()
         if range == .live {
-            content(RangeSeries(range: .live, end: end,
+            content(RangeSeries(range: .live, end: now ?? live.lastUpdate ?? Date(),
                                 points: Dictionary(uniqueKeysWithValues: metrics.map { ($0, live.series($0)) })))
         } else {
-            let bucket = Double(range.displayBucket.components.seconds)
-            let bucketEnd = Date(timeIntervalSince1970: (end.timeIntervalSince1970 / bucket).rounded(.up) * bucket)
-            content(RangeSeries(range: range, end: end, points: storedRange == range ? stored : [:]))
-                .task(id: LoadKey(range: range, bucketEnd: bucketEnd)) {
+            let end = Self.storeEnd(clock: clock, range: range, fallback: now ?? Date())
+            let key = LoadKey(range: range, bucketEnd: end)
+            content(RangeSeries(range: range, end: end, points: storedKey?.range == range ? stored : [:]))
+                .background(BucketClock(range: range) { clock = LoadKey(range: range, bucketEnd: $0) })
+                .onChange(of: range) { clock = nil }
+                .task(id: key) {
                     let loaded = try? await history.series(metrics, range: range, end: end, bucket: nil)
                     guard !Task.isCancelled else { return }
                     stored = loaded ?? [:]
-                    storedRange = range
+                    storedKey = key
                 }
         }
+    }
+}
+
+/// Observes the sampling clock (`now` in snapshots, else `LiveModel.lastUpdate`) and reports the display-bucket end
+/// only when it moves, so its parent re-renders once per bucket, not per tick.
+private struct BucketClock: View {
+    let range: HistoryRange
+    let onChange: (Date) -> Void
+    @Environment(LiveModel.self) private var live
+    @Environment(\.now) private var now
+
+    var body: some View {
+        let end = RangeSeriesReaderBucket.end(now ?? live.lastUpdate ?? Date(), range: range)
+        Color.clear
+            .onChange(of: end, initial: true) { onChange(end) }
+    }
+}
+
+enum RangeSeriesReaderBucket {
+    static func end(_ date: Date, range: HistoryRange) -> Date {
+        let bucket = Double(range.displayBucket.components.seconds)
+        return Date(timeIntervalSince1970: (date.timeIntervalSince1970 / bucket).rounded(.up) * bucket)
     }
 }
 
@@ -147,6 +184,22 @@ func splitUnit(_ s: String) -> (value: String?, unit: String?) {
     return (s, nil)
 }
 
+/// Table ranking memoized per `LiveModel.appsVersion` (bumped when processes or apps change), so a re-render that
+/// is not caused by new process data does not re-sort.
+@MainActor
+final class RankCache<Row> {
+    private var version = -1
+    private var cached: [Row] = []
+
+    func rows(version: Int, _ compute: () -> [Row]) -> [Row] {
+        if version != self.version {
+            cached = compute()
+            self.version = version
+        }
+        return cached
+    }
+}
+
 // MARK: - Small shared views
 
 /// Card header trailing link.
@@ -232,90 +285,171 @@ extension ProcessTarget {
     }
 }
 
-/// Installs `\.requestForceQuit` for the page's row menus / inline buttons and presents the confirm dialog
-/// (DESIGN §2.26, copy §3.12) over the page. Force Quit always confirms.
-struct ForceQuitHost: ViewModifier {
+/// DESIGN §3.12 toast copy for a finished Quit / Force Quit (failures surface as text, §6.7).
+enum ActionFeedback {
+    enum Kind: Sendable { case quit, forceQuit }
+
+    static func message(_ kind: Kind, _ result: ActionResult, name: String) -> String? {
+        let verb = kind == .quit ? "quit" : "force quit"
+        switch result {
+        case .done: return kind == .quit ? "\(name) quit." : "\(name) was force quit."
+        case .cancelled: return nil
+        case .notPermitted: return "Not permitted to \(verb) \(name)."
+        case .failed(let why): return "Couldn't \(verb) \(name): \(why)"
+        }
+    }
+}
+
+/// Force Quit always confirms (DESIGN §2.25/§3.12): the action runs only after `confirm` returns true.
+@MainActor
+enum ForceQuitFlow {
+    static func run(_ target: ProcessTarget, confirm: () async -> Bool, actions: ProcessActions) async -> ActionResult {
+        guard await confirm() else { return .cancelled }
+        return await actions.forceQuit(target)
+    }
+
+    static func message(_ target: ProcessTarget) -> (title: String, message: String, confirmTitle: String) {
+        ("Force quit “\(target.displayName)”?",
+         "Unsaved changes will be lost. The process ends immediately without cleanup.", "Force Quit")
+    }
+}
+
+/// Page host for row actions: installs `\.requestForceQuit` (confirm through the shell's full-window
+/// `\.presentConfirmDialog`, then force quit) and `\.onProcessActionResult`, and shows the result as a `TTToast`
+/// (§3.12, 4 s). Outside a dashboard window there is no presenter, so Force Quit is not offered.
+struct ProcessActionsHost: ViewModifier {
     @Environment(\.processActions) private var actions
-    @State private var pending: ProcessTarget?
+    @Environment(\.presentConfirmDialog) private var presenter
+    @State private var toast: String?
+
+    private var requestForceQuit: (@MainActor @Sendable (ProcessTarget) -> Void)? {
+        guard let presenter else { return nil }
+        let actions = actions
+        let toast = $toast
+        return { target in
+            Task { @MainActor in
+                let copy = ForceQuitFlow.message(target)
+                let result = await ForceQuitFlow.run(target, confirm: {
+                    await presenter.confirm(title: copy.title, message: copy.message, confirmTitle: copy.confirmTitle)
+                }, actions: actions)
+                toast.wrappedValue = ActionFeedback.message(.forceQuit, result, name: target.displayName)
+            }
+        }
+    }
+
+    private var onResult: @MainActor @Sendable (ProcessTarget, ActionResult) -> Void {
+        let toast = $toast
+        return { target, result in toast.wrappedValue = ActionFeedback.message(.quit, result, name: target.displayName) }
+    }
 
     func body(content: Content) -> some View {
         content
-            .environment(\.requestForceQuit, { target in pending = target })
-            .overlay {
-                if let target = pending {
-                    ZStack(alignment: .top) {
-                        TTColor.bgScrim.ignoresSafeArea()
-                            .onTapGesture {}
-                        ForceQuitDialog(name: target.displayName, onConfirm: {
-                            pending = nil
-                            Task { _ = await actions.forceQuit(target) }
-                        }, onCancel: { pending = nil })
-                    }
-                    .transition(.opacity)
+            .environment(\.requestForceQuit, requestForceQuit)
+            .environment(\.onProcessActionResult, onResult)
+            .overlay(alignment: .bottom) {
+                if let toast {
+                    TTToast(toast)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: TTRadius.r8).fill(TTColor.bgElevated))
+                        .padding(.bottom, 28)
+                        .transition(.opacity)
+                        .task(id: toast) {
+                            try? await Task.sleep(for: TTToast.lifetime)
+                            self.toast = nil
+                        }
                 }
             }
-            .animation(.easeOut(duration: 0.15), value: pending != nil)
     }
 }
 
 extension View {
-    func forceQuitHost() -> some View { modifier(ForceQuitHost()) }
+    func processActionsHost() -> some View { modifier(ProcessActionsHost()) }
 }
 
-// TODO(W3): replace with `TTConfirmDialog` once W3 lands it (the W0b stub draws nothing).
-/// DESIGN §2.26: 380 wide, top just under the header, `bgElevated`, 1-pt `borderPopover`, radius 12,
-/// `shadowDialog`, padding 20, VStack gap 12: title `dialogTitle`, body `body12Para` `textSecondary`, right-aligned
-/// [Cancel][Force Quit] (gap 8, 4 top padding). Esc = Cancel; no default button.
-struct ForceQuitDialog: View {
-    let name: String
-    let onConfirm: () -> Void
-    let onCancel: () -> Void
+// MARK: - Exited-processes rows (ICR-13)
 
+extension ProcessSample {
+    /// ICR-13 synthetic row (`ProcessID.exitedResidual`, pid −2): no PID, no row actions, italic secondary,
+    /// estimated. Coalition residual rows (pid −1) are NOT exited rows. TODO(W7): use `ProcessID.exitedResidual`
+    /// once it is public on dev.
+    var isExitedResidualRow: Bool { id.pid == W5a.exitedResidualPID }
+}
+
+extension W5a {
+    /// ICR-13 synthetic pid of the "Exited processes" row (local until W7 publishes `ProcessID.exitedResidual`).
+    static let exitedResidualPID: Int32 = -2
+}
+
+extension AppSample {
+    /// An app group made only of synthetic rows (the ICR-13 exited-processes row).
+    var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy { $0.pid == W5a.exitedResidualPID } }
+}
+
+/// Name cell for an ICR-13 row: tile + italic `textSecondary` name.
+struct ExitedNameCell: View {
+    let identity: AppIdentity?
+    let name: String
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: TTRadius.window, style: .continuous)
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Force quit “\(name)”?").font(TTFont.dialogTitle).foregroundStyle(TTColor.textPrimary)
-            Text("Unsaved changes will be lost. The process ends immediately without cleanup.")
-                .font(TTFont.body12Para).lineSpacing(TTFont.body12ParaSpacing)
-                .foregroundStyle(TTColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Spacer()
-                Button("Cancel", action: onCancel).buttonStyle(TTButtonStyle(.regularSecondary))
-                    .keyboardShortcut(.cancelAction)
-                Button("Force Quit", action: onConfirm).buttonStyle(TTButtonStyle(.regularDestructive))
-            }
-            .padding(.top, 4)
+        HStack(spacing: TTSpace.iconTextGapTable) {
+            TTAppTile(identity: identity, name: name, size: 20)
+            Text(name).italic().foregroundStyle(TTColor.textSecondary).lineLimit(1).truncationMode(.tail)
         }
-        .padding(20)
-        .frame(width: 380)
-        .background(shape.fill(TTColor.bgElevated))
-        .overlay(shape.strokeBorder(TTColor.borderPopover, lineWidth: 1))
-        .shadow(color: .black.opacity(0.55), radius: 30, y: 24)
     }
 }
 
-/// DESIGN §2.20 170-wide actions cell (CPU, Power tables): a selected, controllable row shows [Quit][Force Quit]
-/// leading-aligned; otherwise the `…` row-action button, trailing-aligned.
+// MARK: - Inline row actions
+
+/// DESIGN §2.20 170-wide actions cell (CPU, Power tables): a selected row with Quit available shows
+/// [Quit][Force Quit] leading-aligned (Force Quit hidden for Telltale itself, whose Quit quits Telltale);
+/// otherwise the `…` row-action button, trailing-aligned. ICR-13 rows show nothing.
 struct InlineActionsCell: View {
     let target: ProcessTarget
     let name: String
     let selected: Bool
+    var exited: Bool = false
     @Environment(\.processActions) private var actions
+    @Environment(\.appCommands) private var commands
     @Environment(\.requestForceQuit) private var requestForceQuit
+    @Environment(\.onProcessActionResult) private var onResult
+
+    enum Mode: Equatable {
+        case none
+        case menu
+        case inline(forceQuit: Bool, quitsTelltale: Bool)
+    }
+
+    /// Pure gating, sharing `TTRowActionsMenu.model`'s self rule (own pid / own bundle id).
+    nonisolated static func state(target: ProcessTarget, selected: Bool, canControl: Bool, exited: Bool,
+                                  canConfirm: Bool = true, ownPID: Int32 = getpid(),
+                                  ownBundleID: String? = Bundle.main.bundleIdentifier) -> Mode {
+        if exited { return .none }
+        let m = TTRowActionsMenu.model(target: target, canControl: canControl, hasForceQuitHandler: canConfirm,
+                                       ownPID: ownPID, ownBundleID: ownBundleID, userName: { _ in "" })
+        guard selected, m.quitEnabled else { return .menu }
+        return .inline(forceQuit: m.forceQuitVisible && m.forceQuitEnabled, quitsTelltale: m.quitsTelltale)
+    }
 
     var body: some View {
-        if selected && actions.canControl(target) {
-            HStack(spacing: 6) {
-                Button("Quit") { Task { _ = await actions.quit(target) } }
-                    .buttonStyle(TTButtonStyle(.smallSecondary))
-                Button("Force Quit") { requestForceQuit?(target) }
-                    .buttonStyle(TTButtonStyle(.smallDestructive))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
+        switch Self.state(target: target, selected: selected, canControl: actions.canControl(target), exited: exited,
+                          canConfirm: requestForceQuit != nil) {
+        case .none:
+            Color.clear.frame(height: 1)
+        case .menu:
             TTRowActionsButton(target: target, name: name)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        case .inline(let forceQuit, let quitsTelltale):
+            HStack(spacing: 6) {
+                Button("Quit") {
+                    if quitsTelltale { commands.quitTelltale(); return }
+                    Task { onResult?(target, await actions.quit(target)) }
+                }
+                .buttonStyle(TTButtonStyle(.smallSecondary))
+                if forceQuit {
+                    Button("Force Quit") { requestForceQuit?(target) }
+                        .buttonStyle(TTButtonStyle(.smallDestructive))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

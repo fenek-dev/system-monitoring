@@ -20,7 +20,15 @@ struct AppInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let row {
+            if let row, row.isExitedResidual {
+                // ICR-13: no process detail and no actions for the "Exited processes" row.
+                VStack(spacing: TTSpace.x3) {
+                    Text(row.name).font(TTFont.pageTitle).italic().foregroundStyle(TTColor.textSecondary)
+                    Text("Estimated usage of \(row.appKey.kind == .app ? "this app’s " : "")processes that exited since the last sample. No process to inspect.")
+                        .font(TTFont.caption).foregroundStyle(TTColor.textTertiary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+            } else if let row {
                 header(row)
                 if detailExpanded {
                     TTSeparator().padding(.vertical, TTSpace.x16)
@@ -36,7 +44,9 @@ struct AppInspector: View {
             }
         }
         .padding(TTSpace.cardPadding + TTStroke.hairline)
-        .frame(maxWidth: .infinity, minHeight: row != nil && detailExpanded ? Self.expandedMinHeight : Self.collapsedHeight,
+        .frame(maxWidth: .infinity,
+               minHeight: row != nil && row?.isExitedResidual == false && detailExpanded
+                   ? Self.expandedMinHeight : Self.collapsedHeight,
                alignment: .topLeading)
         .ttCardBackground()
     }
@@ -98,11 +108,13 @@ struct AppInspector: View {
                 .disabled(!availability.canQuit)
                 .help("Quit \(row.name)")
                 .disabledTooltip(availability.canQuit ? nil : availability.disabledHelp)
-            Button("Force Quit…") { if let t = row.target { onForceQuit(t) } }
-                .buttonStyle(.tt(.regularDestructive))
-                .disabled(!availability.canForceQuit)
-                .help("Force quit \(row.name)")
-                .disabledTooltip(availability.canForceQuit ? nil : availability.disabledHelp)
+            if !availability.isSelf {                                      // never offered for Telltale itself
+                Button("Force Quit…") { if let t = row.target, availability.canForceQuit { onForceQuit(t) } }
+                    .buttonStyle(.tt(.regularDestructive))
+                    .disabled(!availability.canForceQuit)
+                    .help("Force quit \(row.name)")
+                    .disabledTooltip(availability.canForceQuit ? nil : availability.disabledHelp)
+            }
             InspectorMenuButton(target: row.target, name: row.name)
             TTIconButton(detailExpanded ? .chevronDown : .chevronRight,
                          label: detailExpanded ? "Hide details" : "Show details", variant: .header) {

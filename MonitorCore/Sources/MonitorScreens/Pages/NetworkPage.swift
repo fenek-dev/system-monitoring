@@ -19,12 +19,10 @@ public struct NetworkPage: View {
     }
 }
 
+/// The page body reads nothing live: the subtitle and the once-a-minute "Today" loader are small child views, so a
+/// network tick only re-evaluates the cards that show network values.
 struct NetworkPageContent: View {
     let todayOverride: (rx: Double?, tx: Double?)?
-    @Environment(LiveModel.self) private var live
-    @Environment(\.historyProvider) private var history
-    @Environment(\.now) private var now
-    @Environment(\.timeZone) private var timeZone
     @State private var today: (rx: Double?, tx: Double?) = (nil, nil)
 
     var body: some View {
@@ -37,25 +35,18 @@ struct NetworkPageContent: View {
             NetworkAppsCard()
                 .frame(minHeight: 130, maxHeight: .infinity, alignment: .top)
         }
-        .forceQuitHost()
-        .pageHeader(subtitle: Self.subtitle(live.network))
-        .task(id: Self.minuteKey(now ?? live.lastUpdate ?? Date())) { await loadToday() }
+        .processActionsHost()
+        .background {
+            NetworkSubtitle()
+            if todayOverride == nil { NetworkTodayLoader(today: $today) }
+        }
     }
 
-    /// Reloads "Today" once a minute (and at midnight, when the interval restarts).
-    static func minuteKey(_ d: Date) -> Int { Int(d.timeIntervalSince1970 / 60) }
-
-    private func loadToday() async {
-        guard todayOverride == nil else { return }
-        let end = now ?? Date()
+    /// Local midnight → `end` in `timeZone` (DST-safe via `Calendar.startOfDay`).
+    static func todayInterval(end: Date, timeZone: TimeZone) -> DateInterval {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = timeZone
-        let interval = DateInterval(start: cal.startOfDay(for: end), end: end)
-        async let rx = try? history.total(.netRx, in: interval)
-        async let tx = try? history.total(.netTx, in: interval)
-        let result = (await rx ?? nil, await tx ?? nil)
-        guard !Task.isCancelled else { return }
-        today = result
+        return DateInterval(start: cal.startOfDay(for: end), end: end)
     }
 
     /// "Wi-Fi 6E · 5 GHz · 1,201 Mbps link" (no SSID); Ethernet-like: "Ethernet · 1,000 Mbps link".
@@ -78,6 +69,32 @@ struct NetworkPageContent: View {
     }
 }
 
+/// Sets the page subtitle from the live network state (preference flows up to the shell header).
+private struct NetworkSubtitle: View {
+    @Environment(LiveModel.self) private var live
+    var body: some View { Color.clear.pageHeader(subtitle: NetworkPageContent.subtitle(live.network)) }
+}
+
+/// Reloads "Today" (store totals since local midnight) once a minute; re-evaluates per tick but renders nothing.
+private struct NetworkTodayLoader: View {
+    @Binding var today: (rx: Double?, tx: Double?)
+    @Environment(LiveModel.self) private var live
+    @Environment(\.historyProvider) private var history
+    @Environment(\.now) private var now
+    @Environment(\.timeZone) private var timeZone
+
+    var body: some View {
+        Color.clear.task(id: Int((now ?? live.lastUpdate ?? Date()).timeIntervalSince1970 / 60)) {
+            let interval = NetworkPageContent.todayInterval(end: now ?? Date(), timeZone: timeZone)
+            async let rx = try? history.total(.netRx, in: interval)
+            async let tx = try? history.total(.netTx, in: interval)
+            let result = (await rx ?? nil, await tx ?? nil)
+            guard !Task.isCancelled else { return }
+            today = result
+        }
+    }
+}
+
 // MARK: - Stat strip
 
 struct NetworkStatStrip: View {
@@ -87,12 +104,18 @@ struct NetworkStatStrip: View {
 
     var body: some View { TTStatStrip(Self.items(live, units: units, today: today)) }
 
+    /// "—" tooltip for the rate cells when the sensor itself is fine: rates need two samples.
+    static func fallbackRateReason(_ phase: LivePhase) -> String {
+        if case .collecting = phase { return "Collecting — rates need two samples" }
+        return "Not reported for the primary interface"
+    }
+
     static func items(_ live: LiveModel, units: UnitPreferences, today: (rx: Double?, tx: Double?)) -> [TTStatStrip.Item] {
         let n = live.network
         let h = live.sensorHealth
         let primary = n.interfaces.first(where: \.isPrimary)
         let where_ = primary.map { "\(OverviewTiles.interfaceType($0)) · \($0.bsdName)" }
-        let rateReason = unavailableReason(.netRx, health: h)
+        let rateReason = unavailableReason(.netRx, health: h) ?? Self.fallbackRateReason(live.phase)
         var todayText: String?
         if let rx = today.rx, let tx = today.tx {
             todayText = "↓ " + TTFormat.storage(UInt64(max(0, rx)), style: .headline)
@@ -126,18 +149,22 @@ struct NetworkThroughputCard: View {
         var up: Double = 0
         var down: Double = 0
 
-        /// Grows within one range; a range change starts over.
+        /// Live: grows within the session (a range change starts over). Stored ranges: the window's own nice max.
         func merged(range: HistoryRange, up: Double, down: Double) -> Ceilings {
-            guard self.range == range else { return Ceilings(range: range, up: up, down: down) }
+            guard range == .live, self.range == range else { return Ceilings(range: range, up: up, down: down) }
             return Ceilings(range: range, up: max(self.up, up), down: max(self.down, down))
         }
     }
 
+    /// Nice ceiling of a rate window in the display unit (bits setting → Mbps steps).
+    static func ceiling(_ points: [SeriesPoint], units: UnitPreferences) -> Double {
+        TTFormat.niceRateCeiling(points.lazy.compactMap(\.value).filter(\.isFinite).max() ?? 0, units: units)
+    }
+
     var body: some View {
         RangeSeriesReader([.netRx, .netTx]) { s in
-            let windowUp = W5a.rateDomain(s[.netRx]).upperBound
-            let windowDown = W5a.rateDomain(s[.netTx]).upperBound
-            let c = ceilings.merged(range: s.range, up: windowUp, down: windowDown)
+            let c = ceilings.merged(range: s.range, up: Self.ceiling(s[.netRx], units: units),
+                                    down: Self.ceiling(s[.netTx], units: units))
             let down = ChartSeries(id: "rx", label: "Download · scale " + TTFormat.rateScale(c.up, units: units),
                                    color: TTColor.net, points: s[.netRx])
             let up = ChartSeries(id: "tx", label: "Upload · scale " + TTFormat.rateScale(c.down, units: units),
@@ -145,6 +172,7 @@ struct NetworkThroughputCard: View {
             TTCard(spacing: TTSpace.x10) {
                 TTCardHeader("Throughput") { TTLegend([down, up]) }
                 TTMirroredChart(up: down, down: up, upScale: c.up, downScale: c.down)
+                    .equatable()
                     .frame(height: 181)
                     .accessibilityLabel(ChartAccessibility.summary([down, up]))
                 TTTimeAxis(range: s.range, end: s.end).fillBelow()
@@ -232,27 +260,50 @@ struct NetworkAppsCard: View {
     @Environment(\.unitPreferences) private var units
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var selection: AppKey?
-    @State private var sort: (column: String, descending: Bool) = ("total", true)
+    @State private var sort: (column: String, descending: Bool) = ("down", true)
+    @State private var cache = RankCache<AppSample>()
 
-    static func total(_ a: AppSample) -> Double? {
+    nonisolated static func total(_ a: AppSample) -> Double? {
         if a.netRxBps == nil && a.netTxBps == nil { return nil }
         return (a.netRxBps ?? 0) + (a.netTxBps ?? 0)
     }
 
-    static func session(_ a: AppSample) -> UInt64? {
+    nonisolated static func session(_ a: AppSample) -> UInt64? {
         if a.netRxSession == nil && a.netTxSession == nil { return nil }
         return (a.netRxSession ?? 0) + (a.netTxSession ?? 0)
     }
 
-    /// Apps with network activity now or this session, by ↓+↑ descending.
+    /// The per-app flow sensor's reason when it is unavailable/disabled, else nil.
+    static func flowsReason(_ health: [SensorID: SensorStatus]) -> String? {
+        switch health[.networkFlows] {
+        case .unavailable(let r)?, .disabled(let r)?: r
+        default: nil
+        }
+    }
+
+    /// Apps with network activity now or this session, by ↓+↑ descending (stable). With the flow sensor unavailable
+    /// nothing has activity, so every app group is listed (cells show "—" with the reason) instead of an empty table.
+    nonisolated static func rank(_ apps: [AppSample], flowsUnavailable: Bool) -> [AppSample] {
+        let candidates = apps.enumerated().filter {
+            $0.element.identity.key != .other
+                && (flowsUnavailable || (total($0.element) ?? 0) > 0 || (session($0.element) ?? 0) > 0)
+        }
+        return candidates.sorted { a, b in
+            let x = total(a.element) ?? 0, y = total(b.element) ?? 0
+            return x != y ? x > y : a.offset < b.offset
+        }.map(\.element)
+    }
+
     static func rows(_ live: LiveModel) -> [AppSample] {
-        live.apps.filter { $0.identity.key != .other && ((total($0) ?? 0) > 0 || (session($0) ?? 0) > 0) }
-            .sorted { (total($0) ?? 0) > (total($1) ?? 0) }
+        rank(live.apps, flowsUnavailable: flowsReason(live.sensorHealth) != nil)
     }
 
     var body: some View {
-        let rows = Self.rows(live)
         let health = live.sensorHealth
+        let flowsReason = Self.flowsReason(health)
+        let rows = cache.rows(version: live.appsVersion * 2 + (flowsReason == nil ? 0 : 1)) {
+            Self.rank(live.apps, flowsUnavailable: flowsReason != nil)
+        }
         let units = units
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Network by app") { PageLink("All processes", to: .processes) }
@@ -275,11 +326,13 @@ struct NetworkAppsCard: View {
                         metricCell($0.connectionCount.map { TTFormat.count($0) },
                                    reason: unavailableReason(.netRx, $0, health: health) ?? "Not reported")
                     },
-                    .init(id: "total", title: "", width: .fixed(28), alignment: .trailing, sortKey: Self.total) {
+                    .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) {
                         AnyView(TTRowActionsButton(target: $0.target, name: $0.name))
                     },
                 ], selection: $selection, sort: $sort, rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
-                children: nil, style: TTTableStyle(emptyMessage: "No network activity"), onDoubleClick: { app in
+                children: nil,
+                style: TTTableStyle(sortsRows: false, emptyMessage: flowsReason ?? "No network activity"),
+                onDoubleClick: { app in
                     nav.selection = .app(app.identity.key)
                     nav.page = .processes
                 })

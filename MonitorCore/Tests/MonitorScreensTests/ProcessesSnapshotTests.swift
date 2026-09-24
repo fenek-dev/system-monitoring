@@ -67,6 +67,49 @@ struct ProcessesSnapshotTests {
         assertSnapshot(view, size: ScreenSize.dashboard, named: "processes-connections-calm")
     }
 
+    /// ICR-13: Docker Desktop expanded with an "Exited processes" row (italic, secondary, estimated, last child),
+    /// selected → inspector shows no process detail.
+    @Test func exitedProcessesRow() {
+        let ctx = ScreenFixture.context(.calm, page: .processes)
+        var frame = MockDataProvider(scenario: .calm).frame(at: 61)
+        guard let docker = frame.apps.first(where: { $0.identity.displayName == "Docker Desktop" }) else {
+            Issue.record("no Docker Desktop in the mock")
+            return
+        }
+        let exited = ProcessSample(id: ProcessID(pid: -2, startTimeUs: 1), name: "Exited processes", user: "arthur",
+                                   uid: 501, isCurrentUser: true, app: docker.identity.key, provenance: .coalition,
+                                   cpuPercent: 6.4, diskReadBps: 180_000, energyWatts: 0.21, energyEstimated: true)
+        frame.processes.append(exited)
+        ctx.live.apply(frame)
+        ctx.navigation.selection = .process(exited.id)
+        ctx.navigation.processesMode = .apps
+        let view = DashboardRoot()
+            .environment(\.processesDetailOnAppear, false)
+            .environment(\.processesExpandSelectionOnAppear, false)
+            .environment(\.processesExpandOnAppear, [docker.identity.key])
+            .frame(width: ScreenSize.dashboard.width, height: ScreenSize.dashboard.height)
+            .telltaleEnvironment(ctx)
+        assertSnapshot(view, size: ScreenSize.dashboard, named: "processes-exited-calm")
+    }
+
+    /// CP2: a long name truncates in the middle; the kind tag is never clipped.
+    @Test func longNameKeepsKindTag() {
+        let key = AppKey(kind: .process, id: "com.apple.audio.Core-Audio-Driver-Service.helper")
+        let ps = [PT.proc(812, "com.apple.audio.Core-Audio-Driver-Service.helper", app: key, cpu: 1.2, user: "root",
+                          uid: 0),
+                  PT.proc(813, "com.apple.audio.Core-Audio-Driver-Service.helper", app: key, cpu: 0.4, user: "root",
+                          uid: 0)]
+        let out = ProcessTableModel.build(ProcessTableInput(processes: ps, apps: PT.group(ps)))
+        let view = ProcessListTable(lines: out.lines, emptyMessage: "", showsDisclosure: true, selection: nil,
+                                    sort: .cpu, descending: true, onSelect: { _ in }, onSort: { _ in },
+                                    onToggle: { _ in }, onDoubleClick: { _ in })
+            .padding(16)
+            .frame(width: 986, height: 120)
+            .background(TTColor.bgCard)
+            .screenEnvironment(.calm, page: .processes)
+        assertSnapshot(view, size: CGSize(width: 986, height: 120), named: "processes-row-longname")
+    }
+
     static func dashboard(_ scenario: MockScenario, mode: NavigationModel.ProcessesMode, select name: String?,
                           detail: Bool, expand: Bool = false) -> some View {
         let ctx = ScreenFixture.context(scenario, page: .processes)

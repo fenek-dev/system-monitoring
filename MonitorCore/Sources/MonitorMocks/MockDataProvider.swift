@@ -286,13 +286,15 @@ public struct MockDataProvider: Sendable {
         }
         let pClusterUsage = perfCores.map(\.usage).reduce(0, +) / Double(perfCores.count)
         let eClusterUsage = effCores.map(\.usage).reduce(0, +) / Double(effCores.count)
+        // IOReport-derived cluster fields (residency, frequency, watts) disappear with the SoC sensor (W5a fix3 A3).
+        let soc = scenario != .sensorsUnavailable
         let clusters = [
             ClusterSnapshot(kind: .performance, coreCount: perfCores.count, usage: pClusterUsage,
-                             activeResidency: pClusterUsage, frequencyMHz: 4_120, maxFrequencyMHz: 4_510,
-                             watts: signals.value(.pc, at: tick) * 0.7),
+                             activeResidency: soc ? pClusterUsage : nil, frequencyMHz: soc ? 4_120 : nil,
+                             maxFrequencyMHz: soc ? 4_510 : nil, watts: soc ? signals.value(.pc, at: tick) * 0.7 : nil),
             ClusterSnapshot(kind: .efficiency, coreCount: effCores.count, usage: eClusterUsage,
-                             activeResidency: eClusterUsage, frequencyMHz: 2_590, maxFrequencyMHz: 2_890,
-                             watts: signals.value(.pc, at: tick) * 0.3),
+                             activeResidency: soc ? eClusterUsage : nil, frequencyMHz: soc ? 2_590 : nil,
+                             maxFrequencyMHz: soc ? 2_890 : nil, watts: soc ? signals.value(.pc, at: tick) * 0.3 : nil),
         ]
 
         let snapshot = CPUSnapshot(

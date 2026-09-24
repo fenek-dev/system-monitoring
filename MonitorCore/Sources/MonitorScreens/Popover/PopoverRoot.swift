@@ -32,10 +32,11 @@ public struct PopoverRoot: View {
                                    feedback: $feedback)
             PopoverDivider()
             if let feedback {
-                Text(feedback).font(TTFont.caption).foregroundStyle(TTColor.statusElevated).lineLimit(1)
+                TTToast(feedback)
                     .padding(.horizontal, 10).padding(.top, 2)
+                    .transition(.opacity)
                     .task(id: feedback) {
-                        try? await Task.sleep(for: .seconds(4))
+                        try? await Task.sleep(for: TTToast.lifetime)
                         self.feedback = nil
                     }
             }
@@ -67,14 +68,10 @@ struct PopoverCategoryRow: View {
     let toggle: () -> Void
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
-    @Environment(\.appCommands) private var commands
-    @Environment(\.processActions) private var actions
 
     var body: some View {
-        let ops = PopoverActions(commands: commands, actions: actions, live: live)
         PopoverRowView(row: PopoverModel.row(category, live: live, units: units), expanded: expanded,
-                       lines: expanded ? PopoverModel.expansion(category, live: live, units: units) : [],
-                       toggle: toggle, openPage: { ops.openPage(category) }, openApp: { ops.openApp($0) })
+                       topApps: expanded ? PopoverModel.expansionApps(category, live: live) : [], toggle: toggle)
             .equatable()
     }
 }
@@ -151,7 +148,8 @@ struct PopoverHeader: View {
         let paused = live.isPausedPhase
         let ops = PopoverActions(commands: commands, actions: actions, live: live)
         HStack(spacing: 10) {
-            PopoverGlyph(state: alert)
+            TTStatusGlyph(state: alert, size: 20, template: false)
+                .frame(width: 20, height: 20)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Telltale").font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary).cssLine(13)
                 HStack(spacing: 6) {
@@ -162,6 +160,7 @@ struct PopoverHeader: View {
                 .cssLine(11)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
             TTIconButton(paused ? .play : .pause, label: paused ? "Resume sampling" : "Pause sampling",
                          variant: .popover) { ops.setPaused(!paused) }
             TTIconButton(.settings, label: "Settings", variant: .popover) { ops.openSettings() }
@@ -190,15 +189,18 @@ struct TopConsumerView: View, Equatable {
         let app = consumer.app
         HStack(spacing: 10) {
             TTAppTile(identity: app.identity, name: app.name, size: 26)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Top consumer").font(TTFont.caption).foregroundStyle(TTColor.textSecondary).cssLine(11)
-                Text(app.name).font(TTFont.body13).foregroundStyle(TTColor.textPrimary).lineLimit(1).cssLine(13)
-                Text(consumer.detail).font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
-                    .monospacedDigit().lineLimit(1).cssLine(11)
+            Button(action: open) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Top consumer").font(TTFont.caption).foregroundStyle(TTColor.textSecondary).cssLine(11)
+                    Text(app.name).font(TTFont.body13).foregroundStyle(TTColor.textPrimary).lineLimit(1).cssLine(13)
+                    Text(consumer.detail).font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
+                        .monospacedDigit().lineLimit(1).cssLine(11)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture(perform: open)
+            .buttonStyle(.plain)
+            .accessibilityHint("Show in Processes")
             Button("Quit", action: quit)
                 .buttonStyle(TTButtonStyle(.smallSecondary))
                 .disabled(!canQuit)

@@ -1,5 +1,6 @@
 import Foundation
 import MonitorLive
+import os
 import MonitorMocks
 import MonitorModel
 @testable import MonitorScreens
@@ -41,7 +42,7 @@ struct PopoverTests {
         #expect(mem.domain.upperBound == Double(live.memory.total))
     }
 
-    @Test func thermalAlertStressesRowAndBanner() {
+    @Test func thermalAlertStressesRowAndBanner() throws {
         let live = ScreenFixture.live(.thermalFair)
         let units = UnitPreferences()
         let row = PopoverModel.row(.thermals, live: live, units: units)
@@ -49,12 +50,36 @@ struct PopoverTests {
         #expect(row.subtitle?.hasPrefix("Fair · fans ") == true)
         let banners = PopoverModel.banners(live: live, units: units, canControl: { _ in true })
         #expect(banners.count == live.alert.active.count)
-        let first = try? #require(banners.first)
-        #expect(first?.message.contains("is pushing the SoC to") == true)
-        #expect(first?.buttons.first?.title == "Show Thermals")
+        let first = try #require(banners.first)
+        #expect(first.message.contains("is pushing the SoC to"))
+        #expect(first.buttons.first?.title == "Show Thermals")
         #expect(PopoverModel.banners(live: live, units: units, canControl: { _ in false })
             .first?.buttons.count == 1)
         #expect(PopoverModel.consumer(live: live)?.detail.contains("GPU") == true)
+    }
+
+    /// CP2: the Power row shows watts whenever the Mac reports any (component sum, else SMC system power), and Disk
+    /// shows available capacity (not purgeable-inclusive "important usage").
+    @Test func powerAndDiskRowsCP2() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        var f = provider.frame(at: 60)
+        f.power.packageWatts = nil
+        f.power.cpuWatts = nil
+        f.power.gpuWatts = nil
+        f.power.aneWatts = nil
+        f.power.dramWatts = nil
+        f.power.systemWatts = 5.8
+        f.disk.volumes = f.disk.volumes.map { v in
+            var v = v
+            v.availableBytes = 1_090_000_000_000
+            v.availableImportantBytes = 1_180_000_000_000
+            return v
+        }
+        live.apply(f)
+        live.isPresenting = true
+        #expect(PopoverModel.row(.power, live: live, units: UnitPreferences()).value == "5.8 W")
+        #expect(PopoverModel.row(.disk, live: live, units: UnitPreferences()).value == "1.09 TB")
     }
 
     @Test func thermalSubtitleWithoutFans() {
@@ -67,52 +92,52 @@ struct PopoverTests {
 
     @Test func expansionShowsTopThree() {
         let live = ScreenFixture.live(.calm)
-        let lines = PopoverModel.expansion(.cpu, live: live, units: UnitPreferences())
-        #expect(lines.count == 3)
-        #expect(lines.allSatisfy { $0.value.hasSuffix("%") })
+        let apps = PopoverModel.expansionApps(.cpu, live: live)
+        #expect(apps.count == 3)
+        #expect(zip(apps, apps.dropFirst()).allSatisfy { ($0.cpuPercent ?? 0) >= ($1.cpuPercent ?? 0) })
     }
 
     // MARK: Behaviour (recording AppCommands + mock ActionLog)
 
-    final class CommandLog: @unchecked Sendable {
-        var entries: [String] = []
-    }
+    /// Lock-protected command recorder (Sendable without an unchecked escape hatch).
+    typealias CommandLog = OSAllocatedUnfairLock<[String]>
 
     static func recording(_ log: CommandLog) -> AppCommands {
-        AppCommands(openDashboard: { log.entries.append("open \($0?.rawValue ?? "nil")") },
-                    inspectApp: { log.entries.append("inspect \($0.id)") },
-                    openSettings: { log.entries.append("settings") },
-                    setPaused: { log.entries.append("paused \($0)") },
-                    quitTelltale: { log.entries.append("quitTelltale") })
+        AppCommands(openDashboard: { p in log.withLock { $0.append("open \(p?.rawValue ?? "nil")") } },
+                    inspectApp: { k in log.withLock { $0.append("inspect \(k.id)") } },
+                    openSettings: { log.withLock { $0.append("settings") } },
+                    setPaused: { v in log.withLock { $0.append("paused \(v)") } },
+                    quitTelltale: { log.withLock { $0.append("quitTelltale") } })
     }
 
-    @Test func bannerButtonsShowPageAndQuitCulprit() async {
+    @Test func bannerButtonsShowPageAndQuitCulprit() async throws {
         let live = ScreenFixture.live(.thermalFair)
-        let log = CommandLog()
+        let log = CommandLog(initialState: [])
         let actionLog = ActionLog()
         let actions = MockDataProvider(scenario: .thermalFair).processActions(log: actionLog)
         let ops = PopoverActions(commands: Self.recording(log), actions: actions, live: live)
-        let banner = try? #require(PopoverModel.banners(live: live, units: UnitPreferences(),
-                                                        canControl: actions.canControl).first)
-        #expect(banner?.buttons.map(\.title) == ["Show Thermals", "Quit Final Cut Pro"])
-        for b in banner?.buttons ?? [] { _ = await ops.perform(b.action) }
-        #expect(log.entries == ["open thermals"])
+        let banner = try #require(PopoverModel.banners(live: live, units: UnitPreferences(),
+                                                       canControl: actions.canControl).first)
+        #expect(banner.buttons.map(\.title) == ["Show Thermals", "Quit Final Cut Pro"])
+        for b in banner.buttons { _ = await ops.perform(b.action) }
+        let entries = log.withLock { $0 }
+        #expect(entries == ["open thermals"])
         #expect(actionLog.entries == ["quit Final Cut Pro -> done"])
     }
 
     @Test func footerAndRowCommands() {
-        let log = CommandLog()
+        let log = CommandLog(initialState: [])
         let live = ScreenFixture.live(.calm)
         let ops = PopoverActions(commands: Self.recording(log), actions: .noop, live: live)
         ops.openDashboard()
         ops.openHistory()
         ops.quitTelltale()
-        ops.openPage(.thermals)                      // row double-click
-        ops.openApp(AppKey(kind: .app, id: "com.apple.dt.Xcode"))   // expansion line click
+        ops.openApp(AppKey(kind: .app, id: "com.apple.dt.Xcode"))   // top-consumer click
         ops.setPaused(true)
         ops.openSettings()
-        #expect(log.entries == ["open overview", "open history", "quitTelltale", "open thermals",
-                                "inspect com.apple.dt.Xcode", "paused true", "settings"])
+        #expect(log.withLock { $0 } == ["open overview", "open history", "quitTelltale",
+                                         "inspect com.apple.dt.Xcode", "paused true", "settings"])
+        // Row double-click / expansion-line clicks are TTPopoverRow's (W3), via the same `appCommands`.
     }
 
     @Test func rowExpansionToggles() {
@@ -124,14 +149,14 @@ struct PopoverTests {
         #expect(open == [.memory])
     }
 
-    @Test func topConsumerQuitAndFeedback() async {
+    @Test func topConsumerQuitAndFeedback() async throws {
         let live = ScreenFixture.live(.calm)
         let actionLog = ActionLog()
         let actions = MockDataProvider(scenario: .calm).processActions(log: actionLog)
         let ops = PopoverActions(commands: .noop, actions: actions, live: live)
-        let consumer = try? #require(PopoverModel.consumer(live: live))
-        #expect(consumer?.app.name == "Xcode")
-        if let app = consumer?.app { #expect(await ops.quit(app) == nil) }
+        let consumer = try #require(PopoverModel.consumer(live: live))
+        #expect(consumer.app.name == "Xcode")
+        #expect(await ops.quit(consumer.app) == nil)
         #expect(actionLog.entries == ["quit Xcode -> done"])
         #expect(PopoverModel.feedback(.notPermitted, name: "WindowServer") == "Not permitted to quit WindowServer")
     }
@@ -143,19 +168,25 @@ struct PopoverTests {
         let provider = MockDataProvider(scenario: .calm)
         let live = ScreenFixture.live(.calm)
         let units = UnitPreferences()
-        final class Flag: @unchecked Sendable { var fired = false }
-        var flags: [MonitorModel.Category: Flag] = [:]
+        let fired = OSAllocatedUnfairLock<Set<MonitorModel.Category>>(initialState: [])
         for c in [MonitorModel.Category.cpu, .power, .memory] {
-            let flag = Flag()
-            flags[c] = flag
-            withObservationTracking { _ = PopoverModel.row(c, live: live, units: units) } onChange: { flag.fired = true }
+            withObservationTracking { _ = PopoverModel.row(c, live: live, units: units) } onChange: {
+                fired.withLock { _ = $0.insert(c) }
+            }
         }
         var f = provider.frame(at: 60)                       // same sample time as the last applied frame
         f.memory.used = (f.memory.used ?? 0) + 1_073_741_824
         live.apply(f)
-        #expect(flags[.memory]?.fired == true)
-        #expect(flags[.cpu]?.fired == false)
-        #expect(flags[.power]?.fired == false)
+        #expect(fired.withLock { $0 } == [.memory])
+    }
+
+    /// B8: the calm top consumer is the first non-system group of the full CPU ranking; no energy fallback.
+    @Test func topConsumerIsHighestCPUNonSystem() throws {
+        let live = ScreenFixture.live(.calm)
+        let consumer = try #require(PopoverModel.consumer(live: live))
+        let best = live.apps.filter { $0.identity.key.kind != .system && $0.identity.key != .other }
+            .max { ($0.cpuPercent ?? -1) < ($1.cpuPercent ?? -1) }
+        #expect(consumer.app.identity.key == best?.identity.key)
     }
 
     @Test func snapshots() {
