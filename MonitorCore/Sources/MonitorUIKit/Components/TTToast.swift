@@ -24,6 +24,6 @@ public struct TTToast: View {
         }
         .transition(.opacity)
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.updatesFrequently)
+        .onAppear { AccessibilityNotification.Announcement(text).post() }
     }
 }

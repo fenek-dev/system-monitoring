@@ -18,6 +18,9 @@ public extension EnvironmentValues {
     /// Called after a Quit from the row menu with the result (the page shows the toast).
     @Entry var onProcessActionResult: (@MainActor @Sendable (ProcessTarget, ActionResult) -> Void)? = nil
 
+    /// Snapshot-only opt-in: `TTAppTile` loads real app icons even when `isSnapshot` (icon-path golden).
+    @Entry var ttAppIconsInSnapshots: Bool = false
+
     /// Set by `TTTable` for each row's cells: nesting depth (0 = top level, 1 = child row).
     @Entry var ttRowDepth: Int = 0
     /// Set by `TTTable`: whether the row has children, is expanded, and a toggle.
