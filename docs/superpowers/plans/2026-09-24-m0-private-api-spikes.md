@@ -1060,7 +1060,33 @@ git commit -m "spike: NetworkStatistics per-app bandwidth"
 
 ---
 
-### Task 8: Consolidate findings + go/no-go
+### Task 8: Extras spike (disk stats, SMART, sleep assertions, ping, Wi-Fi)
+
+These sources were added after the design review. All are public or semi-public APIs.
+
+**Files:**
+- Create: `Spikes/Sources/spike-extras/main.swift`, `docs/findings/extras.md`
+- The `spike-extras` target already exists (stub from Task 1).
+
+**Requirements.** The spike prints each item below, plus its cost in ms:
+1. **Disk IOPS/bytes.** Iterate `IOServiceMatching("IOBlockStorageDriver")` and read the `Statistics` dict (`Operations (Read)`, `Operations (Write)`, `Bytes (Read)`, `Bytes (Write)`). Take two samples 1s apart, print IOPS and MB/s per driver, and name the parent media BSD name if reachable.
+2. **NVMe SMART.** Use `<IOKit/storage/nvme/NVMeSMARTLibExternal.h>`:
+   - find the service with the `NVMe SMART Capable` property (`IOServiceMatching("IONVMeController")` or a registry walk)
+   - `IOCreatePlugInInterfaceForService(svc, kIONVMeSMARTUserClientTypeID, kIOCFPlugInInterfaceID, …)`
+   - `QueryInterface(kIONVMeSMARTInterfaceID)`
+   - `SMARTReadData(&nvme_smart_log)`
+   Print percentage used, data units read/written (×512000 bytes), power-on hours, unsafe shutdowns, temperature, and critical warning. If this needs root or fails, record the exact error.
+3. **Sleep assertions.** Call `IOPMCopyAssertionsByProcess` and print pid → assertion types/names. Pay attention to `PreventUserIdleSystemSleep` and `PreventUserIdleDisplaySleep`.
+4. **Router latency and loss.**
+   - Router IP comes from `route -n get default` parsing only as a fallback. Prefer `sysctl` `NET_RT_FLAGS` with `RTF_GATEWAY`; `SCDynamicStore` `State:/Network/Global/IPv4` → `Router` also works.
+   - Open a `socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)` (unprivileged ICMP on macOS) and send 5 echo requests 200ms apart. Print RTT min/avg/max and loss %.
+5. **Wi-Fi.** `CoreWLAN`: `CWWiFiClient.shared().interface()` gives rssiValue, noiseMeasurement, wlanChannel (number, band, width), transmitRate, and ssid (expect nil without Location permission; record it).
+
+Build with `swift build --scratch-path .build-extras` and run. Record all findings in `docs/findings/extras.md` using the same Status/Cost/Keys format as the other spikes. Commit.
+
+---
+
+### Task 9: Consolidate findings + go/no-go
 
 **Files:**
 - Modify: `FINDINGS.md` (add summary at top), `SPEC.md` (data sources table only, if findings change it)
