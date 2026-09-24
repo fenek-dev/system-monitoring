@@ -41,6 +41,8 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     let columns: Columns
 
     private var pendingRecords: [HistoryRecord] = []
+    /// Buffered, not yet written (tests).
+    var pendingRecordCount: Int { pendingRecords.count }
     private var pendingEvents: [HistoryEvent] = []
     private var lastFlush: Date
     private var lastMaintenance: Date
