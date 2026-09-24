@@ -27,6 +27,21 @@ import Testing
         #expect(try await store.intValue("SELECT COUNT(*) FROM app_raw") == 12 * 25)
     }
 
+    @Test func shutdownStopsMaintenanceAndFlushes() async throws {
+        let clock = TestClock()
+        let store = try HistoryStore(location: .file(T.tempDB()),
+                                     config: T.config(clock, maintenanceInterval: .milliseconds(20)))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await store.maintenanceRuns < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(await store.maintenanceRuns >= 2)
+        for i in 0..<7 { await store.append(RecordBatch(record: fullRecord(T.t0 + Double(i) * 5))) }
+        try await store.shutdown()
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 7)
+        let runs = await store.maintenanceRuns
+        try await Task.sleep(for: .milliseconds(200))                        // ~10 timer periods
+        #expect(await store.maintenanceRuns == runs)
+    }
+
     @Test func flushOf120BufferedRecordsIsFast() async throws {
         let store = try HistoryStore(location: .file(T.tempDB()), config: T.config(TestClock(), flushMaxRecords: 1_000))
         for i in 0..<120 { await store.append(RecordBatch(record: fullRecord(T.t0 + Double(i)))) }

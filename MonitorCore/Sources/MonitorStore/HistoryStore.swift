@@ -48,6 +48,8 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     private var maintaining = false
     /// Flushes run strictly in order; `flush()` awaits every earlier write (shutdown relies on it).
     private var writeChain: Task<Void, any Error>?
+    private let maintenanceTask: Task<Void, Never>?
+    private var isShutDown = false
 
     public init(location: Location, config: StoreConfig = .init()) throws {
         try self.init(location: location, config: config, columns: .current)
@@ -65,18 +67,34 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         self.lastFlush = config.now()
         // Maintenance runs on its own timer, never inside append/flush: once at open (catch-up), then every
         // `maintenanceInterval`. `maintenanceInterval <= .zero` disables it (callers run `maintain(now:)`).
-        // The task holds the store weakly, so it ends after the store is released.
+        // `shutdown()` cancels it; otherwise it holds the store weakly and ends after the store is released.
+        // A nonisolated init can't capture `self` before the task is stored, so the store is handed over
+        // through a one-element stream once initialization completes.
         let interval = config.maintenanceInterval
-        if interval > .zero {
-            Task { [weak self] in
-                await self?.scheduledMaintenance()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: interval, tolerance: interval / 10)
-                    guard let self else { return }
-                    await self.scheduledMaintenance()
-                }
-            }
+        let (handoff, deliver) = AsyncStream.makeStream(of: HistoryStore.self, bufferingPolicy: .bufferingNewest(1))
+        self.maintenanceTask = interval > .zero ? Task { await Self.maintenanceLoop(handoff, interval: interval) } : nil
+        deliver.yield(self)
+        deliver.finish()
+    }
+
+    private static func maintenanceLoop(_ handoff: AsyncStream<HistoryStore>, interval: Duration) async {
+        var iterator = handoff.makeAsyncIterator()
+        weak let store = await iterator.next()
+        await store?.scheduledMaintenance()
+        while !Task.isCancelled {
+            try? await Task.sleep(for: interval, tolerance: interval / 10)
+            guard !Task.isCancelled, let current = store else { return }
+            await current.scheduledMaintenance()
         }
+    }
+
+    /// Termination path (ARCHITECTURE §4, via `.terminateLater`; no flushSync): stops the maintenance timer,
+    /// waits for a pass in flight, then flushes everything buffered. The runtime bounds it with its 3 s timeout.
+    public func shutdown() async throws {
+        isShutDown = true
+        maintenanceTask?.cancel()
+        await maintenanceTask?.value
+        try await flush()
     }
 
     // MARK: HistoryRecorder
@@ -130,6 +148,9 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         let columns = self.columns
         let nowMs = now.unixMs
         let cutoffs = Retention.cutoffs(nowMs: nowMs, config: config)
+        // Appends can hand new flushes to the chain while this pass awaits; one landing after the rollup is
+        // benign: the buffer was flushed above, so it only carries samples from about `now` on, i.e. rows of
+        // buckets this pass didn't treat as complete; the next (idempotent) pass rolls them up.
         try await writer.write { db in
             try Rollup.run(db, columns: columns, nowMs: nowMs, rawCutoff: cutoffs.raw, minuteCutoff: cutoffs.minute)
             try Retention.run(db, cutoffs)
@@ -139,6 +160,7 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     }
 
     private func scheduledMaintenance() async {
+        guard !isShutDown else { return }
         do { try await maintain(now: config.now()) } catch {
             StoreDatabase.log.fault("history maintenance failed: \(error.localizedDescription, privacy: .public)")
         }
