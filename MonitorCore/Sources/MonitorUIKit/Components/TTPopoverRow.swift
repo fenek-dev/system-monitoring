@@ -27,6 +27,7 @@ public struct TTPopoverRow: View {
     let compact: Bool
     let level: AlertLevel
     let showsCollecting: Bool
+    let highlighted: Bool
     @Environment(\.appCommands) private var commands
     @Environment(\.popoverRowHover) private var hoverSink
     @State private var hovering = false
@@ -35,10 +36,12 @@ public struct TTPopoverRow: View {
     /// - `level`: stressed state (thermal/memory/runaway alert on this category).
     /// - `yDomain`: nil → category default (§5.10) or auto nice ceiling.
     /// - `showsCollecting`: sparkline "Collecting…" below 2 samples; nil = automatic (unless `unavailableReason`).
+    /// - `highlighted`: the row's top-apps flyout is shown → `fillHover` as if hovered.
     public init(category: MonitorModel.Category, subtitle: String?, value: String?, unavailableReason: String? = nil,
                 points: [SeriesPoint], yDomain: ClosedRange<Double>? = nil, compact: Bool, level: AlertLevel = .calm,
-                showsCollecting: Bool? = nil) {
+                showsCollecting: Bool? = nil, highlighted: Bool = false) {
         self.showsCollecting = showsCollecting ?? (unavailableReason == nil)
+        self.highlighted = highlighted
         self.category = category
         self.subtitle = subtitle
         self.value = value
@@ -115,7 +118,7 @@ public struct TTPopoverRow: View {
 
     private var background: Color {
         if let fill = TTColor.rowFill(level) { return fill }
-        return hovering ? TTColor.fillHover : .clear
+        return hovering || highlighted ? TTColor.fillHover : .clear
     }
 
     public var body: some View {
@@ -123,7 +126,10 @@ public struct TTPopoverRow: View {
             .contentShape(Rectangle())
             .onTapGesture { Self.click(category, commands: commands) }
             .background(RoundedRectangle(cornerRadius: TTRadius.r7, style: .continuous).fill(background))
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { f in
+                frame = f
+                hoverSink?(PopoverRowHover(category: category, phase: .geometry, frame: f))
+            }
             .onHover { inside in
                 hovering = inside
                 hoverSink?(PopoverRowHover(category: category, phase: inside ? .entered : .exited, frame: frame))

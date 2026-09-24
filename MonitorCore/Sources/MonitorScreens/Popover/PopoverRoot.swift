@@ -65,11 +65,13 @@ struct PopoverCategoryRow: View {
     let category: MonitorModel.Category
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
+    @Environment(FlyoutState.self) private var flyout: FlyoutState?
     /// Grow-only Live rate ceiling for the sparkline while the popover is open (DESIGN §5.10, M5).
     @State private var ceilings = LiveCeilings()
 
     var body: some View {
-        PopoverRowView(row: PopoverModel.row(category, live: live, units: units, ceilings: ceilings))
+        PopoverRowView(row: PopoverModel.row(category, live: live, units: units, ceilings: ceilings),
+                       highlighted: flyout?.shown == category)
             .equatable()
             .environment(\.ttChartGapBridge, ChartSegments.liveBridgeSlots)   // Live 1-s grid sparklines (N2)
     }

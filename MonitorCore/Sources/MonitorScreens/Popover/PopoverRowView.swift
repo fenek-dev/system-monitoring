@@ -7,13 +7,16 @@ import SwiftUI
 /// flyout (`\.popoverRowHover`, set by `PopoverRoot`) are TTPopoverRow's.
 struct PopoverRowView: View, Equatable {
     let row: PopoverModel.Row
+    /// The row's flyout is shown (`FlyoutState`): keeps the hover fill.
+    let highlighted: Bool
 
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row }
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row && a.highlighted == b.highlighted }
 
     var body: some View {
         TTPopoverRow(category: row.category, subtitle: row.subtitle, value: row.value,
                      unavailableReason: row.unavailableReason, points: row.points, yDomain: row.domain,
-                     compact: row.compact, level: row.stress, showsCollecting: !row.sensorDown)
+                     compact: row.compact, level: row.stress, showsCollecting: !row.sensorDown,
+                     highlighted: highlighted)
     }
 }
 

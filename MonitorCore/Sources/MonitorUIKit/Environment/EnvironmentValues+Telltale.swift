@@ -40,6 +40,8 @@ public struct PopoverRowHover: Sendable, Equatable {
         case entered, exited
         /// "Show top apps" accessibility action: open the flyout now.
         case show
+        /// The row's frame changed (layout): only refreshes the flyout's anchor.
+        case geometry
     }
 
     public var category: MonitorModel.Category

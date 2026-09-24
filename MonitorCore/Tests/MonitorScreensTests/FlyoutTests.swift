@@ -58,9 +58,22 @@ struct FlyoutTests {
 
     @Test func headerAndValueFormats() {
         let u = UnitPreferences()
-        #expect(FlyoutModel.header(.cpu, total: "34%") == "Top CPU · 34% total")
+        #expect(FlyoutModel.header(.cpu, total: "37%") == "Top CPU · 37% of system")
+        #expect(FlyoutModel.header(.gpu, total: "16%") == "Top GPU · 16% of system")
+        #expect(FlyoutModel.header(.disk, total: "205 MB/s") == "Top Disk · 205 MB/s I/O")
+        #expect(FlyoutModel.header(.memory, total: "15.1 GB") == "Top Memory · 15.1 GB total")
         #expect(FlyoutModel.header(.cpu, total: nil) == "Top CPU")
         #expect(FlyoutModel.header(.thermals, total: "62°C") == "Top Thermals · 62°C")    // a temperature is no total
+        #expect(FlyoutModel.caption(.cpu) == "% of one core")
+        #expect(FlyoutModel.caption(.thermals) == "by power")
+        #expect(FlyoutModel.caption(.memory) == nil)
+        let lines = FlyoutModel.lines(apps: [Self.app("A", cpu: 50), Self.app("B", cpu: 30), Self.app("C", cpu: 10),
+                                             Self.app("D", cpu: 5)], category: .cpu)
+        TTFormat.$locale.withValue(Locale(identifier: "en_US")) {
+            #expect(FlyoutModel.announcement(.cpu, total: "37%", lines: lines, units: u)
+                    == "Top CPU · 37% of system. A, 50.0%. B, 30.0%. C, 10.0%")
+            #expect(FlyoutModel.announcement(.gpu, total: nil, lines: [], units: u) == "Top GPU. No app activity")
+        }
         TTFormat.$locale.withValue(Locale(identifier: "en_US")) {
             #expect(FlyoutModel.format(212.4, .cpu, units: u) == "212.4%")
             #expect(FlyoutModel.format(12.4, .thermals, units: u) == "12.4 W")
@@ -88,6 +101,52 @@ struct FlyoutTests {
         live.apply(provider.frame(at: 1))
         _ = cache.lines(live: live, category: .memory)
         #expect(cache.computations == 3)
+    }
+
+    /// Ruling: while the pointer is in the flyout the order is frozen; values/shares update; newcomers go last.
+    @Test func frozenOrderKeepsRowsAndAppendsNewcomers() {
+        let before = FlyoutModel.lines(apps: [Self.app("A", cpu: 50), Self.app("B", cpu: 30), Self.app("C", cpu: 20)],
+                                       category: .cpu)
+        let now = FlyoutModel.lines(apps: [Self.app("A", cpu: 10), Self.app("B", cpu: 60), Self.app("D", cpu: 30)],
+                                    category: .cpu, limit: .max)
+        let frozen = FlyoutModel.frozen(previous: before, ranking: now)
+        #expect(frozen.map(\.name) == ["A", "B", "D"])                 // C went idle; D appended
+        #expect(frozen.map(\.value) == [10, 60, 30])
+        #expect(frozen.map(\.share) == [0.1, 0.6, 0.3])
+        #expect(FlyoutModel.frozen(previous: before, ranking: now, limit: 2).map(\.name) == ["A", "B"])
+    }
+
+    @Test func cacheFreezesOrderWhilePointerInside() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        var f = provider.frame(at: 0)
+        f.apps = [Self.app("A", cpu: 50), Self.app("B", cpu: 30)]
+        live.apply(f)
+        live.isPresenting = true
+        let cache = FlyoutLinesCache()
+        #expect(cache.lines(live: live, category: .cpu, frozen: true).map(\.name) == ["A", "B"])   // first: ranked
+        f = provider.frame(at: 1)
+        f.apps = [Self.app("A", cpu: 5), Self.app("B", cpu: 30), Self.app("C", cpu: 90)]
+        live.apply(f)
+        #expect(cache.lines(live: live, category: .cpu, frozen: true).map(\.name) == ["A", "B", "C"])
+        #expect(cache.lines(live: live, category: .cpu, frozen: true).first?.value == 5)
+        #expect(cache.lines(live: live, category: .cpu, frozen: false).map(\.name) == ["C", "B", "A"])  // pointer left
+    }
+
+    // MARK: MenuAim (safe triangle)
+
+    @Test func menuAimTriangle() {
+        let flyout = CGRect(x: 674, y: 400, width: 320, height: 300)   // left of the popover: near edge x = 994
+        let last = CGPoint(x: 1100, y: 600)
+        #expect(MenuAim.isAiming(from: last, to: CGPoint(x: 1090, y: 598), flyout: flyout))    // heading left
+        #expect(MenuAim.isAiming(from: last, to: CGPoint(x: 1090, y: 609), flyout: flyout))    // left and up, in cone
+        #expect(!MenuAim.isAiming(from: last, to: CGPoint(x: 1090, y: 650), flyout: flyout))  // too steep
+        #expect(!MenuAim.isAiming(from: last, to: CGPoint(x: 1100, y: 580), flyout: flyout))   // straight down
+        #expect(!MenuAim.isAiming(from: last, to: CGPoint(x: 1110, y: 600), flyout: flyout))   // away
+        #expect(!MenuAim.isAiming(from: last, to: last, flyout: flyout))                        // no movement
+        let right = CGRect(x: 1400, y: 400, width: 320, height: 300)   // right fallback: near edge x = 1400
+        #expect(MenuAim.isAiming(from: last, to: CGPoint(x: 1110, y: 600), flyout: right))
+        #expect(!MenuAim.isAiming(from: last, to: CGPoint(x: 1090, y: 600), flyout: right))
     }
 
     // MARK: FlyoutPlacement (AppKit coordinates, y up)
@@ -243,6 +302,61 @@ struct FlyoutTests {
         i.dismiss()                                     // pending open cancelled
         clock.advance(.seconds(1))
         #expect(rec.events == ["show thermals", "show cpu", "hide"])
+    }
+
+    /// Safe triangle: a switch while aiming at the flyout waits 100 ms; reaching the flyout cancels it.
+    @Test func aimingDefersSwitch() {
+        let clock = FakeClock(), rec = Recorder(), i = Self.intent(clock, rec)
+        var aiming = true
+        i.aiming = { aiming }
+        i.rowEntered(.cpu)
+        clock.advance(.milliseconds(250))
+        i.rowExited(.cpu)
+        i.rowEntered(.gpu)                              // crossing GPU on the way to the flyout
+        clock.advance(.milliseconds(99))
+        #expect(rec.events == ["show cpu"])
+        i.rowExited(.gpu)
+        i.rowEntered(.memory)
+        clock.advance(.milliseconds(50))
+        i.rowExited(.memory)
+        i.flyoutHover(true)                             // made it: no switch, no close
+        clock.advance(.seconds(1))
+        #expect(rec.events == ["show cpu"] && i.shown == .cpu)
+        i.flyoutHover(false)
+        i.rowEntered(.gpu)                              // resting on a row while aiming: switches after 100 ms
+        clock.advance(.milliseconds(100))
+        #expect(rec.events == ["show cpu", "show gpu"])
+        aiming = false
+        i.rowExited(.gpu)
+        i.rowEntered(.cpu)                              // not aiming: immediate
+        #expect(rec.events == ["show cpu", "show gpu", "show cpu"])
+    }
+
+    /// Popover closed while the pointer was in the flyout: the next flyout still closes on exit.
+    @Test func dismissWhileInFlyoutThenReopenClosesOnExit() {
+        let clock = FakeClock(), rec = Recorder(), i = Self.intent(clock, rec)
+        i.rowEntered(.cpu)
+        clock.advance(.milliseconds(250))
+        i.rowExited(.cpu)
+        i.flyoutHover(true)
+        i.dismiss()
+        i.rowEntered(.gpu)
+        clock.advance(.milliseconds(250))
+        i.rowExited(.gpu)
+        clock.advance(.milliseconds(200))
+        #expect(rec.events == ["show cpu", "hide", "show gpu", "hide"] && i.shown == nil)
+    }
+
+    /// A stale "inside" from a hidden panel is ignored.
+    @Test func flyoutHoverWhileHiddenIsIgnored() {
+        let clock = FakeClock(), rec = Recorder(), i = Self.intent(clock, rec)
+        i.flyoutHover(true)
+        #expect(rec.events.isEmpty)
+        i.rowEntered(.cpu)
+        clock.advance(.milliseconds(250))
+        i.rowExited(.cpu)
+        clock.advance(.milliseconds(200))
+        #expect(rec.events == ["show cpu", "hide"])
     }
 
     // MARK: Snapshots

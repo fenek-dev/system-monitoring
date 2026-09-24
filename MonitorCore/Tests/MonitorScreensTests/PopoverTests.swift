@@ -228,6 +228,7 @@ struct PopoverTests {
             FlyoutView(category: .cpu).offset(x: 20, y: 34 + 53.5)
             PopoverContainer { PopoverRoot() }.offset(x: 20 + FlyoutView.width + 6, y: 34)
         }
+        .environment(FlyoutState(shown: .cpu))          // the source row keeps its hover fill
         .frame(width: 740, height: 580, alignment: .topLeading)
         .screenEnvironment(.calm)
         assertSnapshot(view, size: CGSize(width: 740, height: 580), named: "popover-flyout-calm")

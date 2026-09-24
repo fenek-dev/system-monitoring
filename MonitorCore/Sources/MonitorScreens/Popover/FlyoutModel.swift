@@ -2,6 +2,7 @@ import Foundation
 import MonitorLive
 import MonitorModel
 import MonitorUIKit
+import Observation
 
 /// One app line of the popover's top-apps flyout (DESIGN §2.22 "Flyout").
 public struct FlyoutLine: Equatable, Sendable {
@@ -40,7 +41,8 @@ enum FlyoutModel {
         TTPopoverRow.format(v, category, units: units)
     }
 
-    /// "Top CPU · 34% total"; Thermals' headline is a temperature, so no "total"; nil total → "Top CPU".
+    /// Ruling: "Top CPU · 37% of system" (CPU, GPU), "Top Disk · 205 MB/s I/O", "Top Thermals · 61°C" (a
+    /// temperature is no total), else "Top Memory · 15.1 GB total"; nil total → "Top CPU".
     nonisolated static func header(_ category: MonitorModel.Category, total: String?) -> String {
         let title = headerTitle(category)
         guard let detail = headerDetail(category, total: total) else { return title }
@@ -51,7 +53,42 @@ enum FlyoutModel {
 
     nonisolated static func headerDetail(_ category: MonitorModel.Category, total: String?) -> String? {
         guard let total else { return nil }
-        return category == .thermals ? total : "\(total) total"
+        switch category {
+        case .cpu, .gpu: return "\(total) of system"
+        case .disk: return "\(total) I/O"
+        case .thermals: return total
+        case .memory, .network, .power: return "\(total) total"
+        }
+    }
+
+    /// Caption under the header (only with lines): CPU app values are per core, Thermals ranks by power.
+    nonisolated static func caption(_ category: MonitorModel.Category) -> String? {
+        switch category {
+        case .cpu: "% of one core"
+        case .thermals: "by power"
+        default: nil
+        }
+    }
+
+    /// Ruling: while the pointer is in the flyout the row order is frozen. Lines of `previous` still in `ranking`
+    /// keep their order with fresh values and shares; apps new to the top `limit` are appended; capped at `limit`.
+    /// `ranking` is the full, unlimited ranking.
+    nonisolated static func frozen(previous: [FlyoutLine], ranking: [FlyoutLine],
+                                   limit: Int = FlyoutModel.limit) -> [FlyoutLine] {
+        let fresh = Dictionary(ranking.map { ($0.identity.key, $0) }, uniquingKeysWith: { a, _ in a })
+        var out = previous.compactMap { fresh[$0.identity.key] }
+        let kept = Set(out.map(\.identity.key))
+        out += ranking.prefix(max(limit, 0)).filter { !kept.contains($0.identity.key) }
+        return Array(out.prefix(max(limit, 0)))
+    }
+
+    /// VoiceOver announcement after the flyout shows: header plus the top 3 lines.
+    nonisolated static func announcement(_ category: MonitorModel.Category, total: String?, lines: [FlyoutLine],
+                                         units: UnitPreferences) -> String {
+        var parts = [header(category, total: total)]
+        if lines.isEmpty { parts.append("No app activity") }
+        parts += lines.prefix(3).map { "\($0.name), \(format($0.value, category, units: units))" }
+        return parts.joined(separator: ". ")
     }
 
     /// The system value the header shows: the popover row's headline for CPU, GPU, Memory, Power and Thermals;
@@ -74,23 +111,55 @@ enum FlyoutModel {
 
 /// Per-`appsVersion` ranking cache for `FlyoutView`: the body reads it every render, the sort runs once per apps
 /// update (and category switch). Reading `live.appsVersion` registers the observation that re-renders each tick.
+/// Not `live.topApps`: that cache drops `.other` before ranking, but the share needs Σ over all apps, and the
+/// freeze needs the full ranking with values.
 @MainActor
 final class FlyoutLinesCache {
     private struct Key: Equatable {
         var version: Int
         var category: MonitorModel.Category
+        var frozen: Bool
     }
 
     private var key: Key?
     private var cached: [FlyoutLine] = []
     private(set) var computations = 0
 
-    func lines(live: LiveModel, category: MonitorModel.Category) -> [FlyoutLine] {
-        let k = Key(version: live.appsVersion, category: category)
+    /// `frozen`: the pointer is in the flyout → keep the displayed order (`FlyoutModel.frozen`).
+    func lines(live: LiveModel, category: MonitorModel.Category, frozen: Bool = false) -> [FlyoutLine] {
+        let k = Key(version: live.appsVersion, category: category, frozen: frozen)
         if k == key { return cached }
-        cached = FlyoutModel.lines(apps: live.apps, category: category)
+        let sameCategory = key?.category == category
+        if frozen && sameCategory {
+            let ranking = FlyoutModel.lines(apps: live.apps, category: category, limit: .max)
+            cached = FlyoutModel.frozen(previous: cached, ranking: ranking)
+        } else {
+            cached = FlyoutModel.lines(apps: live.apps, category: category)
+        }
         key = k
         computations += 1
         return cached
     }
+}
+
+/// Which row's flyout is shown (the App sets it); the popover row keeps `fillHover` while it is.
+@MainActor @Observable
+public final class FlyoutState {
+    public var shown: MonitorModel.Category?
+
+    public init(shown: MonitorModel.Category? = nil) {
+        self.shown = shown
+    }
+}
+
+/// The pointer over the flyout, fed by the App's AppKit tracking area (SwiftUI hover is unreliable in a never-key
+/// panel). `location` is in `FlyoutPointer.space` (the flyout's root); `inside` changes only on enter/exit so the
+/// flyout body (row-order freeze) does not re-render on every move.
+@MainActor @Observable
+public final class FlyoutPointer {
+    public static let space = "flyout"
+    public var location: CGPoint?
+    public var inside = false
+
+    public init() {}
 }
