@@ -121,6 +121,15 @@ import Testing
             return true
         }
         #expect(AppIconCache.isGeneric(blank))
+        // White-heavy real icon: white squircle with a colored glyph (~85 % white) is kept.
+        let whiteHeavy = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { r in
+            NSColor.white.setFill()
+            r.fill()
+            NSColor.systemBlue.setFill()
+            NSRect(x: 5, y: 5, width: 6, height: 6).fill()
+            return true
+        }
+        #expect(!AppIconCache.isGeneric(whiteHeavy))
     }
 
     @Test func chartSummary() {

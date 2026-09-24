@@ -45,7 +45,7 @@ private struct StatusIconsArtboard: View {
                         Text("2:32 PM").font(TTFont.body12).foregroundStyle(TTColor.textSecondary)
                     }
                     .padding(.horizontal, 10)
-                    .frame(height: 26)
+                    .frame(height: 28) // CSS content-box: 26 + 1-pt border each side
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 28 / 255, green: 28 / 255, blue: 32 / 255, opacity: 0.92)))
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(TTColor.borderCard))
                     Text(title).font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary)
