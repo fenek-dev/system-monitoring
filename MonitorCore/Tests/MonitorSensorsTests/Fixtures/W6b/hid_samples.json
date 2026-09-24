@@ -1,0 +1,254 @@
+[
+  {
+    "celsius" : 59.152008056640625,
+    "name" : "PMU tdie8"
+  },
+  {
+    "celsius" : 50.991943359375,
+    "name" : "PMU tdev1"
+  },
+  {
+    "celsius" : 59.59600830078125,
+    "name" : "PMU tdie2"
+  },
+  {
+    "celsius" : 60.39520263671875,
+    "name" : "PMU TP3g"
+  },
+  {
+    "celsius" : 36.65766906738281,
+    "name" : "PMU tdev4"
+  },
+  {
+    "celsius" : 53.79840087890625,
+    "name" : "PMU tdev6"
+  },
+  {
+    "celsius" : 58.39424133300781,
+    "name" : "PMU tdev7"
+  },
+  {
+    "celsius" : 35,
+    "name" : "gas gauge battery"
+  },
+  {
+    "celsius" : 57.826934814453125,
+    "name" : "PMU tdev7"
+  },
+  {
+    "celsius" : 58.79681396484375,
+    "name" : "PMU tdie2"
+  },
+  {
+    "celsius" : 35.5,
+    "name" : "gas gauge battery"
+  },
+  {
+    "celsius" : 58.79681396484375,
+    "name" : "PMU tdie2"
+  },
+  {
+    "celsius" : 59.684814453125,
+    "name" : "PMU tdie2"
+  },
+  {
+    "celsius" : 59.5072021484375,
+    "name" : "PMU tdie6"
+  },
+  {
+    "celsius" : 58.97441101074219,
+    "name" : "PMU tdie5"
+  },
+  {
+    "celsius" : 58.53041076660156,
+    "name" : "PMU TP1s"
+  },
+  {
+    "celsius" : 59.32960510253906,
+    "name" : "PMU tdie8"
+  },
+  {
+    "celsius" : 51.37904357910156,
+    "name" : "PMU tdev1"
+  },
+  {
+    "celsius" : 58.44160461425781,
+    "name" : "PMU TP0s"
+  },
+  {
+    "celsius" : 60.39520263671875,
+    "name" : "PMU TP1g"
+  },
+  {
+    "celsius" : 60.128814697265625,
+    "name" : "PMU TP1g"
+  },
+  {
+    "celsius" : 57.44232177734375,
+    "name" : "PMU tdev2"
+  },
+  {
+    "celsius" : 63.73255920410156,
+    "name" : "PMU tdev3"
+  },
+  {
+    "celsius" : 40.423919677734375,
+    "name" : "PMU tdev5"
+  },
+  {
+    "celsius" : 39.081085205078125,
+    "name" : "PMU tdev5"
+  },
+  {
+    "celsius" : 35.5,
+    "name" : "gas gauge battery"
+  },
+  {
+    "celsius" : 61.37200927734375,
+    "name" : "PMU tdie4"
+  },
+  {
+    "celsius" : 57.375,
+    "name" : "PMU tdev8"
+  },
+  {
+    "celsius" : 35.5,
+    "name" : "gas gauge battery"
+  },
+  {
+    "celsius" : 58.53041076660156,
+    "name" : "PMU tdie1"
+  },
+  {
+    "celsius" : 59.86241149902344,
+    "name" : "PMU tdie10"
+  },
+  {
+    "celsius" : 59.77360534667969,
+    "name" : "PMU tdie0"
+  },
+  {
+    "celsius" : 58.79681396484375,
+    "name" : "PMU tdie5"
+  },
+  {
+    "celsius" : 59.41841125488281,
+    "name" : "PMU tdie3"
+  },
+  {
+    "celsius" : 51.850006103515625,
+    "name" : "PMU tcal"
+  },
+  {
+    "celsius" : 59.77360534667969,
+    "name" : "PMU tdie0"
+  },
+  {
+    "celsius" : 59.240814208984375,
+    "name" : "PMU tdie6"
+  },
+  {
+    "celsius" : 60.839202880859375,
+    "name" : "PMU TP3g"
+  },
+  {
+    "celsius" : 59.32960510253906,
+    "name" : "PMU tdie9"
+  },
+  {
+    "celsius" : 58.352813720703125,
+    "name" : "PMU TP2s"
+  },
+  {
+    "celsius" : 58.346160888671875,
+    "name" : "PMU tdev2"
+  },
+  {
+    "celsius" : 59.684814453125,
+    "name" : "PMU tdie7"
+  },
+  {
+    "celsius" : 58.264007568359375,
+    "name" : "PMU TP1s"
+  },
+  {
+    "celsius" : 51.850006103515625,
+    "name" : "PMU tcal"
+  },
+  {
+    "celsius" : 60.040008544921875,
+    "name" : "PMU TP2g"
+  },
+  {
+    "celsius" : 59.02885437011719,
+    "name" : "PMU tdev8"
+  },
+  {
+    "celsius" : 62.372100830078125,
+    "name" : "PMU tdev3"
+  },
+  {
+    "celsius" : 59.5072021484375,
+    "name" : "PMU tdie3"
+  },
+  {
+    "celsius" : 53.28227233886719,
+    "name" : "PMU tdev6"
+  },
+  {
+    "celsius" : 35,
+    "name" : "gas gauge battery"
+  },
+  {
+    "celsius" : 40,
+    "name" : "NAND CH0 temp"
+  },
+  {
+    "celsius" : 59.063201904296875,
+    "name" : "PMU tdie9"
+  },
+  {
+    "celsius" : 58.7080078125,
+    "name" : "PMU tdie1"
+  },
+  {
+    "celsius" : 35.19999694824219,
+    "name" : "gas gauge battery"
+  },
+  {
+    "celsius" : 60.57281494140625,
+    "name" : "PMU tdie1"
+  },
+  {
+    "celsius" : 58.352813720703125,
+    "name" : "PMU TP0s"
+  },
+  {
+    "celsius" : 61.54960632324219,
+    "name" : "PMU tdie4"
+  },
+  {
+    "celsius" : 60.040008544921875,
+    "name" : "PMU TP2g"
+  },
+  {
+    "celsius" : 60.4840087890625,
+    "name" : "PMU tdie1"
+  },
+  {
+    "celsius" : 60.30641174316406,
+    "name" : "PMU tdie7"
+  },
+  {
+    "celsius" : 59.951202392578125,
+    "name" : "PMU tdie10"
+  },
+  {
+    "celsius" : 36.445953369140625,
+    "name" : "PMU tdev4"
+  },
+  {
+    "celsius" : 58.53041076660156,
+    "name" : "PMU TP2s"
+  }
+]

@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import os
+import Testing
 
 /// W6b fixtures: `Tests/MonitorSensorsTests/Fixtures/W6b/`. Read from the test bundle; written (capture mode,
 /// `TELLTALE_W6B_CAPTURE=1`) to the source tree so they can be committed.
@@ -67,6 +68,50 @@ enum W6bFixture {
     }
 
     static func sleep(_ seconds: Double) { Thread.sleep(forTimeInterval: seconds) }
+}
+
+/// Serializes W6b hardware tests ACROSS suites: Swift Testing runs suites in parallel, and a Metal/`yes` load in
+/// one suite corrupts another suite's idle baseline. Apply as `@Suite(..., .w6bExclusive)`.
+struct W6bExclusiveTrait: SuiteTrait, TestTrait, TestScoping {
+    var isRecursive: Bool { true }
+
+    func scopeProvider(for test: Test, testCase: Test.Case?) -> Self? {
+        test.isSuite ? nil : self            // one scope per test function, none for the suite itself
+    }
+
+    func provideScope(for test: Test, testCase: Test.Case?,
+                      performing function: @Sendable () async throws -> Void) async throws {
+        // Reentrant: the trait can be applied to a test both directly and via the recursive suite trait.
+        if W6bLoadGate.holding { return try await function() }
+        await W6bLoadGate.shared.acquire()
+        do {
+            try await W6bLoadGate.$holding.withValue(true) { try await function() }
+        } catch {
+            await W6bLoadGate.shared.release()
+            throw error
+        }
+        await W6bLoadGate.shared.release()
+    }
+}
+
+extension Trait where Self == W6bExclusiveTrait {
+    static var w6bExclusive: Self { Self() }
+}
+
+actor W6bLoadGate {
+    static let shared = W6bLoadGate()
+    @TaskLocal static var holding = false
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !busy { busy = true; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
+    }
 }
 
 /// In-process Metal compute busy loop (same kernel as `spike-gpu-apps --load`). Runs until `stop()`.
