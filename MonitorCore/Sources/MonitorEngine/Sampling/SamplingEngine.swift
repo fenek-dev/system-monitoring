@@ -37,7 +37,9 @@ public actor SamplingEngine {
     private var paused = false
     private var sleeping = false
     private var forceSample = true
-    private var lastTickNs: UInt64?
+    /// Next scheduled tick on the uptime grid (deadline-based: no drift; overruns skip to the next slot).
+    private var nextDeadlineNs: UInt64?
+    private var stopped = false
     private var loop: Task<Void, Never>?
     private var sleeper: Task<Void, Never>?
     private var pauseEvent: HistoryEvent?
@@ -69,22 +71,33 @@ public actor SamplingEngine {
 
     // MARK: - Lifecycle
 
+    /// No-op when already running or after `stop()` (the streams are finished then).
     public func start() {
-        guard loop == nil else { return }
+        guard loop == nil, !stopped else { return }
         loop = Task { await self.run() }
     }
 
-    /// Stops the loop, closes open episodes into a last record batch and finishes both streams.
+    /// Stops the loop (if running), closes open episodes and pause/sleep markers into a last record batch,
+    /// invalidates the sensors and finishes both streams. Final: a later `start()` does nothing.
     public func stop() async {
-        guard let loop else { return }
-        loop.cancel()
-        sleeper?.cancel()
-        await loop.value
-        self.loop = nil
+        guard !stopped else { return }
+        stopped = true
+        if let loop {
+            loop.cancel()
+            sleeper?.cancel()
+            await loop.value
+            self.loop = nil
+        }
         let now = Date()
         var closing = episodes.flush(at: now)
         _ = alerts.setPaused(true, at: now)
         closing += alerts.drainPendingEvents()
+        for var marker in [pauseEvent, sleepEvent].compactMap({ $0 }) {
+            marker.end = now
+            closing.append(marker)
+        }
+        pauseEvent = nil
+        sleepEvent = nil
         if !closing.isEmpty { recordContinuation.yield(RecordBatch(events: closing)) }
         slots?.invalidateAll()
         frameContinuation.finish()
@@ -186,22 +199,26 @@ public actor SamplingEngine {
         while !Task.isCancelled {
             let mode = currentMode
             var sleepFor = Duration.seconds(3_600)
-            if let interval = interval(mode) {
+            var tolerance = sleepFor / 10
+            if let interval = interval(mode), let intervalNs = SensorSlot<Int>.ns(interval), intervalNs > 0 {
                 let now = Self.uptimeNs()
-                let intervalNs = UInt64(interval.components.seconds) * 1_000_000_000
-                    + UInt64(interval.components.attoseconds / 1_000_000_000)
-                let due = forceSample || lastTickNs.map { now >= $0 + intervalNs } ?? true
-                if due {
+                if forceSample || nextDeadlineNs.map({ now >= $0 }) ?? true {
+                    // Grid origin: the missed deadline (keeps the cadence), or now when forced / first.
+                    let base = forceSample ? now : (nextDeadlineNs ?? now)
                     forceSample = false
                     let (_, frame, record) = takeSample(mode: mode)
                     frameContinuation.yield(frame)
                     recordContinuation.yield(record)
-                    sleepFor = interval
-                } else if let last = lastTickNs {
-                    sleepFor = .nanoseconds(Int64(last + intervalNs - now))
+                    let after = Self.uptimeNs()
+                    var next = base + intervalNs
+                    if next <= after { next += ((after - next) / intervalNs + 1) * intervalNs }   // overrun: next slot
+                    nextDeadlineNs = next
                 }
+                let wake = Self.uptimeNs()
+                let target = nextDeadlineNs ?? wake
+                sleepFor = .nanoseconds(Int64(target > wake ? target - wake : 0))
+                tolerance = interval / 10
             }
-            let tolerance = sleepFor / 10
             let t = Task { _ = try? await Task.sleep(for: sleepFor, tolerance: tolerance, clock: .continuous) }
             sleeper = t
             await t.value
@@ -216,7 +233,6 @@ public actor SamplingEngine {
         if assembler == nil { assembler = FrameAssembler(resolver: makeResolver()) }
 
         let now = Self.uptimeNs()
-        lastTickNs = now
         let wall = Date()
         var demand = visibility.demand
         if (alerts.state.arcs[.memory] ?? .calm) >= .elevated { demand.insert(.memoryAlert) }
@@ -227,7 +243,7 @@ public actor SamplingEngine {
         var frame = assembler!.assemble(tick, inspectedApp: inspected)
         let (state, alertEvents) = alerts.update(thermal: frame.thermals.pressure, memory: frame.memory.pressureLevel,
                                                  apps: frame.apps, at: wall, uptimeNs: now,
-                                                 nominalInterval: mode.interval)
+                                                 nominalInterval: interval(mode))
         frame.alert = state
         frame.events = alertEvents + episodes.update(frame)
         let record = RecordBatch(record: recordBuilder.record(from: frame), events: frame.events)
@@ -236,7 +252,7 @@ public actor SamplingEngine {
 
     private func resetBaselines() {
         assembler?.reset()
-        lastTickNs = nil
+        nextDeadlineNs = nil
     }
 
     static func uptimeNs() -> UInt64 { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
@@ -286,12 +302,12 @@ struct Slots {
         battery = SensorSlot(s.battery, canary: canary)
         sleepAssertions = SensorSlot(s.sleepAssertions, canary: canary)
         device = SensorSlot(s.device, canary: canary)
+        all = [processes, coalitions, rootMemory, hostCPU, memory, soc, gpuClients, temperatures, smc, thermalState,
+               networkFlows, interfaces, wifi, latency, diskIO, volumes, smart, battery, sleepAssertions, device]
     }
 
-    var all: [any AnySensorSlot] {
-        [processes, coalitions, rootMemory, hostCPU, memory, soc, gpuClients, temperatures, smc, thermalState,
-         networkFlows, interfaces, wifi, latency, diskIO, volumes, smart, battery, sleepAssertions, device]
-    }
+    /// Every slot, built once.
+    let all: [any AnySensorSlot]
 
     func sample(_ ctx: SampleContext) -> RawTick {
         var t = RawTick(wallTime: ctx.wallTime, uptimeNs: ctx.uptimeNs, mode: ctx.mode, demand: ctx.demand)

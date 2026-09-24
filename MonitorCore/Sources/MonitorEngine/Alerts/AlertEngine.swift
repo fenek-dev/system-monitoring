@@ -170,7 +170,7 @@ public struct AlertEngine: Sendable {
             t.since = now
             t.eventID = UUID()
             t.peakLevel = t.level
-            t.peakRaw = raw.map(Double.init)
+            t.peakRaw = raw.map { Double($0) }
             events.append(event(t, kind: kind, end: nil))
         } else if t.level > .calm {
             if let raw { t.peakRaw = max(t.peakRaw ?? Double(raw), Double(raw)) }

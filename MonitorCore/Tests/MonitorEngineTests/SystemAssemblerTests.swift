@@ -145,6 +145,31 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         #expect(s.latency == latency)
     }
 
+    @Test func networkTotalsUsePrimaryInterfaceOnly() {
+        var sa = SystemAssembler()
+        func r(_ k: UInt64, primary: Bool) -> InterfacesReading {
+            InterfacesReading(interfaces: [
+                InterfaceCounter(bsdName: "en0", kind: .wifi, isUp: true, isPrimary: primary, rxBytes: k * 1_000, txBytes: k * 100),
+                InterfaceCounter(bsdName: "utun3", isUp: true, rxBytes: k * 1_000, txBytes: k * 100),     // VPN over en0
+                InterfaceCounter(bsdName: "bridge0", kind: .thunderbolt, isUp: true, rxBytes: k * 50, txBytes: 0),
+            ])
+        }
+        _ = assemble(&sa, RawTick(uptimeNs: sec, interfaces: fresh(r(1, primary: true), sec)))
+        let s = assemble(&sa, RawTick(uptimeNs: 2 * sec, interfaces: fresh(r(2, primary: true), 2 * sec))).network
+        #expect(s.rxBps == 1_000 && s.txBps == 100)                 // not 2 050 / 200
+        var noPrimary = SystemAssembler()
+        _ = assemble(&noPrimary, RawTick(uptimeNs: sec, interfaces: fresh(r(1, primary: false), sec)))
+        let f = assemble(&noPrimary, RawTick(uptimeNs: 2 * sec, interfaces: fresh(r(2, primary: false), 2 * sec))).network
+        #expect(f.rxBps == 2_050)                                   // fallback: sum of up, non-loopback
+    }
+
+    @Test(.disabled("waiting for W6d: BlockDriverCounter.isDiskImage (ICR); flip countsTowardDiskTotals then"))
+    func diskImageDriversAreExcludedFromTotals() {
+        // With a disk image mounted, its driver (disk4, isDiskImage) and the physical disk both report the I/O;
+        // totals must count the physical disk only.
+        #expect(SystemAssembler.countsTowardDiskTotals(BlockDriverCounter(bsdName: "disk4")) == false)
+    }
+
     // MARK: Thermals
 
     @Test func thermalGroupsFromSMCAndRawListOnlyOnDemand() throws {
