@@ -36,14 +36,13 @@ enum NetworkFFI {
         return bytes
     }
 
-    /// Replaces the (32-bit-truncated) IFLIST2 byte counters of `raw` with IFMIB 64-bit ones where available.
-    static func overlay64BitCounters(_ raw: inout [RawInterface]) {
-        for i in raw.indices {
-            guard let b = ifmibBytes(index: raw[i].index), let c = b.withUnsafeBytes({ InterfaceParse.ifmib($0) }) else { continue }
-            raw[i].rxBytes = c.rx
-            raw[i].txBytes = c.tx
-            raw[i].baudRate = c.baudRate
+    /// IFMIB 64-bit counters for each row's index (missing on failure).
+    static func ifmibCounters(_ rows: [RawInterface]) -> [UInt16: IFCounters] {
+        var out: [UInt16: IFCounters] = [:]
+        for r in rows {
+            if let b = ifmibBytes(index: r.index), let c = b.withUnsafeBytes({ InterfaceParse.ifmib($0) }) { out[r.index] = c }
         }
+        return out
     }
 
     /// `NET_RT_FLAGS` + `RTF_GATEWAY`, IPv4 only.

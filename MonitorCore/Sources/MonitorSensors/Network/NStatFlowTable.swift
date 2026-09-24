@@ -37,8 +37,27 @@ struct NStatFlowTable: Sendable {
         sources[id] = Source()
     }
 
-    /// Applies a description/counts callback. Unknown (already removed) ids are ignored.
-    mutating func update(_ id: UInt64, with s: NStatSourceSample, startTime: (Int32) -> UInt64?) {
+    /// True when `update` for this source would call its `startTime` lookup (pid not resolved, not cached).
+    func needsStartTime(_ id: UInt64, uniquePID: UInt64?) -> Bool {
+        guard let src = sources[id], src.process == nil else { return false }
+        guard let u = uniquePID else { return true }
+        return startTimes[u] == nil
+    }
+
+    /// Closed-bytes keys with no live flow: the processes `prune` will ask about.
+    func pruneCandidates() -> [ProcessID] {
+        let live = Set(sources.values.compactMap(\.process))
+        return closed.keys.filter { !live.contains($0) }
+    }
+
+    /// Interface indexes referenced by live endpoints.
+    func interfaceIndexes() -> Set<UInt32> {
+        Set(sources.values.compactMap { $0.endpoints?.interfaceIndex })
+    }
+
+    /// Applies a description/counts callback. Unknown (already removed) ids are ignored. `startTime(pid, uniquePID)`
+    /// returns the process start time (µs), nil if unknown.
+    mutating func update(_ id: UInt64, with s: NStatSourceSample, startTime: (Int32, UInt64?) -> UInt64?) {
         guard var src = sources[id] else { return }
         if src.process == nil, let pid = s.pid {
             src.uniquePID = s.uniquePID
@@ -107,10 +126,10 @@ struct NStatFlowTable: Sendable {
         startTimes = startTimes.filter { liveUniques.contains($0.key) }
     }
 
-    private mutating func resolveStart(pid: Int32, uniquePID: UInt64?, _ lookup: (Int32) -> UInt64?) -> UInt64 {
-        guard let u = uniquePID, u != 0 else { return lookup(pid) ?? 0 }
+    private mutating func resolveStart(pid: Int32, uniquePID: UInt64?, _ lookup: (Int32, UInt64?) -> UInt64?) -> UInt64 {
+        guard let u = uniquePID, u != 0 else { return lookup(pid, nil) ?? 0 }
         if let cached = startTimes[u] { return cached }
-        let v = lookup(pid) ?? 0
+        let v = lookup(pid, u) ?? 0
         startTimes[u] = v
         return v
     }

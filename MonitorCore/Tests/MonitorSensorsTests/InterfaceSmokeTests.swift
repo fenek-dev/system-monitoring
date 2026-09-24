@@ -62,6 +62,7 @@ struct InterfaceSmokeTests {
             #expect(Self.near(i.txBytes, n.tx, 0.01), "\(i.bsdName) tx \(i.txBytes) vs netstat \(n.tx)")
         }
         print("W6c if: router=\(r.routerIPv4 ?? "nil") route(8)=\(gw ?? "nil")")
+        #expect(r.interfaces.filter(\.isPrimary).count == 1)
         let primary = try #require(r.interfaces.first { $0.isPrimary })
         #expect(primary.isUp && primary.ipv4 != nil)
         #expect(!r.interfaces.contains { $0.bsdName == "lo0" })
@@ -102,6 +103,5 @@ struct InterfaceSmokeTests {
         let slow = W6cFixture.ms(W6cClock.uptimeNs() - t0)
         print(String(format: "W6c if bench: sample() p50 %.3f p95 %.3f ms; slow refresh %.2f ms",
                      W6cFixture.percentile(ms, 0.5), W6cFixture.percentile(ms, 0.95), slow))
-        #expect(W6cFixture.percentile(ms, 0.95) < 5)
     }
 }

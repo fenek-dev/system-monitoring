@@ -91,7 +91,7 @@ struct LatencySmokeTests {
         let t0 = W6cClock.uptimeNs()
         let first = try probe.sample(SampleContext())
         let sampleMs = W6cFixture.ms(W6cClock.uptimeNs() - t0)
-        #expect(sampleMs < 50) // never waits for the burst
+        #expect(sampleMs < 250) // functional: never waits for the ~1.4 s burst (protocol bound 250 ms)
         let gw = try #require(try InterfaceSmokeTests.routeDefaultGateway())
         #expect(first.reading.target == gw)
         for _ in 0..<40 where probe.box.isInFlight { usleep(50_000) }

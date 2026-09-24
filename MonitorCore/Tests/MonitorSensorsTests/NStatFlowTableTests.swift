@@ -16,7 +16,7 @@ import Testing
     final class Starts {
         var map: [Int32: UInt64] = [100: 5_000]
         var calls = 0
-        func lookup(_ pid: Int32) -> UInt64? {
+        func lookup(_ pid: Int32, _ uniquePID: UInt64?) -> UInt64? {
             calls += 1
             return map[pid]
         }
@@ -112,7 +112,7 @@ import Testing
     @Test func unknownStartTimeIsPidZero() {
         var t = NStatFlowTable()
         t.add(1)
-        t.update(1, with: Self.s(pid: 777, upid: 55, rx: 5, tx: 5)) { _ in nil }
+        t.update(1, with: Self.s(pid: 777, upid: 55, rx: 5, tx: 5)) { _, _ in nil }
         t.remove(1)
         #expect(t.reading(endpoints: false) { _ in nil }.closedBytes[ProcessID(pid: 777, startTimeUs: 0)] == ByteCounts(rx: 5, tx: 5))
     }
@@ -143,6 +143,24 @@ import Testing
         #expect(t.unresolvedCount == 0)
         let f = t.reading(endpoints: false) { _ in nil }.flows
         #expect(f.count == 1 && f[0].rxBytes == 600 && f[0].process.pid == 100)
+    }
+
+    @Test func helperQueriesForTheBox() {
+        var t = NStatFlowTable()
+        let st = Starts()
+        t.add(1)
+        #expect(t.needsStartTime(1, uniquePID: 1))
+        #expect(!t.needsStartTime(9, uniquePID: 1)) // unknown source
+        t.update(1, with: Self.s(rx: 1, tx: 1, endpoints: NStatEndpoints(interfaceIndex: 11)), startTime: st.lookup)
+        #expect(!t.needsStartTime(1, uniquePID: 1)) // resolved
+        t.add(2)
+        #expect(!t.needsStartTime(2, uniquePID: 1)) // uniqueProcessID cached
+        #expect(t.needsStartTime(2, uniquePID: nil))
+        #expect(t.interfaceIndexes() == [11])
+        t.remove(1)
+        #expect(t.pruneCandidates() == [ProcessID(pid: 100, startTimeUs: 5_000)])
+        t.update(2, with: Self.s(rx: 1, tx: 1), startTime: st.lookup)
+        #expect(t.pruneCandidates().isEmpty) // process has a live flow again
     }
 
     @Test func effectivePIDOnlyWhenDelegated() {
