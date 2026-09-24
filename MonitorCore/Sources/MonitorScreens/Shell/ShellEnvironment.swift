@@ -16,14 +16,20 @@ public struct ShellContext {
     public var appCommands: AppCommands
     public var isSnapshot: Bool
     public var now: Date?
+    /// Observed by the environment: a window built before the store finished opening updates when it resolves.
+    public var historyStatus: HistoryStatus
     /// False when the store fell back to memory (open failure) → History shows "History unavailable" (§6.6).
-    public var historyPersistent: Bool
+    /// Setting it gives this context its own status (copies of a context don't share the change).
+    public var historyPersistent: Bool {
+        get { historyStatus.persistent }
+        set { historyStatus = HistoryStatus(persistent: newValue) }
+    }
 
     public init(live: LiveModel, navigation: NavigationModel = NavigationModel(), settings: SettingsStore,
                 history: any HistoryProvider = EmptyHistoryProvider(), processActions: ProcessActions = .noop,
                 appCommands: AppCommands = .noop, isSnapshot: Bool = false, now: Date? = nil,
-                historyPersistent: Bool = true) {
-        self.historyPersistent = historyPersistent
+                historyStatus: HistoryStatus = HistoryStatus()) {
+        self.historyStatus = historyStatus
         self.live = live
         self.navigation = navigation
         self.settings = settings
@@ -32,6 +38,22 @@ public struct ShellContext {
         self.appCommands = appCommands
         self.isSnapshot = isSnapshot
         self.now = now
+    }
+}
+
+/// Whether history is stored on disk this launch. The live store opens in the background, so this starts true
+/// (the runtime's value until the open finishes) and `resolve` publishes the final value once it is known.
+@MainActor @Observable public final class HistoryStatus {
+    public var persistent: Bool
+
+    public init(persistent: Bool = true) {
+        self.persistent = persistent
+    }
+
+    /// Awaits `ready` (e.g. `runtime.historyReady()` then `runtime.historyPersistent`) without blocking the
+    /// MainActor, then publishes it; views built earlier pick it up through observation.
+    public func resolve(_ ready: () async -> Bool) async {
+        persistent = await ready()
     }
 }
 
@@ -66,7 +88,7 @@ private struct ShellEnvironmentModifier: ViewModifier {
             .environment(\.appCommands, context.appCommands)
             .environment(\.isSnapshot, context.isSnapshot)
             .environment(\.now, context.now)
-            .environment(\.historyPersistent, context.historyPersistent)
+            .environment(\.historyPersistent, context.historyStatus.persistent)      // observed: follows resolve
             .preferredColorScheme(.dark)
             .environment(\.colorScheme, .dark)
         if context.isSnapshot {
