@@ -66,6 +66,7 @@ struct ProcessListTable: View {
                 }
             }
         }
+        .clipped()
     }
 
     private func header(nameWidth: CGFloat) -> some View {

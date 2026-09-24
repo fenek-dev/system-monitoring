@@ -77,9 +77,9 @@ public struct HistoryPage: View {
         nav.historyScrub = model.isAtLatest ? nil : model.cursorTime
     }
 
+    /// Treemap click: Processes with the app selected and its detail expanded (DESIGN §2.28).
     private func openApp(_ key: AppKey) {
-        nav.selection = .app(key)
-        nav.page = .processes
+        nav.inspect(key)
     }
 
     private func export() {

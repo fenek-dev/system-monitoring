@@ -86,8 +86,11 @@ public struct ProcessesPage: View {
                 refresh()
                 detailExpanded = detailOnAppear ?? (nav.selection != nil)
                 if expandOnAppear, case .app(let key)? = nav.selection { table.setExpanded(key, true) }
+                publishInspectedApp()
             }
         }
+        .onDisappear { nav.inspectedApp = nil }
+        .onChange(of: detailExpanded) { publishInspectedApp() }
         .onChange(of: live.appsVersion) { refresh() }
         .onChange(of: live.sensorHealth) { refresh() }
         .onChange(of: nav.processesMode) { refresh() }
@@ -204,6 +207,13 @@ public struct ProcessesPage: View {
 
     private func recordSelection() {
         inspector.record(table.row(for: nav.selection), at: live.lastUpdate)
+        publishInspectedApp()
+    }
+
+    /// ICR-10: connections are sampled only for the expanded inspector's app (process selection → its app).
+    private func publishInspectedApp() {
+        let key = ProcessTableModel.inspectedApp(row: table.row(for: nav.selection), detailExpanded: detailExpanded)
+        if nav.inspectedApp != key { nav.inspectedApp = key }
     }
 
     private func toggleDetail() { detailExpanded.toggle() }

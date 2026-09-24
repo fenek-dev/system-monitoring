@@ -37,6 +37,36 @@ struct ProcessesSnapshotTests {
                        size: ScreenSize.dashboard, named: "processes-restricted-expanded")
     }
 
+    /// App detail with a populated "Live connections" table (flows injected into the next frame).
+    @Test func appDetailWithConnections() {
+        let ctx = ScreenFixture.context(.calm, page: .processes)
+        let provider = MockDataProvider(scenario: .calm)
+        var frame = provider.frame(at: 61)
+        if let safari = frame.apps.first(where: { $0.identity.displayName == "Safari" }),
+           let pid = frame.processes.first(where: { $0.app == safari.identity.key })?.id {
+            let hosts: [(String?, String, UInt16, TransportProtocol, Double, Double)] = [
+                ("www.apple.com", "17.253.144.10", 443, .tcp, 1_840_000, 42_000),
+                ("i.ytimg.com", "142.250.180.22", 443, .quic, 612_000, 9_800),
+                (nil, "104.18.32.47", 443, .tcp, 96_000, 3_100),
+                ("ocsp2.apple.com", "17.253.53.207", 80, .tcp, 0, 0),
+                ("gateway.icloud.com", "17.248.176.12", 443, .tcp, 12_400, 18_600),
+                (nil, "192.168.1.1", 53, .udp, 800, 400),
+            ]
+            frame.connections = hosts.enumerated().map { i, h in
+                ConnectionSample(id: UInt64(i + 1), process: pid, app: safari.identity.key, proto: h.3,
+                                 localPort: UInt16(50_000 + i), remoteAddress: h.1, remotePort: h.2, remoteHost: h.0,
+                                 tcpState: "Established", rxBps: h.4, txBps: h.5)
+            }
+            ctx.live.apply(frame)
+            ctx.navigation.selection = .app(safari.identity.key)
+        }
+        let view = DashboardRoot()
+            .environment(\.processesDetailOnAppear, true)
+            .frame(width: ScreenSize.dashboard.width, height: ScreenSize.dashboard.height)
+            .telltaleEnvironment(ctx)
+        assertSnapshot(view, size: ScreenSize.dashboard, named: "processes-connections-calm")
+    }
+
     static func dashboard(_ scenario: MockScenario, mode: NavigationModel.ProcessesMode, select name: String?,
                           detail: Bool, expand: Bool = false) -> some View {
         let ctx = ScreenFixture.context(scenario, page: .processes)
