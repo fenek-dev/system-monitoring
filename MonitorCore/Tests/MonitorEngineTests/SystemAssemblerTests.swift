@@ -96,7 +96,10 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         _ = assemble(&sa, RawTick(uptimeNs: sec, memory: fresh(m, sec)))
         m.pageins = 30
         m.pageouts = 4
-        let s = assemble(&sa, RawTick(uptimeNs: 3 * sec, memory: fresh(m, 3 * sec))).memory
+        let all = assemble(&sa, RawTick(uptimeNs: 3 * sec, memory: fresh(m, 3 * sec)))
+        #expect(all.metrics[.memUsed] == Double(4_200 * page))   // regression: not Double(bitPattern:)
+        #expect(all.metrics[.swapUsed] == Double(1 << 30))
+        let s = all.memory
         #expect(s.total == 24 << 30)
         #expect(s.appMemory == 3_000 * page)
         #expect(s.wired == 1_000 * page)

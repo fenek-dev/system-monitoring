@@ -199,6 +199,7 @@ private func raw(_ pid: Int32, path: String?, uid: UInt32 = 501, comm: String = 
         #expect(alpha.preventsSleep)
         #expect(alpha.isCurrentUser)
         #expect(alpha.metrics[.cpu] == 40)
+        #expect(alpha.metrics[.memory] == 150)                           // regression: not Double(bitPattern:)
         #expect(apps[0].identity.displayName == "b")                     // missing identity → key id
     }
 

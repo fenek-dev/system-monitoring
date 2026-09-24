@@ -89,9 +89,18 @@ public struct AppGrouper {
         }
     }
 
+    /// Typed fields → vector. Not `AppSample.value(for:)`: its `memory.map(Double.init)` resolves to
+    /// `Double(bitPattern:)` (Model bug reported to the integrator).
     static func metrics(of a: AppSample) -> AppMetrics {
         var m = AppMetrics()
-        for metric in AppMetric.allCases { m[metric] = a.value(for: metric) }
+        m[.cpu] = a.cpuPercent
+        m[.gpu] = a.gpuPercent
+        m[.memory] = a.memory.map { Double($0) }
+        m[.netRx] = a.netRxBps
+        m[.netTx] = a.netTxBps
+        m[.diskRead] = a.diskReadBps
+        m[.diskWrite] = a.diskWriteBps
+        m[.energy] = a.energyWatts
         return m
     }
 
@@ -99,7 +108,7 @@ public struct AppGrouper {
         switch m {
         case .cpu: p.cpuPercent
         case .gpu: p.gpuPercent
-        case .memory: p.memory.map(Double.init)
+        case .memory: p.memory.map { Double($0) }
         case .netRx: p.netRxBps
         case .netTx: p.netTxBps
         case .diskRead: p.diskReadBps

@@ -221,7 +221,7 @@ public final class LiveModel {
         switch category {
         case .cpu: a.cpuPercent
         case .gpu: a.gpuPercent
-        case .memory: a.memory.map(Double.init)
+        case .memory: a.memory.map { Double($0) }     // not map(Double.init): that is Double(bitPattern:)
         case .network: sum(a.netRxBps, a.netTxBps)
         case .thermals, .power: a.energyWatts
         case .disk: sum(a.diskReadBps, a.diskWriteBps)

@@ -153,12 +153,13 @@ struct SystemAssembler {
         snap.swapInsPerSec = rates.rate(for: .swapins, counter: m.swapins, capturedNs: t)
         snap.swapOutsPerSec = rates.rate(for: .swapouts, counter: m.swapouts, capturedNs: t)
         s.memory = snap
-        s.metrics[.memUsed] = snap.used.map(Double.init)
-        s.metrics[.memApp] = snap.appMemory.map(Double.init)
-        s.metrics[.memWired] = snap.wired.map(Double.init)
-        s.metrics[.memCompressed] = snap.compressed.map(Double.init)
+        // `{ Double($0) }`, never `map(Double.init)`: that picks `Double(bitPattern:)` for UInt64.
+        s.metrics[.memUsed] = snap.used.map { Double($0) }
+        s.metrics[.memApp] = snap.appMemory.map { Double($0) }
+        s.metrics[.memWired] = snap.wired.map { Double($0) }
+        s.metrics[.memCompressed] = snap.compressed.map { Double($0) }
         s.metrics[.memPressure] = snap.pressureFraction
-        s.metrics[.swapUsed] = snap.swapUsed.map(Double.init)
+        s.metrics[.swapUsed] = snap.swapUsed.map { Double($0) }
     }
 
     // MARK: - Network
