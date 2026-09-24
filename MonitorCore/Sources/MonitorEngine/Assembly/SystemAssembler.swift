@@ -182,8 +182,10 @@ struct SystemAssembler {
                 if let itx { tx = (tx ?? 0) + itx }
             }
             // System totals = the primary interface (DESIGN): summing double counts bridge members and utun
-            // tunnels over en0. Without a primary, fall back to the sum over up, non-loopback interfaces.
-            if let primary = n.interfaces.first(where: { $0.isPrimary }) {
+            // tunnels over en0. Without a usable primary (none, down, or no rate yet — e.g. it just became primary),
+            // fall back to the sum over up, non-loopback interfaces.
+            if let primary = n.interfaces.first(where: { $0.isPrimary }), primary.isUp,
+               primary.rxBps != nil || primary.txBps != nil {
                 n.rxBps = primary.rxBps
                 n.txBps = primary.txBps
             } else {

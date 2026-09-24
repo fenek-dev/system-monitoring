@@ -24,7 +24,7 @@ struct ShellVisibilityTests {
         i.dashboardOpen = true
         i.page = .cpu
         #expect(i.visibility == UIVisibility(dashboardVisible: true, page: .cpu))
-        #expect(i.visibility.demand == [.perCore, .processTable])
+        #expect(i.visibility.demand.contains(.perCore))           // exact table: MonitorModel (ICR-7)
     }
 
     @Test func occludedOrMiniaturizedDashboardIsBackground() {

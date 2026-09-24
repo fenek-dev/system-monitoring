@@ -1,4 +1,5 @@
 import Foundation
+import MonitorEngine
 import MonitorLive
 import MonitorMocks
 import MonitorModel
@@ -27,15 +28,27 @@ public enum RuntimeMode: Sendable, Equatable { case live, mock(MockScenario) }
     }
 
     /// crashSensor: DEBUG canary drill.
+    /// canarySuite: UserDefaults suite for crash-canary markers (nil = standard defaults). Dev builds pass the
+    /// per-data-dir settings suite so worktrees sharing the bundle id don't disable each other's sensors.
     public static func make(mode: RuntimeMode, dataDirectory: URL, disabledSensors: Set<SensorID>,
-                            crashSensor: SensorID? = nil) -> TelltaleRuntime {
+                            crashSensor: SensorID? = nil, canarySuite: String? = nil) -> TelltaleRuntime {
         switch mode {
         case .live:
             TelltaleRuntime(pipeline: LivePipeline(dataDirectory: dataDirectory, disabledSensors: disabledSensors,
-                                                   crashSensor: crashSensor))
+                                                   crashSensor: crashSensor, canarySuite: canarySuite))
         case .mock(let scenario):
             TelltaleRuntime(pipeline: MockPipeline(scenario: scenario))
         }
+    }
+
+    /// Settings "Re-enable sensors": clears every crash-canary marker in `canarySuite` (nil = standard defaults),
+    /// the same store `make(…, canarySuite:)` reads. Takes effect when the sensors are next built (next launch).
+    public nonisolated static func reenableCrashedSensors(canarySuite: String?) {
+        canary(suite: canarySuite).reenableAll()
+    }
+
+    nonisolated static func canary(suite: String?) -> CrashCanary {
+        suite.map(CrashCanary.defaults(suite:)) ?? .standard
     }
 
     public var live: LiveModel { pipeline.live }

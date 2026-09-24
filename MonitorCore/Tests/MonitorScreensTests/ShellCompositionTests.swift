@@ -106,15 +106,16 @@ struct ShellSettingsStoreTests {
         #expect(s.popoverLayout.order == [.power, .disk, .gpu, .memory, .cpu, .network, .thermals])
     }
 
-    @Test func reenableSensorsClearsKillSwitchAndCrashMarkers() {
+    @Test func reenableSensorsClearsKillSwitchAndCallsCanary() {
         let (s, d) = ScreenFixture.settings()
         s.setDisabled(.coalitions, true)
-        d.set(true, forKey: SettingsStore.crashMarkerPrefix + "smc")
         d.set(true, forKey: "unrelated")
+        var canaryCalls = 0
+        s.reenableCrashedSensors = { canaryCalls += 1 }
         s.reenableSensors()
         #expect(s.disabledSensors.isEmpty)
-        #expect(d.object(forKey: SettingsStore.crashMarkerPrefix + "smc") == nil)
-        #expect(d.bool(forKey: "unrelated"))
+        #expect(canaryCalls == 1)
+        #expect(d.bool(forKey: "unrelated"))                    // nothing else in the suite is touched
         #expect(SettingsStore(defaults: d).disabledSensors.isEmpty)
     }
 
