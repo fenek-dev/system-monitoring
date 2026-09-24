@@ -1,6 +1,7 @@
 import Foundation
 import CPrivate
 import Darwin
+import IOKit
 
 // Question: can an unprivileged, un-entitled process read CPU time and memory of
 // root-owned processes (kernel_task, launchd, WindowServer, mds_stores)?
@@ -183,23 +184,45 @@ do {
 // MARK: - C. resource coalitions
 
 print("\n== C. resource coalitions")
+func ms(_ t0: UInt64) -> String { String(format: "%.2fms", Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6) }
 var coals = [procinfo_coalinfo](repeating: procinfo_coalinfo(), count: 8192)
+let tList = DispatchTime.now().uptimeNanoseconds
 let bytes = proc_listcoalitions(LISTCOALITIONS_ALL_COALS, 0, &coals,
                                 Int32(coals.count * MemoryLayout<procinfo_coalinfo>.stride))
+let listCost = ms(tList)
 if bytes < 0 { print("proc_listcoalitions failed errno=\(errno)") }
 let coalList = Array(coals.prefix(max(0, Int(bytes)) / MemoryLayout<procinfo_coalinfo>.stride))
 let resCoals = coalList.filter { $0.coalition_type == UInt32(COALITION_TYPE_RESOURCE) }
-print("proc_listcoalitions: total=\(coalList.count) resource=\(resCoals.count) jetsam=\(coalList.count - resCoals.count)")
+print("proc_listcoalitions: total=\(coalList.count) resource=\(resCoals.count) jetsam=\(coalList.count - resCoals.count) cost=\(listCost)")
 
 // pid -> resource coalition id, via the unprivileged PROC_PIDCOALITIONINFO flavor.
 var coalOf: [pid_t: UInt64] = [:]
+let tMap = DispatchTime.now().uptimeNanoseconds
 for pid in pids {
     var ci = proc_pidcoalitioninfo()
     if proc_pidinfo(pid, PROC_PIDCOALITIONINFO, 0, &ci, Int32(MemoryLayout<proc_pidcoalitioninfo>.size)) > 0 {
         coalOf[pid] = ci.coalition_id.0
     }
 }
+print("PROC_PIDCOALITIONINFO sweep: \(pids.count) pids in \(ms(tMap))")
 let members = Dictionary(grouping: coalOf.keys, by: { coalOf[$0]! })
+
+// Coalition vs responsible-pid grouping (the product's "app" key).
+do {
+    var respOf: [pid_t: pid_t] = [:]
+    for pid in pids { let r = responsibility_get_pid_responsible_for_pid(pid); if r > 0 { respOf[pid] = r } }
+    let withResp = respOf.filter { coalOf[$0.key] != nil && coalOf[$0.value] != nil }
+    let sameCoal = withResp.filter { coalOf[$0.key] == coalOf[$0.value] }.count
+    // Coalitions holding more than one responsible root.
+    let rootsPerCoal = Dictionary(grouping: withResp, by: { coalOf[$0.key]! }).mapValues { Set($0.map(\.value)) }
+    let multi = rootsPerCoal.filter { $0.value.count > 1 }
+    let pidsInMulti = withResp.filter { multi[coalOf[$0.key]!] != nil }.count
+    let foreignNoResp = foreign.filter { respOf[$0] == nil }.count
+    print("responsible grouping: pids with resp=\(respOf.count) (foreign without resp=\(foreignNoResp)/\(foreign.count)); same coalition as resp pid=\(sameCoal)/\(withResp.count); coalitions with >1 resp root=\(multi.count) covering \(pidsInMulti) pids")
+    for (c, roots) in multi.sorted(by: { $0.value.count > $1.value.count }).prefix(3) {
+        print("   rcoal=\(c): roots \(roots.sorted().map { "\($0) \(names[$0] ?? "?")" }.joined(separator: ", "))")
+    }
+}
 
 // Attribution granularity for not-my-uid pids: coalition CPU is exact for a pid when it is the
 // only live member, or when every other member is ours (subtract our proc_pid_rusage values).
@@ -228,16 +251,53 @@ do {
     print("kernel struct coalition_resource_usage size ≈ \(written * 8) bytes (\(written) words)")
 }
 var okC = 0, errC: [Int32: Int] = [:]
+let tSweep = DispatchTime.now().uptimeNanoseconds
 for c in resCoals { if let e = usage(c.coalition_id).1 { errC[e, default: 0] += 1 } else { okC += 1 } }
-print("coalition_info_resource_usage over resource coalitions: ok=\(okC) err=\(errC)")
+print("coalition_info_resource_usage over resource coalitions: ok=\(okC) err=\(errC) cost=\(ms(tSweep))")
+
+/// Per-pid AGX GPU time in ns (unit established in docs/findings/gpu-apps.md).
+func agxGPUns(_ pid: pid_t) -> UInt64 {
+    let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AGXAccelerator"))
+    guard svc != 0 else { return 0 }
+    defer { IOObjectRelease(svc) }
+    var it: io_iterator_t = 0
+    guard IORegistryEntryGetChildIterator(svc, kIOServicePlane, &it) == KERN_SUCCESS else { return 0 }
+    defer { IOObjectRelease(it) }
+    var total: UInt64 = 0
+    while true {
+        let c = IOIteratorNext(it)
+        if c == 0 { break }
+        defer { IOObjectRelease(c) }
+        guard let creator = IORegistryEntryCreateCFProperty(c, "IOUserClientCreator" as CFString, nil, 0)?
+                .takeRetainedValue() as? String, creator.hasPrefix("pid \(pid),") else { continue }
+        let usage = IORegistryEntryCreateCFProperty(c, "AppUsage" as CFString, nil, 0)?.takeRetainedValue() as? [[String: Any]]
+        for u in usage ?? [] { total += (u["accumulatedGPUTime"] as? NSNumber)?.uint64Value ?? 0 }
+    }
+    return total
+}
+func selfEnergyNJ() -> UInt64 {
+    var ri = rusage_info_v6()
+    let rc = withUnsafeMutablePointer(to: &ri) {
+        $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(me, RUSAGE_INFO_V6, $0) }
+    }
+    return rc == 0 ? ri.ri_energy_nj : 0
+}
 
 // Delta over 2 s for the probes' coalitions; ps (setuid root) is the ground truth.
+// A busy thread in this process loads our own coalition so energy/CPU deltas are visible.
 let probeCoals = probes.compactMap { p in coalOf[p.1].map { (p.0, p.1, $0) } }
+let wsPid = probes.first { $0.0 == "WindowServer" }?.1
 let s0 = Dictionary(probeCoals.map { ($0.2, usage($0.2).0) }, uniquingKeysWith: { a, _ in a })
+let gpu0 = wsPid.map(agxGPUns) ?? 0
+let e0 = selfEnergyNJ()
 let wall0 = DispatchTime.now().uptimeNanoseconds
+Thread.detachNewThread { var x = 0.0; while DispatchTime.now().uptimeNanoseconds - wall0 < 2_000_000_000 { x += 1 }; _ = x }
 Thread.sleep(forTimeInterval: 2)
 let s1 = Dictionary(probeCoals.map { ($0.2, usage($0.2).0) }, uniquingKeysWith: { a, _ in a })
+let gpu1 = wsPid.map(agxGPUns) ?? 0
+let e1 = selfEnergyNJ()
 let wall = Double(DispatchTime.now().uptimeNanoseconds - wall0)
+print("self rusage v6 ri_energy_nj delta=\(e1 &- e0) nJ ≈ \(String(format: "%.2f", Double(e1 &- e0) / wall)) W (busy thread)")
 for (pn, pid, cid) in probeCoals {
     guard let a = s0[cid], let b = s1[cid], a.count > 11, b.count > 11 else { print("   \(pn): no usage"); continue }
     let cpuPct = ticksToNs(b[3] &- a[3]) / wall * 100
@@ -245,7 +305,10 @@ for (pn, pid, cid) in probeCoals {
     let memberNames = mem.prefix(4).map { names[$0] ?? "?" }.joined(separator: ",")
     print("   \(pn)(\(pid)) rcoal=\(cid) members=\(mem.count) [\(memberNames)\(mem.count > 4 ? ",…" : "")]")
     print("      cpu_time total=\(Int(ticksToNs(b[3]) / 1e9))s  cpu%(2s)=\(String(format: "%.1f", cpuPct))  energy=\(b[11])  diskR=\(b[6] >> 20)MB diskW=\(b[7] >> 20)MB  gpu_time=\(b[8])")
+    let secs = { (w: UInt64) in Int(ticksToNs(w) / 1e9) }
+    print("      billed_to_me=\(secs(b[9]))s billed_to_others=\(secs(b[10]))s  energy Δ=\(b[11] &- a[11]) ≈ \(String(format: "%.2f", Double(b[11] &- a[11]) / wall))W(if nJ)  gpu_time Δ=\(b[8] &- a[8])")
     if pn == "WindowServer" {
+        print("      AGX accumulatedGPUTime Δ (ns, pid \(pid) only)=\(gpu1 &- gpu0)  ratio coal/agx=\(String(format: "%.3f", Double(b[8] &- a[8]) / max(1, Double(gpu1 &- gpu0))))")
         let nz = b.enumerated().filter { $0.element != 0 }.map { "[\($0.offset)]=\($0.element)" }
         print("      raw nonzero words: \(nz.joined(separator: " "))")
     }
