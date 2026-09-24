@@ -201,6 +201,18 @@ final class RankCache<Row> {
     }
 }
 
+/// "—" tooltip for a headline value (DESIGN §3.15, M3): the sensor's reason when its sources are down; else, when
+/// the value is missing while the sensor is fine, a fallback ("Collecting — rates need two samples" while
+/// collecting, "Not reported on this Mac" otherwise). nil when the value is present.
+/// Pair it with `showsCollecting: sensorDown == false` so a fallback reason never hides a chart's "Collecting…".
+@MainActor func headlineReason(_ metric: HistoryMetric, value: String?, live: LiveModel)
+    -> (reason: String?, sensorDown: Bool) {
+    if let r = unavailableReason(metric, health: live.sensorHealth) { return (r, true) }
+    guard value == nil || value == TTFormat.unavailable else { return (nil, false) }
+    if case .collecting = live.phase { return ("Collecting — rates need two samples", false) }
+    return ("Not reported on this Mac", false)
+}
+
 /// `TTTable.columnsVersion` for cells that capture sensor health and unit settings (M2).
 @MainActor func tableColumnsVersion(_ live: LiveModel, units: UnitPreferences) -> Int {
     var h = Hasher()
@@ -286,7 +298,15 @@ struct FitRows<Content: View>: View {
 /// (the default 300-pt card). Chosen by the card width, not by measuring both variants each tick
 /// (`ViewThatFits`, U-M1); the width only changes on a window resize.
 struct ColumnLegend: View {
-    let items: [(label: String, color: Color)]
+    struct Item {
+        var label: String
+        /// nil → "—" in `textTertiary` with `reason` as tooltip (DESIGN §3.15, M3).
+        var value: String?
+        var reason: String?
+        var color: Color
+    }
+
+    let items: [Item]
     @State private var roomy = false
 
     nonisolated static let captionMinWidth: CGFloat = 350
@@ -304,9 +324,29 @@ struct ColumnLegend: View {
                 HStack(spacing: TTSpace.x6) {
                     RoundedRectangle(cornerRadius: TTRadius.r2, style: .continuous).fill(items[i].color)
                         .frame(width: 8, height: 8)
-                    Text(items[i].label).font(font).foregroundStyle(TTColor.textSecondary)
+                    LabeledMetricText(label: items[i].label, value: items[i].value, reason: items[i].reason, font: font)
+                        .foregroundStyle(TTColor.textSecondary)
                         .monospacedDigit().lineLimit(1).fixedSize()
                 }
+            }
+        }
+    }
+}
+
+/// "CPU 11.0 W" as one text; a missing value is "CPU " + `MetricValue` "—" (`textTertiary`, reason tooltip; M3).
+struct LabeledMetricText: View {
+    let label: String
+    let value: String?
+    let reason: String?
+    let font: Font
+
+    var body: some View {
+        if let value, value != TTFormat.unavailable {
+            Text(label + " " + value).font(font)
+        } else {
+            HStack(spacing: 0) {
+                Text(label + " ").font(font)
+                MetricValue(nil, unavailableReason: reason, font: font)
             }
         }
     }

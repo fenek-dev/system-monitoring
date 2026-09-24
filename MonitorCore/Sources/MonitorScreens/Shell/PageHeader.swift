@@ -135,8 +135,8 @@ public struct PageHeader: View {
             return "SoC sensors, fans and macOS thermal pressure"
         case .processes:
             let n = live.cpu.processCount ?? live.processes.count
-            var parts = ["\(n.formatted()) processes"]
-            if let t = live.cpu.threadCount { parts.append("\(t.formatted()) threads") }
+            var parts = ["\(TTFormat.count(n)) processes"]
+            if let t = live.cpu.threadCount { parts.append("\(TTFormat.count(t)) threads") }
             parts.append("select a row to inspect")
             return parts.joined(separator: " · ")
         case .history:

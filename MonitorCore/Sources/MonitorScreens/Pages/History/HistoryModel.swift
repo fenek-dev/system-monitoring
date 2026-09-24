@@ -154,7 +154,7 @@ public enum HistoryExportStatus: Equatable, Sendable {
 
     public var text: String {
         switch self {
-        case .exported(let rows): "Exported \(rows.formatted()) rows"
+        case .exported(let rows): "Exported \(TTFormat.count(rows)) rows"
         case .failed(let why): "Export failed: \(why)"
         }
     }

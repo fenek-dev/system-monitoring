@@ -365,6 +365,15 @@ enum DiskRows {
         guard let bytes else { return nil }
         return bytes == 0 ? TTFormat.unavailable : TTFormat.storage(bytes, style: .headline)
     }
+
+    /// "—" tooltips (M3): a missing session total is explained; an idle 0 stays tooltip-free (above).
+    static func sessionReason(_ bytes: UInt64?) -> String? {
+        bytes == nil ? "No session total for this app yet" : nil
+    }
+
+    static func rateReason(_ bps: Double?) -> String? {
+        bps == nil ? "Not reported for this app" : nil
+    }
 }
 
 private struct DiskActivityCard: View {
@@ -392,16 +401,20 @@ private struct DiskActivityCard: View {
             AnyView(TTNameCell(identity: row.identity, name: row.name))
         },
         .init(id: "read", title: "Read", width: .fixed(100), alignment: .trailing, sortKey: { $0.rate }) { row in
-            AnyView(MetricValue(TTFormat.diskRateCell(row.read), font: TTFont.body12))
+            AnyView(MetricValue(TTFormat.diskRateCell(row.read), unavailableReason: DiskRows.rateReason(row.read),
+                                font: TTFont.body12))
         },
         .init(id: "write", title: "Write", width: .fixed(100), alignment: .trailing) { row in
-            AnyView(MetricValue(TTFormat.diskRateCell(row.write), font: TTFont.body12))
+            AnyView(MetricValue(TTFormat.diskRateCell(row.write), unavailableReason: DiskRows.rateReason(row.write),
+                                font: TTFont.body12))
         },
         .init(id: "readSession", title: "Read (session)", width: .fixed(110), alignment: .trailing) { row in
-            AnyView(MetricValue(DiskRows.sessionText(row.readSession), font: TTFont.body12))
+            AnyView(MetricValue(DiskRows.sessionText(row.readSession),
+                                unavailableReason: DiskRows.sessionReason(row.readSession), font: TTFont.body12))
         },
         .init(id: "writeSession", title: "Written (session)", width: .fixed(120), alignment: .trailing) { row in
-            AnyView(MetricValue(DiskRows.sessionText(row.writeSession), font: TTFont.body12))
+            AnyView(MetricValue(DiskRows.sessionText(row.writeSession),
+                                unavailableReason: DiskRows.sessionReason(row.writeSession), font: TTFont.body12))
         },
         .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) { row in
             row.isExited ? AnyView(Color.clear.frame(width: 24, height: 24))

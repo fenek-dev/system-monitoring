@@ -28,7 +28,7 @@ struct OverviewSnapshotTests {
         let v = VolumeInfo(id: "/", name: "Macintosh HD", totalBytes: 994_000_000_000,
                            availableBytes: 382_000_000_000, availableImportantBytes: 450_000_000_000)
         #expect(OverviewDiskCard.usedPhrase(v) == "612 of 994 GB used")
-        #expect(OverviewDiskCard.free(v) == 382_000_000_000)
+        #expect(W5a.freeBytes(v) == 382_000_000_000)
     }
 
     /// Regression (review T2): rows are sorted by CPU *before* the "as many as fit" prefix, whatever order

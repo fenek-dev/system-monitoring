@@ -31,6 +31,8 @@ enum PopoverModel {
         var domain: ClosedRange<Double>
         /// Alert level of the category's arc (row fill + value color when not calm).
         var stress: AlertLevel
+        /// The headline sensor is down: "—" + reason and an empty sparkline (no "Collecting…").
+        var sensorDown = false
     }
 
     static func row(_ c: MonitorModel.Category, live: LiveModel, units: UnitPreferences) -> Row {
@@ -84,6 +86,11 @@ enum PopoverModel {
             } else {
                 r.unavailableReason = reason ?? "Boot volume not reported"
             }
+        }
+        // M3: a "—" always has a reason; a fallback (sensor fine, value missing) keeps "Collecting…" on.
+        r.sensorDown = reason != nil && r.unavailableReason != nil
+        if r.unavailableReason == nil, r.value == nil || r.value == TTFormat.unavailable {
+            r.unavailableReason = headlineReason(c.headlineMetric, value: nil, live: live).reason
         }
         return r
     }

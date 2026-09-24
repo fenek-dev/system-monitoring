@@ -46,7 +46,8 @@ struct OverviewTiles: View {
             GridRow(columns: 5) {
                 ForEach(Self.tiles(series, live: live, units: units, ceilings: ceilings), id: \.category) { t in
                     TTMetricTile(category: t.category, value: t.value, prefix: t.prefix, unit: t.unit, detail: t.detail,
-                                 points: t.points, unavailableReason: t.reason, yDomain: t.domain) {
+                                 points: t.points, unavailableReason: t.reason, yDomain: t.domain,
+                                 showsCollecting: !t.sensorDown) {
                         nav.page = t.category.dashboardPage
                     }
                     .equatable()
@@ -64,12 +65,22 @@ struct OverviewTiles: View {
         var points: [SeriesPoint]
         var domain: ClosedRange<Double>?
         var reason: String?
+        /// The sources are down (reason from sensor health): "—" + an empty chart instead of "Collecting…".
+        var sensorDown = false
     }
 
     static func tiles(_ s: RangeSeries, live: LiveModel, units: UnitPreferences,
                       ceilings: LiveCeilings = LiveCeilings()) -> [Tile] {
-        let health = live.sensorHealth
-        func reason(_ m: HistoryMetric) -> String? { unavailableReason(m, health: health) }
+        // M3: every "—" gets a reason — the sensor's, or a fallback while the sensor is fine.
+        base(s, live: live, units: units, ceilings: ceilings).map { t in
+            var t = t
+            (t.reason, t.sensorDown) = headlineReason(t.category.headlineMetric, value: t.value, live: live)
+            return t
+        }
+    }
+
+    private static func base(_ s: RangeSeries, live: LiveModel, units: UnitPreferences,
+                             ceilings: LiveCeilings) -> [Tile] {
 
         let cpu = splitUnit(TTFormat.percent(live.cpu.usage))
         let p = live.cpu.clusters.first { $0.kind == .performance }?.frequencyMHz
@@ -100,17 +111,16 @@ struct OverviewTiles: View {
 
         return [
             Tile(category: .cpu, value: cpu.value, unit: cpu.unit, detail: cpuSub.joined(separator: " · "),
-                 points: s[.cpuUsage], domain: 0...1, reason: reason(.cpuUsage)),
+                 points: s[.cpuUsage], domain: 0...1),
             Tile(category: .gpu, value: gpu.value, unit: gpu.unit, detail: gpuSub.joined(separator: " · "),
-                 points: s[.gpuUsage], domain: 0...1, reason: reason(.gpuUsage)),
+                 points: s[.gpuUsage], domain: 0...1),
             Tile(category: .memory, value: mem.value, unit: mem.unit, detail: memSub.joined(separator: " · "),
-                 points: s[.memUsed], domain: 0...Double(max(live.memory.total, 1)), reason: reason(.memUsed)),
+                 points: s[.memUsed], domain: 0...Double(max(live.memory.total, 1))),
             Tile(category: .network, value: net.rxBps.map { TTFormat.rate($0, units: units) }, prefix: "↓ ", unit: nil,
                  detail: netSub.joined(separator: " · "), points: s[.netRx],
-                 domain: ceilings.domain("netRx", range: s.range, W5a.rateDomain(s[.netRx])),
-                 reason: reason(.netRx)),
+                 domain: ceilings.domain("netRx", range: s.range, W5a.rateDomain(s[.netRx]))),
             Tile(category: .thermals, value: temp.value, unit: temp.unit, detail: thermSub.joined(separator: " · "),
-                 points: s[.socTemp], domain: 0...100, reason: reason(.socTemp)),
+                 points: s[.socTemp], domain: 0...100),
         ]
     }
 
@@ -143,8 +153,10 @@ struct OverviewTimelineCard: View {
             TTCardHeader(s.range.lastTitle) { PageLink("Open History", to: .history) }
             VStack(spacing: TTSpace.x4) {
                 ForEach(rows(s), id: \.label) { r in
-                    TTTimelineRow(label: r.label, icon: nil, value: r.value, unavailableReason: r.reason,
-                                  points: r.points, color: r.color, yDomain: r.domain)
+                    // M3: a "—" always has a reason; only a down sensor turns "Collecting…" off.
+                    let h = headlineReason(r.metric, value: r.value, live: live)
+                    TTTimelineRow(label: r.label, icon: nil, value: r.value, unavailableReason: h.reason,
+                                  points: r.points, color: r.color, yDomain: r.domain, showsCollecting: !h.sensorDown)
                         .equatable()
                 }
             }
@@ -159,28 +171,26 @@ struct OverviewTimelineCard: View {
     struct Row {
         var label: String
         var value: String?
-        var reason: String?
+        /// Headline metric (its sensor health gives the "—" reason).
+        var metric: HistoryMetric
         var points: [SeriesPoint]
         var color: Color
         var domain: ClosedRange<Double>
     }
 
     func rows(_ s: RangeSeries) -> [Row] {
-        let h = live.sensorHealth
-        return [
-            Row(label: "CPU", value: TTFormat.percent(live.cpu.usage), reason: unavailableReason(.cpuUsage, health: h),
+        [
+            Row(label: "CPU", value: TTFormat.percent(live.cpu.usage), metric: .cpuUsage,
                 points: s[.cpuUsage], color: TTColor.cpu, domain: 0...1),
-            Row(label: "GPU", value: TTFormat.percent(live.gpu.usage), reason: unavailableReason(.gpuUsage, health: h),
+            Row(label: "GPU", value: TTFormat.percent(live.gpu.usage), metric: .gpuUsage,
                 points: s[.gpuUsage], color: TTColor.gpu, domain: 0...1),
-            Row(label: "Memory", value: TTFormat.memory(live.memory.used, style: .headline),
-                reason: unavailableReason(.memUsed, health: h), points: s[.memUsed], color: TTColor.mem,
-                domain: 0...Double(max(live.memory.total, 1))),
-            Row(label: "Network", value: TTFormat.rate(live.network.rxBps, units: units),
-                reason: unavailableReason(.netRx, health: h), points: s[.netRx], color: TTColor.net,
+            Row(label: "Memory", value: TTFormat.memory(live.memory.used, style: .headline), metric: .memUsed,
+                points: s[.memUsed], color: TTColor.mem, domain: 0...Double(max(live.memory.total, 1))),
+            Row(label: "Network", value: TTFormat.rate(live.network.rxBps, units: units), metric: .netRx,
+                points: s[.netRx], color: TTColor.net,
                 domain: ceilings.domain("netRx", range: s.range, W5a.rateDomain(s[.netRx]))),
             Row(label: "Thermals", value: TTFormat.temperature(live.thermals.socAverage, units: units),
-                reason: unavailableReason(.socTemp, health: h), points: s[.socTemp], color: TTColor.thermal,
-                domain: 0...100),
+                metric: .socTemp, points: s[.socTemp], color: TTColor.thermal, domain: 0...100),
         ]
     }
 }
@@ -216,14 +226,21 @@ struct OverviewPowerCard: View {
             }
             TTSegmentBar(segments(p), style: .split, remainder: TTColor.fillRest)
             ColumnLegend(items: [
-                ("CPU " + TTFormat.watts(p.cpuWatts), TTColor.cpu),
-                ("GPU " + TTFormat.watts(p.gpuWatts), TTColor.gpu),
-                ("ANE " + TTFormat.watts(p.aneWatts), TTColor.power),
-                ("DRAM " + TTFormat.watts(p.dramWatts), TTColor.dram),
+                legendItem("CPU", p.cpuWatts, .cpuWatts, TTColor.cpu),
+                legendItem("GPU", p.gpuWatts, .gpuWatts, TTColor.gpu),
+                legendItem("ANE", p.aneWatts, .aneWatts, TTColor.power),
+                legendItem("DRAM", p.dramWatts, .dramWatts, TTColor.dram),
             ])
         }
         .frame(minHeight: 134, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)   // Disk below takes the column's extra height
+    }
+
+    /// "CPU 11.0 W"; a missing value is "CPU —" with the reason (M3).
+    private func legendItem(_ label: String, _ watts: Double?, _ metric: HistoryMetric, _ color: Color) -> ColumnLegend.Item {
+        let value = watts.map { TTFormat.watts($0) }
+        return .init(label: label, value: value,
+                     reason: headlineReason(metric, value: value, live: live).reason, color: color)
     }
 
     private func segments(_ p: PowerSnapshot) -> [TTSegmentBar.Segment] {
@@ -254,9 +271,10 @@ struct OverviewDiskCard: View {
             }
             .font(TTFont.body12).lineLimit(1)
             TTProgressBar(value: v.map(Self.usedFraction), tint: TTColor.disk, style: .medium)
+                .accessibilityLabel("Boot volume used")   // M13: not a bare "Progress"
             HStack(spacing: 16) {
-                Text("Read " + TTFormat.diskRate(d.readBps))
-                Text("Write " + TTFormat.diskRate(d.writeBps))
+                labeled("Read", d.readBps, .diskRead)
+                labeled("Write", d.writeBps, .diskWrite)
                 if let v { Text(ShellFormat.freeSpace(v) + " free") }   // one owner of the free-space rule (W4)
             }
             .font(TTFont.body12).foregroundStyle(TTColor.textSecondary).monospacedDigit().lineLimit(1)
@@ -265,14 +283,20 @@ struct OverviewDiskCard: View {
         .frame(minHeight: 120, maxHeight: .infinity, alignment: .top)
     }
 
-    static func free(_ v: VolumeInfo) -> UInt64 { W5a.freeBytes(v) }
+    /// "Read 207 MB/s"; a missing rate is "Read —" (`textTertiary`) with the reason (M3).
+    private func labeled(_ label: String, _ bps: Double?, _ metric: HistoryMetric) -> some View {
+        let value = bps.map { TTFormat.diskRate($0) }
+        return LabeledMetricText(label: label, value: value,
+                                 reason: headlineReason(metric, value: value, live: live).reason, font: TTFont.body12)
+    }
+
     static func usedFraction(_ v: VolumeInfo) -> Double {
-        v.totalBytes > 0 ? Double(v.totalBytes - min(free(v), v.totalBytes)) / Double(v.totalBytes) : 0
+        v.totalBytes > 0 ? Double(v.totalBytes - min(W5a.freeBytes(v), v.totalBytes)) / Double(v.totalBytes) : 0
     }
 
     /// "612 of 994 GB used" (capacity style; the unit shown once when both share it).
     static func usedPhrase(_ v: VolumeInfo) -> String {
-        let used = splitUnit(TTFormat.storage(v.totalBytes - min(free(v), v.totalBytes), style: .capacity))
+        let used = splitUnit(TTFormat.storage(v.totalBytes - min(W5a.freeBytes(v), v.totalBytes), style: .capacity))
         let total = TTFormat.storage(v.totalBytes, style: .capacity)
         let t = splitUnit(total)
         if used.unit == t.unit, let u = used.value { return "\(u) of \(total) used" }

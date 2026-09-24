@@ -196,6 +196,16 @@ struct MemoryPressureChart: View {
         }
         .accessibilityElement()
         .accessibilityLabel("Memory pressure")
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    /// "Latest 34%, normal" / "No data" (M13).
+    var accessibilitySummary: String {
+        guard let i = points.lastIndex(where: { $0.value?.isFinite == true }), let v = points[i].value else {
+            return "No data"
+        }
+        let level = i < levels.count ? ", \(levels[i].title.lowercased())" : ""
+        return "Latest \(TTFormat.percent(v))\(level)"
     }
 }
 

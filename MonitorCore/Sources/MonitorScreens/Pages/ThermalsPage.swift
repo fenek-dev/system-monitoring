@@ -593,6 +593,8 @@ private struct ThermalSensorTable: View {
                         .equatable()
                         .contentShape(Rectangle())
                         .onTapGesture { openStrips = SensorsCardLines.toggled(openStrips, line) }
+                        .accessibilityAddTraits(.isButton)   // tap toggles the row's strip (M13)
+                        .accessibilityAction { openStrips = SensorsCardLines.toggled(openStrips, line) }
                     if line.depth > 0, openStrips.contains(line.id) {
                         TTAreaChart(strip(line.id), color: TTColor.thermal, yDomain: 20...105,
                                     fillOpacity: TTChartFill.timeline, lineWidth: TTStroke.sparkThin)

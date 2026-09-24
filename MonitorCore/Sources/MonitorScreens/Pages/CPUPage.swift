@@ -216,7 +216,8 @@ struct CPUConsumersCard: View {
                 AnyView(Text(p.isExitedResidualRow ? "" : String(p.pid)))   // ICR-13: no PID
             },
             .init(id: "user", title: "User", width: .fixed(110)) {
-                AnyView(Text($0.user ?? "—").foregroundStyle(TTColor.textSecondary).truncationMode(.tail))
+                AnyView(MetricValue($0.user, unavailableReason: "Owner not reported", font: TTFont.body12)
+                    .foregroundStyle(TTColor.textSecondary).truncationMode(.tail))
             },
             .init(id: "cpu", title: "% CPU", width: .fixed(80), alignment: .trailing, sortKey: \.cpuPercent) {
                 metricCell(TTFormat.cpuPercent($0.cpuPercent, sign: false), reason: unavailableReason(.cpu, $0, health: health),

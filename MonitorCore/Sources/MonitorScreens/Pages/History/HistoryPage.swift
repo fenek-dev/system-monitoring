@@ -310,6 +310,10 @@ private struct HistoryLanes: View {
                     .frame(maxHeight: .infinity, alignment: .bottom)
                     .frame(height: TimelineMetrics.laneHeight)
                     .overlay(alignment: .bottom) { TTSeparator() }
+                    // The chart itself is hidden from VoiceOver; the lane reads as one summary element (M13).
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(ChartAccessibility.summary(
+                        [ChartSeries(id: lane.label, label: lane.label, color: lane.color, points: points)]))
             }
         }
     }

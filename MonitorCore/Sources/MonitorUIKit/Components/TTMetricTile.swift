@@ -146,7 +146,8 @@ public struct TTMetricTile: View, Equatable {
             .onHover { hovering = $0 }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(tile.category.ttTitle)
-            .accessibilityValue([TTUnit.join(tile.value, tile.unit).map { (tile.prefix ?? "") + $0 } ?? "unavailable",
+            .accessibilityValue([TTUnit.join(tile.value, tile.unit).map { (tile.prefix ?? "") + $0 }
+                                    ?? (tile.unavailableReason.map { "unavailable, \($0)" } ?? "unavailable"),
                                  tile.detail ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))
             .accessibilityAddTraits(tile.action != nil ? .isButton : [])
         }
