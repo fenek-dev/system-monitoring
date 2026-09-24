@@ -1,8 +1,10 @@
 # ICR 001 — W6d — `BlockDriverCounter.isDiskImage`
 
 **Stream:** W6d (disk sensors)
-**Status:** proposed — not applied to `MonitorModel` by this stream (ARCHITECTURE §9: model changes
-are ICR'd, then landed by the integrator; the stream uses a local extension meanwhile).
+**Status:** **APPROVED (ICR-11) and applied**, commit `feat(W6d): ICR-11 isDiskImage` on this stream's
+branch. `BlockDriverCounter.isDiskImage` (default `false`, `decodeIfPresent` for old fixtures) is
+live in `MonitorModel/Readings/Disk.swift`; `DiskIOSensor.sample()` wires `ttIsDiskImageDriver`
+straight through. W7 wires the engine side (excluding disk images from system disk-I/O totals).
 
 ## What
 
@@ -61,11 +63,10 @@ mounted `.dmg`s; the internal NVMe SSD's parent is `IOEmbeddedNVMeBlockDevice`, 
 `DiskIOSmokeTests.diskImageDriversAreDistinguishedFromRealHardware` (gated `TELLTALE_HW_TESTS=1`),
 which asserts both directions against this machine's real internal SSD and real mounted disk images.
 
-## Wiring (one line, once the field lands)
+## Wiring — done
 
-`DiskIOSensor.sample()` (`MonitorSensors/Disk/DiskIOSensor.swift`) constructs each
-`BlockDriverCounter`; add `isDiskImage: ttIsDiskImageDriver(driver)` to that call. No other change
-needed on the W6d side.
+`DiskIOSensor.sample()` (`MonitorSensors/Disk/DiskIOSensor.swift`) now passes
+`isDiskImage: ttIsDiskImageDriver(driver)` when constructing each `BlockDriverCounter`.
 
 ## Affected streams
 
@@ -79,12 +80,8 @@ needed on the W6d side.
 ## Compatibility
 
 Additive only (ARCHITECTURE §9): a new field with a default, no reordering, no removed field, no
-signature change to `Sensor`/`SensorSuite`/`RawTick`. Existing fixtures/JSON without `isDiskImage`
-decode fine (defaults to `false`) since `Codable`'s synthesized decoder treats an `Encodable` struct's
-newly-added `Bool = false` property as present-with-default when absent — *provided* the integrator
-also gives it an explicit `decodeIfPresent`-style custom `init(from:)` if `BlockDriverCounter` doesn't
-already have one; if it currently relies on the fully-synthesized `Codable` conformance, a decode
-against an *old* recorded fixture missing the key will throw `keyNotFound` unless the field is declared
-optional or the type adds `decodeIfPresent(..., default: false)` in a custom initializer. (This
-repo's `RawTick.init(from:)` already uses `decodeIfPresent` for exactly this forward-compatibility
-reason — worth the same treatment here if `BlockDriverCounter` doesn't special-case it.)
+signature change to `Sensor`/`SensorSuite`/`RawTick`. `BlockDriverCounter` now has a custom
+`init(from decoder:)` (matching `RawTick`'s own `decodeIfPresent` pattern) that decodes `isDiskImage`
+via `decodeIfPresent(Bool.self, forKey: .isDiskImage) ?? false`, so an old recorded fixture without
+the key decodes as `false` instead of throwing `keyNotFound`. Covered by
+`DiskIOParseTests.blockDriverCounterDecodesOldFixtureWithoutIsDiskImageKeyAsFalse`.

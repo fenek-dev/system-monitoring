@@ -24,12 +24,15 @@ struct DiskIOSmokeTests {
         let internalDrives = reading.drivers.filter(\.isInternal)
         #expect(!internalDrives.isEmpty)
         #expect(internalDrives.contains { $0.bsdName != nil })
+        // ICR 001/11: the internal SSD is never a disk image.
+        #expect(internalDrives.allSatisfy { !$0.isDiskImage })
     }
 
-    /// `ttIsDiskImageDriver` (review fix: mark disk-image drivers so a future aggregator can exclude
-    /// them from system disk-I/O totals — not yet wired into `DiskIOReading`, see
-    /// docs/icr/001-w6d-diskio-isdiskimage.md). This machine reliably has at least one mounted `.dmg`
-    /// alongside the internal SSD, so both branches are exercised live, not just in principle.
+    /// `ttIsDiskImageDriver` (ICR 001/11, `docs/icr/001-w6d-diskio-isdiskimage.md`, approved and wired
+    /// into `DiskIOReading.drivers[].isDiskImage`): marks disk-image drivers so a future aggregator can
+    /// exclude them from system disk-I/O totals. This machine reliably has at least one mounted `.dmg`
+    /// alongside the internal SSD, so both branches are exercised live, not just in principle — both at
+    /// the raw IOKit level and through the sensor's own `sample()` output.
     @Test func diskImageDriversAreDistinguishedFromRealHardware() throws {
         let drivers = ttEnumerateBlockStorageDrivers()
         defer { for driver in drivers { IOObjectRelease(driver) } }
@@ -37,6 +40,12 @@ struct DiskIOSmokeTests {
         #expect(!ttIsDiskImageDriver(internalDriver))
         let diskImageDriver = try #require(drivers.first { ttIsDiskImageDriver($0) })
         #expect(!ttMediaInfo(ofFirstChildOf: diskImageDriver).isInternal)
+
+        let sensor = DiskIOSensor()
+        try sensor.prepare()
+        let (reading, _) = try sensor.sample(SampleContext())
+        #expect(reading.drivers.contains { $0.isDiskImage })
+        #expect(reading.drivers.contains { $0.isInternal && !$0.isDiskImage })
     }
 
     /// Ref: `iostat -d -c 2 -w 1` and `dd if=/dev/zero of=<tmp> bs=1m count=512 && sync` (plan §0).
