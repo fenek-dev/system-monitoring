@@ -87,6 +87,7 @@ import os
                 closeUI: { [weak self] in
                     self?.popover.close()
                     self?.dashboard.close()
+                    self?.settingsWindow.close()
                     self?.power?.stop()
                 },
                 shutdown: { await env.runtime.shutdown() },

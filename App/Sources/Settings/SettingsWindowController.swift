@@ -3,11 +3,12 @@ import MonitorScreens
 import SwiftUI
 
 /// Settings window (DESIGN §3.14): single instance, 520 wide, intrinsic height, not resizable, dashboard chrome
-/// (52-pt unified titlebar). Released on close.
+/// (52-pt titlebar, `TrafficLightsKeeper`). Released on close.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let env: AppEnvironment
     private var window: NSWindow?
+    private var lights: TrafficLightsKeeper?
 
     init(env: AppEnvironment) {
         self.env = env
@@ -17,12 +18,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let w = window ?? makeWindow()
         NSApp.activate()
         w.makeKeyAndOrderFront(nil)
-        DashboardWindowController.layoutTrafficLights(w)
+        lights?.apply()
     }
 
-    func windowDidResize(_ notification: Notification) {
-        if let w = window { DashboardWindowController.layoutTrafficLights(w) }
-    }
+    func close() { window?.close() }
 
     private func makeWindow() -> NSWindow {
         let about = AboutInfo(
@@ -30,9 +29,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—",
             historySize: { [dir = env.dataDirectory] in await Self.historySize(dir) })
         let root = SettingsView(loginItem: LaunchAtLogin.control, about: about)
-            .ignoresSafeArea()                                   // header strip sits under the traffic lights
             .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: root)
+        host.safeAreaRegions = []                                // header strip sits under the traffic lights
         host.sizingOptions = [.preferredContentSize]
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
                          styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -47,10 +46,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         w.delegate = self
         w.center()
         window = w
+        lights = TrafficLightsKeeper(window: w)
         return w
     }
 
     func windowWillClose(_ notification: Notification) {
+        lights?.stop()
+        lights = nil
         window?.contentViewController = nil
         window?.delegate = nil
         window = nil

@@ -30,6 +30,11 @@ struct ShellLaunchOptionsTests {
         #expect(LaunchOptions.parse(arguments: ["--status-preview"], environment: [:]).statusPreview == .elevated)
         #expect(LaunchOptions.parse(arguments: ["--login-item", "register"], environment: [:]).loginItemCommand == "register")
         #expect(LaunchOptions.parse(arguments: ["--login-item"], environment: [:]).loginItemCommand == "status")
+        // a following flag is never consumed as the command
+        let o = LaunchOptions.parse(arguments: ["--login-item", "--mock", "runaway"], environment: [:])
+        #expect(o.loginItemCommand == "status" && o.mockScenario == .runaway)
+        let unknown = LaunchOptions.parse(arguments: ["--login-item", "bogus"], environment: [:])
+        #expect(unknown.loginItemCommand == "status")
     }
 
     @Test func openDashboardPage() {

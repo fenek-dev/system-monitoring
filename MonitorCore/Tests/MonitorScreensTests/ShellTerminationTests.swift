@@ -12,6 +12,7 @@ import Testing
         events.append("shutdown.begin")
         if hang {
             try? await Task.sleep(for: .seconds(3600))
+            if Task.isCancelled { events.append("shutdown.cancelled") }
             return
         }
         if shutdownDelay > .zero { try? await Task.sleep(for: shutdownDelay) }
@@ -50,9 +51,19 @@ struct ShellTerminationTests {
         t.requestTermination()
         await waitForReply { rt.events }
         let elapsed = ContinuousClock.now - start
-        #expect(rt.events == ["shutdown.begin", "reply"])
+        try? await Task.sleep(for: .milliseconds(20))
+        // the losing (hung) shutdown got a cancellation request; no 1 h sleep left behind
+        #expect(rt.events == ["shutdown.begin", "shutdown.cancelled", "reply"]
+            || rt.events == ["shutdown.begin", "reply", "shutdown.cancelled"])
         #expect(t.phase == .done(timedOut: true))
         #expect(elapsed >= .milliseconds(80) && elapsed < .seconds(1))
+    }
+
+    @Test func timerIsCancelledWhenShutdownWins() async {
+        let start = ContinuousClock.now
+        let ok = await TerminationController.run({}, timeout: .seconds(3600))
+        #expect(ok)
+        #expect(ContinuousClock.now - start < .seconds(1))
     }
 
     @Test func secondRequestIsAbsorbed() async {

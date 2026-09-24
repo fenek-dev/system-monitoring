@@ -12,6 +12,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     private let visibility: VisibilityTracker
     private var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
+    private var lights: TrafficLightsKeeper?
 
     init(env: AppEnvironment, visibility: VisibilityTracker) {
         self.env = env
@@ -26,13 +27,14 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         if w.isMiniaturized { w.deminiaturize(nil) }
         NSApp.activate()
         w.makeKeyAndOrderFront(nil)
-        Self.layoutTrafficLights(w)
+        lights?.apply()
         visibility.update {
             $0.dashboardOpen = true
             $0.page = env.navigation.page                       // the nav observation catches up async
             $0.dashboardMiniaturized = w.isMiniaturized
-            $0.dashboardOccluded = false                        // occlusion notifications correct this
-
+            // Just ordered front: occlusionState may still say hidden until the server composites it; the
+            // notification that follows corrects it either way.
+            $0.dashboardOccluded = !w.occlusionState.contains(.visible) && !w.isKeyWindow
         }
     }
 
@@ -66,34 +68,8 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
             },
         ]
         window = w
+        lights = TrafficLightsKeeper(window: w)
         return w
-    }
-
-    /// DESIGN §3.0: traffic lights centered at y = 26 in a 52-pt titlebar, first light at x = 18, gap 8.
-    /// (An empty unified `NSToolbar` gives the 52-pt titlebar, but its background hides the SwiftUI page header
-    /// drawn under it, so the titlebar container is resized by hand instead.)
-    static func layoutTrafficLights(_ w: NSWindow, height: CGFloat = 52, x: CGFloat = 18, gap: CGFloat = 8) {
-        guard !w.styleMask.contains(.fullScreen),
-              let close = w.standardWindowButton(.closeButton),
-              let container = close.superview?.superview else { return }
-        var f = container.frame
-        f.size.height = height
-        f.origin.y = w.frame.height - height
-        container.frame = f
-        var nextX = x
-        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            guard let b = w.standardWindowButton(kind) else { continue }
-            b.setFrameOrigin(NSPoint(x: nextX, y: ((height - b.frame.height) / 2).rounded()))
-            nextX += b.frame.width + gap
-        }
-    }
-
-    func windowDidResize(_ notification: Notification) {
-        if let w = window { Self.layoutTrafficLights(w) }
-    }
-
-    func windowDidExitFullScreen(_ notification: Notification) {
-        if let w = window { Self.layoutTrafficLights(w) }
     }
 
     private func syncOcclusion() {
@@ -114,6 +90,8 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
+        lights?.stop()
+        lights = nil
         window?.contentViewController = nil
         window?.delegate = nil
         window = nil

@@ -16,14 +16,23 @@ BIN="$APP/Contents/MacOS/Telltale"
 # Never under ~/Documents (TCC prompts block file I/O): per-worktree dir in the user's caches (ruling).
 DATA="${TELLTALE_DATA_DIR:-$HOME/Library/Caches/dev.telltale-dev/$(basename "$PWD")}"
 
-# Graceful quit of processes running exactly $BIN: SIGTERM takes the app's ⌘Q path (store flush), then KILL.
+# PIDs whose executable is exactly $BIN (string compare, no regex: paths contain '.', '+', …).
+pids_of_this_build() {
+    local p
+    for p in $(pgrep -x Telltale || true); do
+        [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == "$BIN" ]] && echo "$p"
+    done
+    return 0
+}
+
+# Graceful quit: SIGTERM takes the app's ⌘Q path (store flush ≤ 3 s), then KILL.
 stop_this_build() {
     local pids
-    pids=$(pgrep -f "^$BIN( |$)" || true)
+    pids=$(pids_of_this_build)
     [[ -z "$pids" ]] && return 0
     kill -TERM $pids 2>/dev/null || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-        pgrep -f "^$BIN( |$)" >/dev/null || return 0
+        [[ -z "$(pids_of_this_build)" ]] && return 0
         sleep 0.5
     done
     kill -KILL $pids 2>/dev/null || true
@@ -48,5 +57,5 @@ done < <(env)
 
 open -n "${envs[@]}" "$APP" --args "$@"
 sleep 1
-pid=$(pgrep -nf "^$BIN( |$)" || true)
+pid=$(pids_of_this_build | tail -1)
 echo "run.sh: Telltale pid=${pid:-?} data=$DATA args=$*"

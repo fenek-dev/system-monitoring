@@ -11,10 +11,14 @@ public struct LoginItemControl {
     public var status: @MainActor () -> Status
     /// Throws when registration fails; the view shows the error.
     public var setEnabled: @MainActor (Bool) throws -> Void
+    /// `.requiresApproval`: opens System Settings › Login Items (`SMAppService.openSystemSettingsLoginItems()`).
+    public var openSystemSettings: @MainActor () -> Void
 
-    public init(status: @escaping @MainActor () -> Status, setEnabled: @escaping @MainActor (Bool) throws -> Void) {
+    public init(status: @escaping @MainActor () -> Status, setEnabled: @escaping @MainActor (Bool) throws -> Void,
+                openSystemSettings: @escaping @MainActor () -> Void = {}) {
         self.status = status
         self.setEnabled = setEnabled
+        self.openSystemSettings = openSystemSettings
     }
 
     public static var preview: LoginItemControl { LoginItemControl(status: { .disabled }, setEnabled: { _ in }) }
@@ -129,6 +133,11 @@ public struct SettingsView: View {
                 }
             }
             Spacer()
+            if loginStatus == .requiresApproval {
+                Button("Open Login Items") { loginItem.openSystemSettings() }
+                    .controlSize(.small)
+                    .help("Approve Telltale in System Settings › General › Login Items")
+            }
             Toggle("", isOn: Binding(
                 get: { loginStatus == .enabled || loginStatus == .requiresApproval },
                 set: { on in

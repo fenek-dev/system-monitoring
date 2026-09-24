@@ -66,7 +66,8 @@ public struct LaunchOptions: Sendable, Equatable {
             case "--crash-sensor":
                 o.crashSensor = next().flatMap(SensorID.init(rawValue:))
             case "--login-item":
-                o.loginItemCommand = next() ?? "status"
+                let cmd = next()                                    // never a following "--flag"
+                o.loginItemCommand = ["register", "unregister"].contains(cmd) ? cmd : "status"
             case "--status-preview":
                 o.statusPreview = next() == "critical" ? .critical : .elevated
             default:

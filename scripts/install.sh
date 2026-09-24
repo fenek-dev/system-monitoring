@@ -20,10 +20,17 @@ set -e
 
 # Quit only the installed copy (the one being replaced); worktree Debug builds keep running.
 BIN="$DEST/Contents/MacOS/Telltale"
-pids=$(pgrep -f "^$BIN( |$)" || true)
+installed_pids() {                                          # exact executable path, no regex
+    local p
+    for p in $(pgrep -x Telltale || true); do
+        [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == "$BIN" ]] && echo "$p"
+    done
+    return 0
+}
+pids=$(installed_pids)
 if [[ -n "$pids" ]]; then
     kill -TERM $pids 2>/dev/null || true                    # SIGTERM = the app's graceful ⌘Q path
-    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f "^$BIN( |$)" >/dev/null || break; sleep 0.5; done
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -z "$(installed_pids)" ]] && break; sleep 0.5; done
     kill -KILL $pids 2>/dev/null || true
 fi
 

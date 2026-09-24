@@ -39,27 +39,32 @@ public final class TerminationController {
         }
     }
 
-    /// Runs `operation`; returns false if `timeout` elapsed first (the operation keeps running detached from us).
+    /// Runs `operation`; returns false if `timeout` elapsed first. The loser is cancelled (the timer always; the
+    /// operation only gets a cancellation request, it may keep running until the process exits).
     public static func run(_ operation: @escaping @MainActor () async -> Void, timeout: Duration) async -> Bool {
         await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            let once = Once(cont)
-            Task { @MainActor in
+            let race = Race(cont)
+            race.work = Task { @MainActor in
                 await operation()
-                once.resume(true)
+                race.finish(true)
             }
-            Task { @MainActor in
+            race.timer = Task { @MainActor in
                 try? await Task.sleep(for: timeout)
-                once.resume(false)
+                if !Task.isCancelled { race.finish(false) }
             }
         }
     }
 
-    @MainActor private final class Once {
+    @MainActor private final class Race {
         private var cont: CheckedContinuation<Bool, Never>?
+        var work: Task<Void, Never>?
+        var timer: Task<Void, Never>?
         init(_ c: CheckedContinuation<Bool, Never>) { cont = c }
-        func resume(_ v: Bool) {
-            cont?.resume(returning: v)
+        func finish(_ completed: Bool) {
+            guard let c = cont else { return }
             cont = nil
+            (completed ? timer : work)?.cancel()
+            c.resume(returning: completed)
         }
     }
 }

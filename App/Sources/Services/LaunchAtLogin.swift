@@ -36,6 +36,7 @@ enum LaunchAtLogin {
     }
 
     static var control: LoginItemControl {
-        LoginItemControl(status: { status }, setEnabled: { try setEnabled($0) })
+        LoginItemControl(status: { status }, setEnabled: { try setEnabled($0) },
+                         openSystemSettings: { SMAppService.openSystemSettingsLoginItems() })
     }
 }
