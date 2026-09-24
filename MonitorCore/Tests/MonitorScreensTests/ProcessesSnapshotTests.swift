@@ -67,6 +67,24 @@ struct ProcessesSnapshotTests {
         assertSnapshot(view, size: ScreenSize.dashboard, named: "processes-connections-calm")
     }
 
+    /// CP2: a long name truncates in the middle; the kind tag is never clipped.
+    @Test func longNameKeepsKindTag() {
+        let key = AppKey(kind: .process, id: "com.apple.audio.Core-Audio-Driver-Service.helper")
+        let ps = [PT.proc(812, "com.apple.audio.Core-Audio-Driver-Service.helper", app: key, cpu: 1.2, user: "root",
+                          uid: 0),
+                  PT.proc(813, "com.apple.audio.Core-Audio-Driver-Service.helper", app: key, cpu: 0.4, user: "root",
+                          uid: 0)]
+        let out = ProcessTableModel.build(ProcessTableInput(processes: ps, apps: PT.group(ps)))
+        let view = ProcessListTable(lines: out.lines, emptyMessage: "", showsDisclosure: true, selection: nil,
+                                    sort: .cpu, descending: true, onSelect: { _ in }, onSort: { _ in },
+                                    onToggle: { _ in }, onDoubleClick: { _ in })
+            .padding(16)
+            .frame(width: 986, height: 120)
+            .background(TTColor.bgCard)
+            .screenEnvironment(.calm, page: .processes)
+        assertSnapshot(view, size: CGSize(width: 986, height: 120), named: "processes-row-longname")
+    }
+
     static func dashboard(_ scenario: MockScenario, mode: NavigationModel.ProcessesMode, select name: String?,
                           detail: Bool, expand: Bool = false) -> some View {
         let ctx = ScreenFixture.context(scenario, page: .processes)

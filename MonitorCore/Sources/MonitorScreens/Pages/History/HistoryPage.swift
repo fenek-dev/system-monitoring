@@ -258,8 +258,8 @@ private struct HistoryChartColumn: View {
     /// DESIGN §3.15 partial history: `fillTrack` before the first stored sample, "No data yet" if ≥ 60 wide.
     @ViewBuilder
     private func partialHistory(_ window: HistoryWindow, width: CGFloat, lanesHeight: CGFloat) -> some View {
-        if window.range != .live, model.loadState == .loaded, model.coverageKnown {
-            let x1: CGFloat = model.coverage.map { CGFloat(window.fraction(of: $0.start)) * width } ?? width
+        if let until = model.noDataUntil {
+            let x1 = until >= window.end ? width : CGFloat(window.fraction(of: until)) * width
             if x1 > 0.5 {
                 Rectangle().fill(TTColor.fillTrack)
                     .frame(width: x1, height: lanesHeight)

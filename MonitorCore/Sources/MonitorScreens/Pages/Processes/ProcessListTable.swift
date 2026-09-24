@@ -210,18 +210,31 @@ struct ProcessTableRow: View, Equatable {
                 } else {
                     TTAppTile(identity: row.identity, name: row.name, size: 20).padding(.trailing, TTSpace.x8)
                 }
-                Text(row.name).lineLimit(1).truncationMode(.tail).layoutPriority(1)
+                // The name yields (middle truncation keeps both ends of "com.apple.audio.Core-Audio-…-XPC");
+                // the kind tag is never clipped: full "App · 7 processes" when it fits, else its short form.
                 if let kind = row.kindLabel, row.depth == 0 {
                     ViewThatFits(in: .horizontal) {
-                        Text(kind).lineLimit(1).fixedSize()
-                        Text(Self.shortKind(kind)).lineLimit(1)
+                        nameAndKind(kind, truncating: false)
+                        nameAndKind(Self.shortKind(kind), truncating: false)
+                        nameAndKind(Self.shortKind(kind), truncating: true)
                     }
-                    .font(TTFont.caption)
-                    .foregroundStyle(TTColor.textTertiary)
-                    .padding(.leading, TTSpace.x8)
-                    .help(kind)
+                    .help("\(row.name) · \(kind)")
+                } else {
+                    Text(row.name).lineLimit(1).truncationMode(.middle).help(row.name)
                 }
             }
+        }
+    }
+
+    private func nameAndKind(_ kind: String, truncating: Bool) -> some View {
+        HStack(spacing: TTSpace.x8) {
+            if truncating {
+                Text(row.name).lineLimit(1).truncationMode(.middle)
+            } else {
+                Text(row.name).lineLimit(1).fixedSize()
+            }
+            Text(kind).font(TTFont.caption).foregroundStyle(TTColor.textTertiary).lineLimit(1).fixedSize()
+                .layoutPriority(1)
         }
     }
 

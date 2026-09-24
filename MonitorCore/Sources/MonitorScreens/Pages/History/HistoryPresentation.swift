@@ -24,29 +24,26 @@ public enum HistoryText {
         case .live: return "Last 60 seconds"
         case .hour: return "Last hour"
         case .day:
-            return formatter("EEEEdMMMM", locale, timeZone).string(from: now)
+            // Reference/DESIGN copy: "Thursday, 24 September" (fixed day-first order; names localized).
+            return formatter(fixed: "EEEE, d MMMM", locale, timeZone).string(from: now)
         case .week, .month:
             let first = window.start
             var cal = Calendar(identifier: .gregorian)
             cal.timeZone = timeZone
             let sameMonth = cal.component(.month, from: first) == cal.component(.month, from: now)
-            let dayOnly = formatter("d", locale, timeZone)
-            let dayMonth = formatter("dMMMM", locale, timeZone)
-            // Locale order: "18 – 24 September" (day first) / "September 18 – 24" (month first).
-            let dayFirst = dayMonth.string(from: now).first?.isNumber ?? true
-            if sameMonth {
-                return dayFirst ? "\(dayOnly.string(from: first)) – \(dayMonth.string(from: now))"
-                    : "\(dayMonth.string(from: first)) – \(dayOnly.string(from: now))"
-            }
-            return "\(dayMonth.string(from: first)) – \(dayMonth.string(from: now))"
+            let dayOnly = formatter(fixed: "d", locale, timeZone)
+            let dayMonth = formatter(fixed: "d MMMM", locale, timeZone)
+            // "18 – 24 September" / "26 August – 24 September".
+            let lhs = sameMonth ? dayOnly.string(from: first) : dayMonth.string(from: first)
+            return "\(lhs) – \(dayMonth.string(from: now))"
         }
     }
 
-    private static func formatter(_ template: String, _ locale: Locale, _ tz: TimeZone) -> DateFormatter {
+    private static func formatter(fixed format: String, _ locale: Locale, _ tz: TimeZone) -> DateFormatter {
         let f = DateFormatter()
         f.locale = locale
         f.timeZone = tz
-        f.setLocalizedDateFormatFromTemplate(template)
+        f.dateFormat = format
         return f
     }
 

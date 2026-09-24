@@ -178,6 +178,24 @@ public final class HistoryModel {
     }
 
     public var range: HistoryRange { window.range }
+
+    /// End of the leading "No data yet" region (DESIGN §3.15 partial history), nil when there is none. The data
+    /// itself wins over `coverage()`: the region ends at the first bucket with any lane value (a store that reports
+    /// no/late coverage — e.g. before its first flush — never hides samples that are there).
+    public var noDataUntil: Date? {
+        guard range != .live, loadState == .loaded else { return nil }
+        let firstIndex = lanes.values.compactMap { $0.firstIndex { $0 != nil } }.min()
+        let firstData = firstIndex.map { window.time(at: $0) }
+        let boundary: Date
+        switch (firstData, coverage?.start) {
+        case let (d?, c?): boundary = min(d, c)
+        case let (d?, nil): boundary = d
+        case let (nil, c?): boundary = c
+        case (nil, nil): return window.end                                   // empty history
+        }
+        guard boundary > window.start.addingTimeInterval(window.bucket * 0.5) else { return nil }
+        return min(boundary, window.end)
+    }
     public var cursorTime: Date { window.time(at: cursor) }
     public var isAtLatest: Bool { cursor == window.latest }
 
@@ -279,7 +297,9 @@ public final class HistoryModel {
     public nonisolated static func bucketed(_ points: [SeriesPoint], window: HistoryWindow) -> [Double?] {
         var values = [Double?](repeating: nil, count: window.count)
         for p in points {
-            let i = Int((p.time.timeIntervalSince(window.start) / window.bucket).rounded())
+            // Floor: the store's epoch-aligned buckets may be offset from a local-midnight window (30D: 2-h buckets
+            // vs. an odd UTC offset); each point lands in the window bucket containing its start.
+            let i = Int((p.time.timeIntervalSince(window.start) / window.bucket + 1e-6).rounded(.down))
             guard i >= 0, i < window.count else { continue }
             if let v = p.value, v.isFinite { values[i] = v }
         }

@@ -43,6 +43,25 @@ actor FakeHistoryProvider: HistoryProvider {
     }
 }
 
+/// CPU values from bucket `from` on (window buckets), `coverage()` nil.
+struct SeriesOnlyProvider: HistoryProvider {
+    let from: Int
+    func series(_ metrics: [HistoryMetric], range: HistoryRange, end: Date, bucket: Duration?) async throws -> [HistoryMetric: [SeriesPoint]] {
+        let b = Double(range.displayBucket.components.seconds)
+        let n = Int(Double(range.duration!.components.seconds) / b)
+        let start = end.addingTimeInterval(-Double(n) * b)
+        return [.cpuUsage: (0..<n).map { SeriesPoint(time: start.addingTimeInterval(Double($0) * b), value: $0 >= from ? 0.2 : nil) }]
+    }
+    func appSeries(_ app: AppKey, _ metrics: [AppMetric], range: HistoryRange, end: Date, bucket: Duration?) async throws -> [AppMetric: [SeriesPoint]] { [:] }
+    func appShares(at time: Date, metric: AppMetric, range: HistoryRange, limit: Int) async throws -> [AppShare] { [] }
+    func topApps(_ metric: AppMetric, in interval: DateInterval, limit: Int) async throws -> [AppAggregate] { [] }
+    func total(_ metric: HistoryMetric, in interval: DateInterval) async throws -> Double? { nil }
+    func peak(_ metric: HistoryMetric, in interval: DateInterval) async throws -> Double? { nil }
+    func events(in interval: DateInterval) async throws -> [HistoryEvent] { [] }
+    func coverage() async throws -> DateInterval? { nil }
+    func exportCSV(range: HistoryRange, end: Date, to url: URL) async throws -> ExportSummary { ExportSummary(rows: 0, bytes: 0, url: url) }
+}
+
 enum HT {
     static let now = MockDataProvider.referenceDate
     static var london: Calendar {
@@ -98,14 +117,16 @@ struct HistoryWindowTests {
         let tz = TimeZone(identifier: "Europe/London")!
         let gb = Locale(identifier: "en_GB")
         let day = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
-        #expect(HistoryText.title(day, now: HT.now, locale: gb, timeZone: tz) == "Thursday 24 September")
+        #expect(HistoryText.title(day, now: HT.now, locale: gb, timeZone: tz) == "Thursday, 24 September")
+        #expect(HistoryText.title(day, now: HT.now, locale: Locale(identifier: "en_US"), timeZone: tz)
+            == "Thursday, 24 September")                                   // reference copy in every locale order
         let week = HistoryWindow.make(.week, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(week, now: HT.now, locale: gb, timeZone: tz) == "18 – 24 September")
         let month = HistoryWindow.make(.month, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(month, now: HT.now, locale: gb, timeZone: tz) == "26 August – 24 September")
         let us = Locale(identifier: "en_US")
-        #expect(HistoryText.title(week, now: HT.now, locale: us, timeZone: tz) == "September 18 – 24")
-        #expect(HistoryText.title(month, now: HT.now, locale: us, timeZone: tz) == "August 26 – September 24")
+        #expect(HistoryText.title(week, now: HT.now, locale: us, timeZone: tz) == "18 – 24 September")
+        #expect(HistoryText.title(month, now: HT.now, locale: us, timeZone: tz) == "26 August – 24 September")
         let live = HistoryWindow.make(.live, now: HT.now, calendar: HT.london)
         #expect(HistoryText.title(live, now: HT.now, locale: gb, timeZone: tz) == "Last 60 seconds")
         #expect(HistoryText.laneValue(.cpuUsage, 0.8, units: UnitPreferences()) == "80%")
@@ -296,6 +317,23 @@ struct HistoryModelTests {
         #expect(cpu[m.window.latest + 12] == nil)                          // the future is a gap
         #expect(!m.events.isEmpty)
         #expect(!m.shares.isEmpty)
+    }
+
+    @Test func noDataRegionFollowsTheDataNotJustCoverage() async {
+        // Data present but the store reports no coverage (e.g. before its first flush): no overlay.
+        let m = HT.model(.day, provider: SeriesOnlyProvider(from: 0))
+        await m.load()
+        #expect(m.noDataUntil == nil)
+        // Data only from bucket 100: the region ends there.
+        let late = HT.model(.day, provider: SeriesOnlyProvider(from: 100))
+        await late.load()
+        #expect(late.noDataUntil == late.window.time(at: 100))
+        // Nothing at all: the whole window.
+        let empty = HT.model(.day, provider: EmptyHistoryProvider())
+        await empty.load()
+        #expect(empty.noDataUntil == empty.window.end)
+        // Live never shows it.
+        #expect(HT.model(.live).noDataUntil == nil)
     }
 
     @Test func loadSynchronouslyForSnapshots() {
