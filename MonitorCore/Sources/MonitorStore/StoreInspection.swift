@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 /// TEST-ONLY API: internal hooks for `@testable` tests (the test target does not import GRDB). Not for app code.
@@ -21,6 +22,12 @@ extension HistoryStore {
     /// Per-connection pragmas must be read on the writer connection.
     func writerInt(_ sql: String) async throws -> Int? {
         try await writer.writeWithoutTransaction { db in try Int.fetchOne(db, sql: sql) }
+    }
+
+    /// Retention alone (no flush, no rollup).
+    func runRetention(now: Date) async throws {
+        let cutoffs = Retention.cutoffs(nowMs: now.unixMs, config: config)
+        try await writer.write { db in try Retention.run(db, cutoffs) }
     }
 
     func execute(_ sql: String) async throws {

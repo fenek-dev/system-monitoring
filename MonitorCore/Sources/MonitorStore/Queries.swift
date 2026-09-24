@@ -31,8 +31,17 @@ struct Buckets: Sendable {
         let q = a / b
         return (a % b != 0 && (a < 0) != (b < 0)) ? q - 1 : q
     }
+
+    /// `requested` rounded to the nearest multiple of `resolution` (at least one).
+    static func width(requested: Int64, resolution: Int64) -> Int64 {
+        max((requested + resolution / 2) / resolution, 1) * resolution
+    }
 }
 
+/// Weighting (all levels): every row carries `interval_ms` = time it covers (raw: the sample's nominal cadence;
+/// rollups: the sum over their samples). Averages are time-weighted; `n` is only a sample count.
+/// App rows are weighted by their system row's `interval_ms` (`span_ms`). An app absent from a sample counts
+/// as 0; an app present with a NULL metric is left out of that metric's denominator.
 enum Queries {
     // MARK: Sources
 
@@ -48,7 +57,7 @@ enum Queries {
         return ("\(rolled) UNION ALL \(raw)", [window.from, min(tail, window.to), tail, window.to])
     }
 
-    /// Subquery yielding `(ts, app_id, n, span_ms, <cols>)`; `span_ms` = the system row's covered time.
+    /// Subquery yielding `(ts, app_id, n, span_ms, <cols>)`; `span_ms` = the system row's `interval_ms`.
     /// `appID` restricts to one app.
     static func appSource(_ db: Database, level: Level, cols: [String], window: Window, appID: Int64? = nil) throws
         -> (sql: String, arguments: StatementArguments) {
@@ -71,6 +80,19 @@ enum Queries {
         return ("\(branch(level)) UNION ALL \(branch(.raw))", args(window.from, min(tail, window.to)) + args(tail, window.to))
     }
 
+    /// End of the newest rolled-up bucket (raw rows from here on are not yet in `level`'s table).
+    private static func rawTailStart(_ db: Database, level: Level, window: Window) throws -> Int64 {
+        guard let newest = try Int64.fetchOne(db, sql: "SELECT MAX(ts) FROM \(level.systemTable)") else {
+            return window.from
+        }
+        return max(window.from, newest + level.resolutionMs)
+    }
+
+    /// Time-weighted average of a system column over non-null rows.
+    static func systemAverage(_ col: String) -> String {
+        "SUM(\(col) * interval_ms) * 1.0 / SUM(CASE WHEN \(col) IS NOT NULL THEN interval_ms END)"
+    }
+
     static func appID(_ db: Database, _ key: AppKey) throws -> Int64? {
         try Int64.fetchOne(db, sql: "SELECT id FROM app WHERE key_kind = ? AND key_id = ?",
                            arguments: [key.kind.rawValue, key.id])
@@ -79,6 +101,123 @@ enum Queries {
     static func identity(_ row: Row, kind: String, id: String, name: String, bundle: String) -> AppIdentity {
         let key = AppKey(kind: AppKey.Kind(rawValue: row[kind]) ?? .other, id: row[id])
         return AppIdentity(key: key, displayName: row[name] ?? "", bundlePath: row[bundle])
+    }
+
+    static func finite(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+
+    // MARK: System series / aggregates
+
+    /// Bucket key → per-column time-weighted average (nil = no non-null samples).
+    static func systemBuckets(_ db: Database, cols: [String], level: Level, window: Window, width: Int64) throws
+        -> [Int64: [Double?]] {
+        let source = try systemSource(db, level: level, cols: cols, window: window)
+        let aggregates = cols.map(Schema.quoted).map { ", \(systemAverage($0))" }.joined()
+        let sql = "SELECT ts / \(width) AS k\(aggregates) FROM (\(source.sql)) GROUP BY k"
+        var result: [Int64: [Double?]] = [:]
+        let rows = try Row.fetchCursor(db, sql: sql, arguments: source.arguments)
+        while let row = try rows.next() {
+            let key: Int64 = row[0]
+            result[key] = (0..<cols.count).map { finite(row[$0 + 1]) }
+        }
+        return result
+    }
+
+    /// One point per bucket key; keys without a row are gaps.
+    static func points(_ buckets: Buckets, _ rows: [Int64: [Double?]], column: Int) -> [SeriesPoint] {
+        buckets.keys.map { k in
+            SeriesPoint(time: Date(unixMs: k * buckets.width), value: rows[k]?[column] ?? nil)
+        }
+    }
+
+    /// System metric aggregate over a window: integral (value × seconds) and peak.
+    static func systemAggregate(_ db: Database, metric: String, level: Level, window: Window)
+        throws -> (integral: Double?, peak: Double?) {
+        let col = Schema.quoted(metric)
+        let sys = try systemSource(db, level: level, cols: [metric], window: window)
+        let row = try Row.fetchOne(db, sql: """
+            SELECT SUM(\(col) * interval_ms) / 1000.0, MAX(\(col)) FROM (\(sys.sql)) WHERE \(col) IS NOT NULL
+            """, arguments: sys.arguments)
+        return (finite(row?[0]), finite(row?[1]))
+    }
+
+    // MARK: App series / aggregates
+
+    /// Bucket key → per-column app average (absent = 0; nil = unavailable), only for buckets with system rows.
+    static func appBuckets(_ db: Database, key: AppKey, cols: [String], level: Level, window: Window, width: Int64) throws
+        -> [Int64: [Double?]] {
+        let sys = try systemSource(db, level: level, cols: [], window: window)
+        var covered: [Int64: Double] = [:]
+        let sysRows = try Row.fetchCursor(db, sql: "SELECT ts / \(width) AS k, SUM(interval_ms) FROM (\(sys.sql)) GROUP BY k",
+                                          arguments: sys.arguments)
+        while let row = try sysRows.next() { covered[row[0]] = row[1] }
+
+        // Per bucket and column: Σ value × span, Σ span where the value is NULL.
+        var sums: [Int64: [(weighted: Double?, nullSpan: Double)]] = [:]
+        if let id = try appID(db, key) {
+            let app = try appSource(db, level: level, cols: cols, window: window, appID: id)
+            let aggregates = cols.map(Schema.quoted).map {
+                ", SUM(\($0) * span_ms), COALESCE(SUM(CASE WHEN \($0) IS NULL THEN span_ms END), 0)"
+            }.joined()
+            let rows = try Row.fetchCursor(db, sql: "SELECT ts / \(width) AS k\(aggregates) FROM (\(app.sql)) GROUP BY k",
+                                           arguments: app.arguments)
+            while let row = try rows.next() {
+                var cells: [(weighted: Double?, nullSpan: Double)] = []
+                for i in 0..<cols.count {
+                    let weighted: Double? = row[1 + 2 * i]
+                    let nullSpan: Double = row[2 + 2 * i]
+                    cells.append((weighted, nullSpan))
+                }
+                let key: Int64 = row[0]
+                sums[key] = cells
+            }
+        }
+
+        var result: [Int64: [Double?]] = [:]
+        for (k, total) in covered where total > 0 {
+            guard let row = sums[k] else {
+                result[k] = Array(repeating: 0, count: cols.count)
+                continue
+            }
+            result[k] = row.map { cell in
+                let denominator = total - cell.nullSpan
+                guard let weighted = cell.weighted, denominator > 0 else { return nil }
+                return finite(weighted / denominator)
+            }
+        }
+        return result
+    }
+
+    /// Per-app time-weighted average (absent = 0), peak and integral (value × seconds) of one metric.
+    struct AppTotals: Sendable {
+        var identity: AppIdentity
+        var average: Double, peak: Double, integral: Double
+    }
+
+    static func appTotals(_ db: Database, metric: String, level: Level, window: Window) throws -> [AppTotals] {
+        let sys = try systemSource(db, level: level, cols: [], window: window)
+        guard let covered = try Double.fetchOne(db, sql: "SELECT SUM(interval_ms) FROM (\(sys.sql))",
+                                                arguments: sys.arguments),
+              covered > 0 else { return [] }
+        let col = Schema.quoted(metric)
+        let app = try appSource(db, level: level, cols: [metric], window: window)
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT app.key_kind, app.key_id, app.name, app.bundle_path,
+                   SUM(x.\(col) * x.span_ms), COALESCE(SUM(CASE WHEN x.\(col) IS NULL THEN x.span_ms END), 0),
+                   MAX(x.\(col))
+            FROM (\(app.sql)) AS x JOIN app ON app.id = x.app_id
+            GROUP BY x.app_id
+            """, arguments: app.arguments)
+        return rows.compactMap { row in
+            guard let weighted = finite(row[4]) else { return nil }
+            let nullSpan: Double = row[5]
+            let denominator = covered - nullSpan
+            guard denominator > 0 else { return nil }
+            return AppTotals(identity: identity(row, kind: "key_kind", id: "key_id", name: "name", bundle: "bundle_path"),
+                             average: weighted / denominator, peak: finite(row[6]) ?? 0, integral: weighted / 1_000)
+        }
     }
 
     // MARK: Events, coverage
@@ -123,114 +262,6 @@ enum Queries {
         guard let end = rawNewest ?? newestRolled else { return nil }
         return DateInterval(start: Date(unixMs: start), end: Date(unixMs: Swift.max(start, end)))
     }
-
-    // MARK: App series / aggregates
-
-    /// Bucket key → per-column app average over the bucket's samples (absent = 0; nil = unavailable),
-    /// only for buckets that have system rows.
-    static func appBuckets(_ db: Database, key: AppKey, cols: [String], level: Level, window: Window, width: Int64) throws
-        -> [Int64: [Double?]] {
-        let sys = try systemSource(db, level: level, cols: [], window: window)
-        var samples: [Int64: Double] = [:]
-        let sysRows = try Row.fetchCursor(db, sql: "SELECT ts / \(width) AS k, SUM(n) FROM (\(sys.sql)) GROUP BY k",
-                                          arguments: sys.arguments)
-        while let row = try sysRows.next() { samples[row[0]] = row[1] }
-
-        var sums: [Int64: [Double?]] = [:]
-        if let id = try appID(db, key) {
-            let app = try appSource(db, level: level, cols: cols, window: window, appID: id)
-            let aggregates = cols.map(Schema.quoted).map { ", SUM(\($0) * n)" }.joined()
-            let rows = try Row.fetchCursor(db, sql: "SELECT ts / \(width) AS k\(aggregates) FROM (\(app.sql)) GROUP BY k",
-                                           arguments: app.arguments)
-            while let row = try rows.next() { sums[row[0]] = (0..<cols.count).map { row[$0 + 1] } }
-        }
-
-        var result: [Int64: [Double?]] = [:]
-        for (k, n) in samples where n > 0 {
-            guard let row = sums[k] else {
-                result[k] = Array(repeating: 0, count: cols.count)
-                continue
-            }
-            result[k] = row.map { $0.flatMap { finite($0 / n) } }
-        }
-        return result
-    }
-
-    /// Per-app average (absent = 0), peak and integral (value × seconds) of one metric over a window.
-    struct AppTotals: Sendable {
-        var identity: AppIdentity
-        var average: Double, peak: Double, integral: Double
-    }
-
-    static func appTotals(_ db: Database, metric: String, level: Level, window: Window) throws -> [AppTotals] {
-        let sys = try systemSource(db, level: level, cols: [], window: window)
-        guard let samples = try Double.fetchOne(db, sql: "SELECT SUM(n) FROM (\(sys.sql))", arguments: sys.arguments),
-              samples > 0 else { return [] }
-        let col = Schema.quoted(metric)
-        let app = try appSource(db, level: level, cols: [metric], window: window)
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT app.key_kind, app.key_id, app.name, app.bundle_path,
-                   SUM(x.\(col) * x.n), MAX(x.\(col)), SUM(x.\(col) * x.span_ms) / 1000.0
-            FROM (\(app.sql)) AS x JOIN app ON app.id = x.app_id
-            WHERE x.\(col) IS NOT NULL
-            GROUP BY x.app_id
-            """, arguments: app.arguments)
-        return rows.compactMap { row in
-            guard let sum = finite(row[4]) else { return nil }
-            return AppTotals(identity: identity(row, kind: "key_kind", id: "key_id", name: "name", bundle: "bundle_path"),
-                             average: sum / samples, peak: finite(row[5]) ?? 0, integral: finite(row[6]) ?? 0)
-        }
-    }
-
-    /// System metric aggregate over a window: integral (value × seconds) and peak.
-    static func systemAggregate(_ db: Database, metric: String, level: Level, window: Window)
-        throws -> (integral: Double?, peak: Double?) {
-        let col = Schema.quoted(metric)
-        let sys = try systemSource(db, level: level, cols: [metric], window: window)
-        let row = try Row.fetchOne(db, sql: """
-            SELECT SUM(\(col) * interval_ms) / 1000.0, MAX(\(col)) FROM (\(sys.sql)) WHERE \(col) IS NOT NULL
-            """, arguments: sys.arguments)
-        return (finite(row?[0]), finite(row?[1]))
-    }
-
-    /// End of the newest rolled-up bucket (raw rows from here on are not yet in `level`'s table).
-    private static func rawTailStart(_ db: Database, level: Level, window: Window) throws -> Int64 {
-        guard let newest = try Int64.fetchOne(db, sql: "SELECT MAX(ts) FROM \(level.systemTable)") else {
-            return window.from
-        }
-        return max(window.from, newest + level.resolutionMs)
-    }
-
-    // MARK: System series
-
-    /// Bucket key → per-column weighted average (nil = no non-null samples).
-    static func systemBuckets(_ db: Database, cols: [String], level: Level, window: Window, width: Int64) throws
-        -> [Int64: [Double?]] {
-        let source = try systemSource(db, level: level, cols: cols, window: window)
-        let aggregates = cols.map(Schema.quoted).map {
-            ", SUM(\($0) * n) / SUM(CASE WHEN \($0) IS NOT NULL THEN n END)"
-        }.joined()
-        let sql = "SELECT ts / \(width) AS k\(aggregates) FROM (\(source.sql)) GROUP BY k"
-        var result: [Int64: [Double?]] = [:]
-        let rows = try Row.fetchCursor(db, sql: sql, arguments: source.arguments)
-        while let row = try rows.next() {
-            let key: Int64 = row[0]
-            result[key] = (0..<cols.count).map { finite(row[$0 + 1]) }
-        }
-        return result
-    }
-
-    static func finite(_ value: Double?) -> Double? {
-        guard let value, value.isFinite else { return nil }
-        return value
-    }
-
-    /// One point per bucket key; keys without a row are gaps.
-    static func points(_ buckets: Buckets, _ rows: [Int64: [Double?]], column: Int) -> [SeriesPoint] {
-        buckets.keys.map { k in
-            SeriesPoint(time: Date(unixMs: k * buckets.width), value: rows[k]?[column] ?? nil)
-        }
-    }
 }
 
 extension Level {
@@ -242,6 +273,8 @@ extension Level {
         case .month: .quarter
         }
     }
+
+    static func coarser(_ a: Level, _ b: Level) -> Level { a.rawValue >= b.rawValue ? a : b }
 }
 
 extension HistoryRange {

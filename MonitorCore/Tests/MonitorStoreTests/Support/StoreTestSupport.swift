@@ -28,9 +28,11 @@ enum T {
 
     static func tempDB() -> URL { tempDir().appendingPathComponent("history.sqlite") }
 
-    static func config(_ clock: TestClock, flushMaxRecords: Int = 120) -> StoreConfig {
+    /// Maintenance timer off by default (`maintenanceInterval = .zero`): tests call `maintain(now:)` themselves.
+    static func config(_ clock: TestClock, flushMaxRecords: Int = 120, maintenanceInterval: Duration = .zero) -> StoreConfig {
         var c = StoreConfig()
         c.flushMaxRecords = flushMaxRecords
+        c.maintenanceInterval = maintenanceInterval
         c.now = { clock.now }
         return c
     }

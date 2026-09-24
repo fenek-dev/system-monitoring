@@ -45,7 +45,7 @@ enum RecordWriter {
                 let ts = record.time.unixMs
                 values.removeAll(keepingCapacity: true)
                 values.append(ts)
-                values.append(record.interval.milliseconds)
+                values.append(nominalIntervalMs(record.interval))
                 for m in systemMetrics { values.append(record.system[m]) }
                 try insertSystem.execute(arguments: StatementArguments(values))
 
@@ -73,6 +73,20 @@ enum RecordWriter {
                 ])
             }
         }
+    }
+
+    /// Longest cadence a sample may claim (background is 5 s).
+    static let maxNominalIntervalMs: Int64 = 60_000
+    /// Used when a record carries no interval.
+    static let defaultIntervalMs: Int64 = 5_000
+
+    /// `interval_ms` = the sample's NOMINAL cadence (1 s / 5 s), not the time since the previous sample, so the
+    /// first record after a pause or sleep weighs one interval and never covers the gap. Clamped to
+    /// 1 ms…60 s as a guard; ≤ 0 → 5 s.
+    static func nominalIntervalMs(_ interval: Duration) -> Int64 {
+        let ms = interval.milliseconds
+        guard ms > 0 else { return defaultIntervalMs }
+        return min(ms, maxNominalIntervalMs)
     }
 
     /// Upserts the app row once per flush (name/bundle path follow the latest record).

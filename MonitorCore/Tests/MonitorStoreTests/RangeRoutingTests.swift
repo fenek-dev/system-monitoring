@@ -61,6 +61,30 @@ import Testing
         #expect(byDefault.last?.value == 2)                                 // (720 × 3 + 720 × 1) / 1440
     }
 
+    @Test func customBucketsRoundToLevelResolution() async throws {
+        let store = try await seeded()
+        let week = try #require(try await store.series([.cpuUsage], range: .week, end: end, bucket: .seconds(90))[.cpuUsage])
+        #expect(week.count == 7 * 86_400 / 120)                            // 90 s → 2 min on the 1 m level
+        #expect(week[1].time.timeIntervalSince(week[0].time) == 120)
+        let hour = try #require(try await store.series([.cpuUsage], range: .hour, end: end, bucket: .milliseconds(15_400))[.cpuUsage])
+        #expect(hour.count == 240)                                          // 15.4 s → 15 s on raw
+    }
+
+    @Test func dayRangeWithPastEndReadsRollupsForTheExpiredPart() async throws {
+        let clock = TestClock()
+        let store = try HistoryStore(location: .inMemory, config: T.config(clock))
+        let start = T.t0 - 36 * 3_600
+        try await store.execute("""
+            WITH RECURSIVE s(ts) AS (SELECT \(start.unixMs) UNION ALL SELECT ts + 5000 FROM s WHERE ts + 5000 < \((T.t0 - 12 * 3_600).unixMs))
+            INSERT INTO system_raw(ts, interval_ms, cpuUsage) SELECT ts, 5000, 7 FROM s
+            """)
+        try await store.maintain(now: T.t0)                                 // raw older than 24 h → rolled, then deleted
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw WHERE ts < \((T.t0 - 86_400).unixMs)") == 0)
+        let points = try #require(try await store.series([.cpuUsage], range: .day, end: T.t0 - 12 * 3_600)[.cpuUsage])
+        #expect(points.count == 288)
+        #expect(points.allSatisfy { $0.value == 7 })                        // no hole where raw expired
+    }
+
     @Test func bucketFinerThanLevelIsClamped() async throws {
         let store = try await seeded()
         let points = try #require(try await store.series([.cpuUsage], range: .week, end: end, bucket: .seconds(5))[.cpuUsage])

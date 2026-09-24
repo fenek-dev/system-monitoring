@@ -43,6 +43,7 @@ import Testing
             """)
         await store.append(RecordBatch(record: fullRecord(T.t0)))
         await store.append(RecordBatch(record: fullRecord(T.t0 + 5)))       // count flush fails → logged, dropped
+        await store.writesSettled()
         #expect(await store.pendingRecordCount == 0)
         #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 0)
         #expect(try await store.intValue("SELECT COUNT(*) FROM app_raw") == 0)   // one transaction: nothing partial
