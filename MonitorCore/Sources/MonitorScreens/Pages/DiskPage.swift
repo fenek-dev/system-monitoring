@@ -407,7 +407,7 @@ private struct DiskActivityCard: View {
                                 unavailableReason: "Not reported for this process", font: TTFont.body12))
         },
         .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) { row in
-            AnyView(RowActionsImageButton(target: row.target, name: row.name))
+            AnyView(TTRowActionsButton(target: row.target, name: row.name))
         },
     ]
 }

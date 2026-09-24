@@ -471,7 +471,7 @@ private struct EnergyImpactCard: View {
                 if selected == row.id, actions.canControl(row.target) {
                     return AnyView(EnergyInlineActions(row: row).frame(maxWidth: .infinity, alignment: .leading))
                 }
-                return AnyView(RowActionsImageButton(target: row.target, name: row.name))
+                return AnyView(TTRowActionsButton(target: row.target, name: row.name))
             },
         ]
     }
@@ -497,42 +497,6 @@ private struct EnergyInlineActions: View {
             Button("Force Quit") { requestForceQuit?(row.target) }
                 .buttonStyle(.tt(.smallDestructive))
         }
-    }
-}
-
-// TODO(W3): replace with TTRowActionsButton once its Menu label draws (macOS Menu labels drop Shape-based views,
-// so its TTIcon "…" renders empty). Same look: 24-pt `rowAction`, radius 5, `ellipsis` 16 `textSecondary`.
-/// Shared by the Power and Disk tables.
-struct RowActionsImageButton: View {
-    let target: ProcessTarget
-    let name: String
-    @State private var hovering = false
-
-    /// The `ellipsis` icon rasterized once (Menu labels accept images and text only).
-    @MainActor static let ellipsis: NSImage = {
-        let renderer = ImageRenderer(content: TTIcon(.ellipsis, size: 16, color: TTColor.textSecondary)
-            .frame(width: 16, height: 16))
-        renderer.scale = 2
-        let image = renderer.nsImage ?? NSImage(size: NSSize(width: 16, height: 16))
-        image.size = NSSize(width: 16, height: 16)
-        return image
-    }()
-
-    var body: some View {
-        Menu {
-            TTRowActionsMenu(target: target)
-        } label: {
-            Image(nsImage: Self.ellipsis)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(width: 24, height: 24)
-        .background(RoundedRectangle(cornerRadius: TTRadius.r5, style: .continuous)
-            .fill(hovering ? TTColor.fillIconButton : .clear))
-        .fixedSize()
-        .onHover { hovering = $0 }
-        .help("Actions for \(name)")
-        .accessibilityLabel("Actions for \(name)")
     }
 }
 
