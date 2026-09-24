@@ -8,7 +8,8 @@ import SwiftUI
 
 // MARK: - Range-aware chart data
 
-/// Chart data for the page's range (DESIGN §3.0 "Range behavior"): Live reads `LiveModel.series` (last 60 s),
+/// Chart data for the page's range (DESIGN §3.0 "Range behavior"): Live reads `LiveModel.chartSeries` (last 60 s
+/// on the 1-s grid),
 /// other ranges read the store (`historyProvider.series(…, bucket: nil)` = the range's display bucket).
 struct RangeSeries {
     var range: HistoryRange
@@ -60,7 +61,7 @@ struct RangeSeriesReader<Content: View>: View {
         let range = nav.range
         if range == .live {
             content(RangeSeries(range: .live, end: now ?? live.lastUpdate ?? Date(),
-                                points: Dictionary(uniqueKeysWithValues: metrics.map { ($0, live.series($0)) })))
+                                points: Dictionary(uniqueKeysWithValues: metrics.map { ($0, live.chartSeries($0)) })))
         } else {
             let end = Self.storeEnd(clock: clock, range: range, fallback: now ?? Date())
             let key = LoadKey(range: range, bucketEnd: end)

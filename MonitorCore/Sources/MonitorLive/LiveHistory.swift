@@ -103,6 +103,24 @@ public struct LiveHistory: Sendable {
         return points(slots[i].buffer, window: window) { $0[metric] }
     }
 
+    /// The last `window` on a fixed `step` slot grid ending at the newest entry (U-I1): exactly
+    /// `window / step + 1` points, oldest first, slot `k` at `newest − (N−1−k)·step`. Each sample fills its own slot;
+    /// slots with no sample are nil (gaps, DESIGN §2.3 — never interpolated). Charts place points by index, so a
+    /// 5-s background point and the 1-s points after it land at their real time positions, and a short history
+    /// occupies only the right end of the chart instead of being stretched across it.
+    /// Slots follow the spacing between consecutive entries (rounded to whole steps; two samples are never
+    /// merged into one slot), so ±jitter of a 1-s cadence never opens a spurious gap.
+    public func gridSeries(_ metric: HistoryMetric, window: Duration, step: Duration = .seconds(1)) -> [SeriesPoint] {
+        gridPoints(system, window: window, step: step) { $0[metric] }
+    }
+
+    /// `gridSeries` for a tracked app; empty unless `app` is currently tracked.
+    public func gridAppSeries(_ app: AppKey, _ metric: AppMetric, window: Duration,
+                              step: Duration = .seconds(1)) -> [SeriesPoint] {
+        guard let i = slotIndex[app] else { return [] }
+        return gridPoints(slots[i].buffer, window: window, step: step) { $0[metric] }
+    }
+
     // MARK: - Test hooks
 
     /// Base address of each tracked app's buffer storage (copy-on-write detection in tests).
@@ -122,6 +140,39 @@ public struct LiveHistory: Sendable {
         var out: [SeriesPoint] = []
         out.reserveCapacity(buffer.endIndex - i)
         for e in buffer[i...] { out.append(SeriesPoint(time: e.time, value: e.value.flatMap(value))) }
+        return out
+    }
+
+    private func gridPoints<V>(_ buffer: RingBuffer<Entry<V>>, window: Duration, step: Duration,
+                               _ value: (V) -> Double?) -> [SeriesPoint] {
+        guard let newest = latestTime else { return [] }
+        let stepS = max(step.seconds, 1e-3)
+        let n = max(1, Int((window.seconds / stepS).rounded()) + 1)
+        var slots = [Double?](repeating: nil, count: n)
+        // Bounds the walk over gap-only entries; slow-jitter cadences may need a little more than `window`.
+        let horizon = 2 * window.seconds + stepS
+        var offset = 0                    // slots back from `newest`
+        var prevTime = newest             // time of the last placed sample (gap entries are only "no value")
+        var placed = false
+        var i = buffer.endIndex
+        while i > buffer.startIndex {
+            i -= 1
+            let e = buffer[i]
+            if newest.timeIntervalSince(e.time) > horizon { break }
+            guard let v = e.value.flatMap(value), v.isFinite else { continue }
+            var d = Int((prevTime.timeIntervalSince(e.time) / stepS).rounded())
+            if placed && d < 1 { d = 1 }  // two samples never share a slot
+            offset += max(d, 0)
+            guard offset < n else { break }
+            slots[n - 1 - offset] = v
+            prevTime = e.time
+            placed = true
+        }
+        var out: [SeriesPoint] = []
+        out.reserveCapacity(n)
+        for k in 0..<n {
+            out.append(SeriesPoint(time: newest.addingTimeInterval(-Double(n - 1 - k) * stepS), value: slots[k]))
+        }
         return out
     }
 

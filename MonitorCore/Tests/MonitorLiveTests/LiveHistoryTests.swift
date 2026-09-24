@@ -152,6 +152,69 @@ func liveApp(_ id: String, cpu: Double?, kind: AppKey.Kind = .app, watts: Double
         #expect(h.appSeries(AppKey(kind: .app, id: "a"), .energy, window: .seconds(60)).map(\.value) == [2])
     }
 
+    // MARK: 1-s chart grid (U-I1)
+
+    /// 12 background points 5 s apart, then 10 interactive points 1 s apart (the popover opened at t = 56):
+    /// every sample sits in the slot of its own time; the slots between background points are gaps.
+    @Test func gridPlacesMixedCadencePointsByTime() {
+        var h = LiveHistory()
+        for k in 0..<12 {
+            let t = Double(k * 5)
+            h.append(liveFrame(t: t, cpu: t, mode: .background, interval: .seconds(5)))
+        }
+        for t in 56...65 { h.append(liveFrame(t: Double(t), cpu: Double(t))) }
+        let s = h.gridSeries(.cpuUsage, window: .seconds(60))
+        #expect(s.count == 61)
+        // Slot k is at t = 5 + k (newest 65 − 60 s); x = k / 60 of the chart width.
+        for (k, p) in s.enumerated() {
+            let t = 5 + Double(k)
+            #expect(p.time == Date(timeIntervalSince1970: t))
+            let expected: Double? = (t <= 55 ? t.truncatingRemainder(dividingBy: 5) == 0 : true) ? t : nil
+            #expect(p.value == expected, "slot \(k)")
+        }
+        // The 55 s of background history take 50/60 of the width, the last 10 s the rest (not 57 % / 43 %).
+        #expect(s.firstIndex { $0.value == 56 } == 51)
+    }
+
+    @Test func gridShortHistoryFillsOnlyTheRightEnd() {
+        var h = LiveHistory()
+        for t in 0..<10 { h.append(liveFrame(t: Double(t))) }
+        let s = h.gridSeries(.cpuUsage, window: .seconds(60))
+        #expect(s.count == 61)
+        #expect(s.prefix(51).allSatisfy { $0.value == nil })
+        #expect(s.suffix(10).allSatisfy { $0.value == 0.5 })
+    }
+
+    @Test func gridJitterNeverOpensAGap() {
+        var h = LiveHistory()
+        for k in 0..<80 { h.append(liveFrame(t: Double(k) * 1.04 + (k.isMultiple(of: 3) ? 0.06 : 0))) }
+        let s = h.gridSeries(.cpuUsage, window: .seconds(60))
+        #expect(s.count == 61)
+        #expect(s.allSatisfy { $0.value != nil })
+    }
+
+    @Test func gridKeepsPauseGap() {
+        var h = LiveHistory()
+        h.append(liveFrame(t: 0))
+        h.append(liveFrame(t: 1))
+        h.append(liveFrame(t: 30))                   // 29 s jump → gap entry between
+        let s = h.gridSeries(.cpuUsage, window: .seconds(60))
+        #expect(s.count == 61)
+        #expect(s.compactMap(\.value).count == 3)
+        #expect(s[60].value != nil && s[31].value != nil && s[30].value != nil)
+        #expect(s[32..<60].allSatisfy { $0.value == nil })
+    }
+
+    @Test func gridAppSeriesMatchesSystemGrid() {
+        var h = LiveHistory()
+        for k in 0..<3 {
+            h.append(liveFrame(t: Double(k * 5), mode: .background, interval: .seconds(5), apps: [liveApp("a", cpu: 1)]))
+        }
+        let s = h.gridAppSeries(AppKey(kind: .app, id: "a"), .cpu, window: .seconds(10))
+        #expect(s.map(\.value) == [1, nil, nil, nil, nil, 1, nil, nil, nil, nil, 1])
+        #expect(h.gridAppSeries(AppKey(kind: .app, id: "zz"), .cpu, window: .seconds(10)).isEmpty)
+    }
+
     @Test func appSeriesCapacity() {
         var h = LiveHistory(capacity: 300, appCapacity: 3, maxTrackedApps: 64)
         for t in 0..<10 { h.append(liveFrame(t: Double(t), apps: [liveApp("a", cpu: Double(t))])) }

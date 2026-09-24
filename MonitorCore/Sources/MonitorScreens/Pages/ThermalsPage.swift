@@ -776,7 +776,7 @@ enum SystemRangeSeries {
 
     @MainActor static func points(_ metric: HistoryMetric, range: HistoryRange, live: LiveModel,
                                   stored: [HistoryMetric: [SeriesPoint]]) -> [SeriesPoint] {
-        range == .live ? live.series(metric) : (stored[metric] ?? [])
+        range == .live ? live.chartSeries(metric) : (stored[metric] ?? [])
     }
 
     /// Store series for a non-live range; Live → empty (the ring is read directly).

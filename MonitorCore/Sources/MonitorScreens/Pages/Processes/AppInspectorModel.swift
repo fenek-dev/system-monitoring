@@ -120,7 +120,7 @@ public final class AppInspectorModel {
     public func livePoints(_ lane: InspectorLane, row: ProcessRow, live: LiveModel) -> [SeriesPoint] {
         switch row.rowKind {
         case .app:
-            let series = lane.metrics.map { live.appSeries(row.appKey, $0) }
+            let series = lane.metrics.map { live.chartAppSeries(row.appKey, $0) }
             return Self.sum(series)
         case .process:
             return ringOwner == processID(row) ? ring[lane] ?? [] : []

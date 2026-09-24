@@ -49,25 +49,25 @@ enum PopoverModel {
             if let p { parts.append(TTFormat.ghz(p, digits: 1)) }
             r.subtitle = parts.isEmpty ? nil : parts.joined(separator: " · ")
             r.value = TTFormat.percent(live.cpu.usage)
-            r.points = live.series(.cpuUsage)
+            r.points = live.chartSeries(.cpuUsage)
         case .gpu:
             r.subtitle = live.gpu.frequencyMHz.map { TTFormat.frequency($0) }
             r.value = TTFormat.percent(live.gpu.usage)
-            r.points = live.series(.gpuUsage)
+            r.points = live.chartSeries(.gpuUsage)
         case .memory:
             r.subtitle = live.memory.pressureLevel.map { "pressure \($0.title.lowercased())" }
             r.value = TTFormat.memory(live.memory.used, style: .headline)
-            r.points = live.series(.memUsed)
+            r.points = live.chartSeries(.memUsed)
             r.domain = 0...Double(max(live.memory.total, 1))
         case .network:
             r.subtitle = live.network.txBps.map { TTFormat.rate($0, units: units, direction: .up) }
             r.value = TTFormat.rate(live.network.rxBps, units: units)
-            r.points = live.series(.netRx)
+            r.points = live.chartSeries(.netRx)
             r.domain = W5a.rateDomain(r.points)
         case .thermals:
             r.subtitle = thermalSubtitle(live.thermals, device: live.device, stressed: stress != .calm)
             r.value = TTFormat.temperature(live.thermals.socAverage, units: units)
-            r.points = live.series(.socTemp)
+            r.points = live.chartSeries(.socTemp)
             r.domain = 0...100
         case .power:
             r.subtitle = live.power.battery == nil && live.device.hasBattery ? nil : W5a.batteryPhrase(live.power.battery)
