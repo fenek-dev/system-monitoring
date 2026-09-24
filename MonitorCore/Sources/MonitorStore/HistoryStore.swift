@@ -115,9 +115,12 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         try await flush()
         let columns = self.columns
         let nowMs = now.unixMs
+        let cutoffs = Retention.cutoffs(nowMs: nowMs, config: config)
         try await writer.write { db in
             try Rollup.run(db, columns: columns, nowMs: nowMs)
+            try Retention.run(db, cutoffs)
         }
+        try await writer.writeWithoutTransaction { db in try Retention.vacuumIfNeeded(db) }
     }
 
     // MARK: HistoryProvider
