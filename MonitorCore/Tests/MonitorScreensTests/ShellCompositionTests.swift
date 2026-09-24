@@ -39,6 +39,14 @@ struct ShellLaunchOptionsTests {
         #expect(unknown.loginItemCommand == "status")
     }
 
+    /// `--overlay` forces the overlay on for this run (never persisted; the app does not touch settings for it).
+    @Test func overlayFlag() {
+        #expect(LaunchOptions.parse(arguments: ["--overlay"], environment: [:]).overlay)
+        #expect(!LaunchOptions.parse(arguments: [], environment: [:]).overlay)
+        #expect(LaunchOptions.parse(arguments: ["--mock", "--overlay"], environment: [:]) ==
+            LaunchOptions(mockScenario: .calm, overlay: true))
+    }
+
     @Test func openDashboardPage() {
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard"], environment: [:]).openDashboard == .overview)
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard", "thermals"], environment: [:]).openDashboard == .thermals)
@@ -225,7 +233,11 @@ struct ShellSettingsStoreTests {
         let a = SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a/"))
         #expect(a == SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a")))
         #expect(a != SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/b")))
-        #expect(a.hasPrefix("dev.telltale.Telltale."))
+        #expect(a.hasPrefix("dev.warden.Warden.data-"))
+        // Warden rename: the legacy suite for the same dir keeps the old prefix and the same hash.
+        let legacy = SettingsStore.legacySuiteName(for: URL(fileURLWithPath: "/tmp/a"))
+        #expect(legacy.hasPrefix("dev.telltale.Telltale.data-"))
+        #expect(legacy.dropFirst("dev.telltale.Telltale.data-".count) == a.dropFirst("dev.warden.Warden.data-".count))
     }
 }
 

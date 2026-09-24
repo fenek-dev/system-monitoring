@@ -12,6 +12,16 @@ public extension EnvironmentValues {
     @Entry var overlayHotKeyStatus: HotKeyStatus = .registered
 }
 
+/// The App's live `HotKeyStatus`, shared by every `ShellContext`: `telltaleEnvironment` injects
+/// `\.overlayHotKeyStatus` from it, so an open Settings window follows a re-registration.
+@MainActor @Observable public final class HotKeyState {
+    public var status: HotKeyStatus
+
+    public init(status: HotKeyStatus = .registered) {
+        self.status = status
+    }
+}
+
 /// Settings › Overlay "Shortcut" recorder. Clicking starts recording ("Type shortcut…"); the next keyDown in this
 /// window with at least one of ⌘⌥⌃ is saved, Esc cancels, a ⌘-only standard shortcut flashes "Reserved by macOS",
 /// anything else flashes "Needs ⌘, ⌥ or ⌃" (both keep recording). The window resigning key stops recording.

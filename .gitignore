@@ -3,6 +3,7 @@
 .build*/
 MonitorCore/.build/
 Telltale.xcodeproj/
+Warden.xcodeproj/
 .swiftpm/
 DerivedData/
 xcuserdata/

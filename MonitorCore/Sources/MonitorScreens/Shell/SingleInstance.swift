@@ -42,7 +42,7 @@ public final class InstanceLock: Sendable {
 /// "Open your dashboard" from a second launch to the running instance: a distributed notification whose object is
 /// the data dir path (only the instance on that dir answers), optionally naming a page (`--open-dashboard <page>`).
 public enum InstanceActivation {
-    public static let name = Notification.Name("dev.telltale.instance.activate")
+    public static let name = Notification.Name("dev.warden.instance.activate")
     static let pageKey = "page"
 
     static func key(_ dataDirectory: URL) -> String { dataDirectory.standardizedFileURL.resolvingSymlinksInPath().path }

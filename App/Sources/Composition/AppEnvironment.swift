@@ -19,6 +19,8 @@ final class AppEnvironment {
     /// The store opens in the background: true until `runtime.historyReady()` resolves it (observed by every
     /// context, so a window built before then still gets the "History unavailable" banner).
     let historyStatus = HistoryStatus()
+    /// Whether the overlay's global shortcut is registered (AppDelegate publishes it; Settings shows it).
+    let hotKeyState = HotKeyState()
     /// Set by `AppDelegate` once the controllers exist.
     var commands: AppCommands = .noop
     var processActions: ProcessActions = .noop
@@ -67,12 +69,20 @@ final class AppEnvironment {
     func context() -> ShellContext {
         ShellContext(live: runtime.live, navigation: navigation, settings: settings, history: runtime.history,
                      processActions: processActions, appCommands: commands,
-                     historyStatus: historyStatus)
+                     historyStatus: historyStatus, hotKeyState: hotKeyState)
     }
 
     static func defaultDataDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        applicationSupport.appendingPathComponent("dev.warden", isDirectory: true)   // ruling: never ~/Documents
+    }
+
+    /// Where the app kept its data as Telltale (moved once by `LegacyMigration`).
+    static func legacyDataDirectory() -> URL {
+        applicationSupport.appendingPathComponent("dev.telltale", isDirectory: true)
+    }
+
+    private static var applicationSupport: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("dev.telltale", isDirectory: true)      // ruling: never ~/Documents
     }
 }

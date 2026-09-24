@@ -17,8 +17,8 @@ import SwiftUI
                                                         bundlePath: "/System/Applications/Calculator.app"), name: "Calculator", size: 26)
                         TTAppTile(identity: AppIdentity(key: AppKey(kind: .process, id: "/bin/ls"), displayName: "ls",
                                                         bundlePath: "/bin/ls"), name: "ls", size: 26)
-                        TTAppTile(identity: AppIdentity(key: AppKey(kind: .app, id: "dev.telltale.Telltale"), displayName: "Telltale",
-                                                        bundlePath: "/nonexistent/Telltale.app"), name: "Telltale", size: 26)
+                        TTAppTile(identity: AppIdentity(key: AppKey(kind: .app, id: "dev.warden.Warden"), displayName: "Warden",
+                                                        bundlePath: "/nonexistent/Warden.app"), name: "Warden", size: 26)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(TTColor.bgPopover)

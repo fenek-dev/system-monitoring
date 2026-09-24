@@ -52,7 +52,7 @@ final class PopoverPanelController: NSObject {
 
     func open() {
         guard panel == nil else { return }
-        // Visibility first: `live.isPresenting` must apply the latest frame before the view tree reads it.
+        // Visibility first: `live.presentation` must apply the latest frame before the view tree reads it.
         onVisibilityChange(true)
         let root = PopoverContainer(drawsShadow: false) { PopoverRoot() }
             .telltaleEnvironment(env.context())
@@ -71,7 +71,7 @@ final class PopoverPanelController: NSObject {
         panel.animationBehavior = .utilityWindow
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentViewController = host
-        panel.setAccessibilityLabel("Telltale")
+        panel.setAccessibilityLabel("Warden")
 
         self.panel = panel
         self.host = host

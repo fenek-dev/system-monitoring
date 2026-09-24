@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Quit this worktree's running Telltale (only this build's binary, never other worktrees or the installed app),
+# Quit this worktree's running Warden (only this build's binary, never other worktrees or the installed app),
 # then launch the Debug build with a per-worktree data dir.
 # Usage: scripts/run.sh [--mock [<scenario>]] [--open-dashboard [<page>]] [--open-popover] [--open-settings]
 #                       [--crash-sensor <id>] [--status-preview elevated|critical] [other app args…]
@@ -11,15 +11,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="$PWD/.build/xcode/Build/Products/Debug/Telltale.app"
-BIN="$APP/Contents/MacOS/Telltale"
+APP="$PWD/.build/xcode/Build/Products/Debug/Warden.app"
+BIN="$APP/Contents/MacOS/Warden"
 # Never under ~/Documents (TCC prompts block file I/O): per-worktree dir in the user's caches (ruling).
 DATA="${TELLTALE_DATA_DIR:-$HOME/Library/Caches/dev.telltale-dev/$(basename "$PWD")}"
 
 # PIDs whose executable is exactly $BIN (string compare, no regex: paths contain '.', '+', …).
 pids_of_this_build() {
     local p
-    for p in $(pgrep -x Telltale || true); do
+    for p in $(pgrep -x Warden || true); do
         [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == "$BIN" ]] && echo "$p"
     done
     return 0
@@ -58,4 +58,4 @@ done < <(env)
 open -n "${envs[@]}" "$APP" --args "$@"
 sleep 1
 pid=$(pids_of_this_build | tail -1)
-echo "run.sh: Telltale pid=${pid:-?} data=$DATA args=$*"
+echo "run.sh: Warden pid=${pid:-?} data=$DATA args=$*"

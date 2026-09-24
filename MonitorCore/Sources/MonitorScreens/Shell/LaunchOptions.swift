@@ -8,6 +8,7 @@ import MonitorModel
 ///     --open-dashboard [page]                           open the dashboard at launch (default overview)
 ///     --open-popover                                    open the popover at launch
 ///     --open-settings                                   open Settings at launch (verification aid)
+///     --overlay                                         show the stats overlay this run (not persisted)
 ///     --crash-sensor <id>                               DEBUG canary drill (ignored in Release by the app)
 ///     --status-preview elevated|critical                DEBUG: status item shows a thermals alert (critical pulses)
 ///     --login-item register|unregister|status           launch-at-login CLI check: prints SMAppService status, exits
@@ -18,6 +19,8 @@ public struct LaunchOptions: Sendable, Equatable {
     public var openDashboard: DashboardPage?
     public var openPopover = false
     public var openSettings = false
+    /// `--overlay`: show the overlay for this run without persisting `overlayEnabled` (perf scenario).
+    public var overlay = false
     public var crashSensor: SensorID?
     public var statusPreview: AlertLevel?
     /// `--login-item register|unregister|status`: act on `SMAppService.mainApp`, print the status, exit.
@@ -26,12 +29,13 @@ public struct LaunchOptions: Sendable, Equatable {
     public var disabledSensors: Set<SensorID> = []
 
     public init(mockScenario: MockScenario? = nil, openDashboard: DashboardPage? = nil, openPopover: Bool = false,
-                openSettings: Bool = false, crashSensor: SensorID? = nil, statusPreview: AlertLevel? = nil,
-                dataDirectory: URL? = nil, disabledSensors: Set<SensorID> = []) {
+                openSettings: Bool = false, overlay: Bool = false, crashSensor: SensorID? = nil,
+                statusPreview: AlertLevel? = nil, dataDirectory: URL? = nil, disabledSensors: Set<SensorID> = []) {
         self.mockScenario = mockScenario
         self.openDashboard = openDashboard
         self.openPopover = openPopover
         self.openSettings = openSettings
+        self.overlay = overlay
         self.crashSensor = crashSensor
         self.statusPreview = statusPreview
         self.dataDirectory = dataDirectory
@@ -63,6 +67,8 @@ public struct LaunchOptions: Sendable, Equatable {
                 o.openPopover = true
             case "--open-settings":
                 o.openSettings = true
+            case "--overlay":
+                o.overlay = true
             case "--crash-sensor":
                 o.crashSensor = next().flatMap(SensorID.init(rawValue:))
             case "--login-item":

@@ -140,7 +140,7 @@ struct PopoverFooter: View {
                          tint: overlayOn ? TTColor.accent : nil) { ops.toggleOverlay() }
                 .accessibilityValue(Self.overlayAccessibilityValue(enabled: overlayOn))
                 .accessibilityAddTraits(.isToggle)
-            TTIconButton(.quit, label: "Quit Telltale", variant: .footer) { ops.quitTelltale() }
+            TTIconButton(.quit, label: "Quit Warden", variant: .footer) { ops.quitTelltale() }
                 .keyboardShortcut("q", modifiers: .command)
         }
         .padding(EdgeInsets(top: 6, leading: 4, bottom: 4, trailing: 4))
@@ -165,7 +165,7 @@ struct PopoverHeader: View {
             TTStatusGlyph(state: alert, size: 20, template: false)
                 .frame(width: 20, height: 20)
             VStack(alignment: .leading, spacing: 0) {
-                Text("Telltale").font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary).cssLine(13)
+                Text("Warden").font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary).cssLine(13)
                 HStack(spacing: 6) {
                     TTDot(color: Self.dotColor(alert, paused: paused))
                     Text(paused ? "Sampling paused" : StatusLine.text(for: alert))

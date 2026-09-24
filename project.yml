@@ -1,6 +1,6 @@
-name: Telltale
+name: Warden
 options:
-  bundleIdPrefix: dev.telltale
+  bundleIdPrefix: dev.warden
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -13,14 +13,14 @@ settings:
     ENABLE_HARDENED_RUNTIME: NO
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "2"
-    # Debug otherwise splits the code into Telltale.debug.dylib (previews); keep one binary so
-    # `otool -l Contents/MacOS/Telltale` shows the weak private-library loads.
+    # Debug otherwise splits the code into Warden.debug.dylib (previews); keep one binary so
+    # `otool -l Contents/MacOS/Warden` shows the weak private-library loads.
     ENABLE_DEBUG_DYLIB: NO
 packages:
   MonitorCore:
     path: MonitorCore
 targets:
-  Telltale:
+  Warden:
     type: application
     platform: macOS
     sources: [App/Sources, App/Resources]
@@ -31,7 +31,7 @@ targets:
       path: App/Info.plist
       properties:
         LSUIElement: true
-        CFBundleDisplayName: Telltale
+        CFBundleDisplayName: Warden
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "14.0"

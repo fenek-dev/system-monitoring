@@ -35,7 +35,7 @@ import SwiftUI
             return true
         }
         image.isTemplate = template
-        image.accessibilityDescription = "Telltale"
+        image.accessibilityDescription = "Warden"
         cache[k] = image
         return image
     }

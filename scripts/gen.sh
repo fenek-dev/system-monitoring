@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate Telltale.xcodeproj from project.yml (the project is gitignored).
+# Generate Warden.xcodeproj from project.yml (the project is gitignored).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

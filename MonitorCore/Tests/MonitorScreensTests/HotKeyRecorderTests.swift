@@ -117,6 +117,7 @@ struct HotKeyRecorderTests {
         #expect(SettingsView.shortcutStatusText(.unavailable) == "Shortcut unavailable — in use by another app")
         #expect(SettingsView.shortcutStatusText(.registered) == nil)
         #expect(HotKeyStatus.registered == EnvironmentValues().overlayHotKeyStatus)
+        #expect(HotKeyState().status == .registered)
     }
 
     /// The "⌥Z blocks typing Ω." note describes the default shortcut only.

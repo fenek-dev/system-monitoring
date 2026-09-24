@@ -61,7 +61,7 @@ final class StatusItemController: NSObject {
         let u = presenter.apply(state, reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         if let line = u.statusLine {
             item.button?.toolTip = line
-            item.button?.setAccessibilityLabel("Telltale, \(line)")
+            item.button?.setAccessibilityLabel("Warden, \(line)")
         }
         if u.cancelPulse { pulseTask?.cancel() }
         if u.glyph != nil || u.cancelPulse { item.button?.image = StatusIconRenderer.image(for: state) }

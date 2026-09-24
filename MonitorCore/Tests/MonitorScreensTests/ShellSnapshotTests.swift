@@ -41,13 +41,15 @@ struct ShellSnapshotTests {
     }
 
     /// Overlay section when the App could not register the shortcut ("Shortcut unavailable — …" in elevated).
+    /// The status comes through the context's `HotKeyState`, as the App publishes it.
     @Test func settingsHotKeyUnavailable() {
         let size = CGSize(width: ScreenSize.settings.width, height: ScreenSize.settings.height + 40)
+        var ctx = ScreenFixture.context(.calm)
+        ctx.hotKeyState = HotKeyState(status: .unavailable)
         assertSnapshot(SettingsView(loginItem: .preview, about: .preview)
-                        .environment(\.overlayHotKeyStatus, .unavailable)
                         .frame(width: size.width, height: size.height, alignment: .top)
                         .background(ShellStyle.bgWindow)
-                        .telltaleEnvironment(ScreenFixture.context(.calm)),
+                        .telltaleEnvironment(ctx),
                        size: size, named: "shell-settings-hotkey-unavailable")
     }
 }

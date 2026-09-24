@@ -108,7 +108,7 @@ struct OverlayLogicTests {
     // MARK: - OverlayView.metrics
 
     @MainActor @Test func metricsCalm() {
-        let m = TTFormat.$locale.withValue(Locale(identifier: "en_US")) { OverlayView.metrics(live: ScreenFixture.live(.calm)) }
+        let m = TTFormat.$locale.withValue(Locale(identifier: "en_US")) { OverlayView.metrics(live: OverlayFixture.live(.calm)) }
         #expect(m.map(\.label) == ["CPU", "GPU", "MEM"])
         #expect(m.map(\.labelColor) == [TTColor.cpu, TTColor.gpu, TTColor.mem])
         for x in m {
@@ -122,8 +122,8 @@ struct OverlayLogicTests {
     }
 
     @MainActor @Test func metricsMemoryPressureTint() {
-        #expect(OverlayView.metrics(live: ScreenFixture.live(.memoryWarning))[2].tint == TTColor.statusElevated)
-        #expect(OverlayView.metrics(live: ScreenFixture.live(.memoryCritical))[2].tint == TTColor.statusCritical)
+        #expect(OverlayView.metrics(live: OverlayFixture.live(.memoryWarning))[2].tint == TTColor.statusElevated)
+        #expect(OverlayView.metrics(live: OverlayFixture.live(.memoryCritical))[2].tint == TTColor.statusCritical)
     }
 
     @MainActor @Test func metricsGPUUnavailable() {
@@ -135,14 +135,14 @@ struct OverlayLogicTests {
     }
 
     @MainActor @Test func metricsCollecting() {
-        let m = OverlayView.metrics(live: ScreenFixture.live(.collecting))
+        let m = OverlayView.metrics(live: OverlayFixture.live(.collecting))
         #expect(m.map(\.stats) == ["—", "—", "—"])
         #expect(m[2].value != "—")   // memory is a level: shown from the first sample
     }
 
     @MainActor @Test func accessibilityLabels() {
         let enUS = Locale(identifier: "en_US")
-        let calm = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: ScreenFixture.live(.calm)) }
+        let calm = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: OverlayFixture.live(.calm)) }
         #expect(calm.map(\.accessibilityLabel) == [
             "CPU 37%, last minute low 29, high 48, average 35",
             "GPU 16%, last minute low 6, high 28, average 18",
@@ -151,14 +151,14 @@ struct OverlayLogicTests {
         let gpuDown = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: OverlayFixture.gpuUnavailableLive()) }
         #expect(gpuDown[1].accessibilityLabel == "GPU unavailable")
         #expect(gpuDown[0].accessibilityLabel == calm[0].accessibilityLabel)
-        let collecting = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: ScreenFixture.live(.collecting)) }
+        let collecting = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: OverlayFixture.live(.collecting)) }
         #expect(collecting.map(\.accessibilityLabel) == ["CPU collecting", "GPU collecting", "Memory 15.3 GB"])
     }
 
     @MainActor @Test func dimsWhilePaused() {
-        #expect(OverlayView.contentOpacity(live: ScreenFixture.live(.paused)) == 0.5)
-        #expect(OverlayView.contentOpacity(live: ScreenFixture.live(.calm)) == 1)
-        let live = ScreenFixture.live(.calm)
+        #expect(OverlayView.contentOpacity(live: OverlayFixture.live(.paused)) == 0.5)
+        #expect(OverlayView.contentOpacity(live: OverlayFixture.live(.calm)) == 1)
+        let live = OverlayFixture.live(.calm)
         live.setPaused(true, at: MockDataProvider.referenceDate)
         #expect(OverlayView.contentOpacity(live: live) == 0.5)
         live.setPaused(false, at: MockDataProvider.referenceDate)

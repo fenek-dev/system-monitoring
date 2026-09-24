@@ -14,6 +14,12 @@ import os
     private var dashboard: DashboardWindowController!
     private var settingsWindow: SettingsWindowController!
     private var visibility: VisibilityWiring!
+    private var overlay: OverlayPanelController!
+    private var hotKey: GlobalHotKey?
+    /// Settings' recorder is capturing keys: the global hotkey stays unregistered until it stops.
+    private var hotKeyRecording = false
+    private var overlayLoop: ObservationLoop<OverlayKey>?
+    private var hotKeyLoop: ObservationLoop<HotKeySpec>?
     private var power: PowerEvents?
     private var termination: TerminationController?
     /// Held for the process lifetime: one instance per data dir (A-M1 ruling).
@@ -67,6 +73,7 @@ import os
         if let cmd = options.loginItemCommand {
             runLoginItemCommand(cmd)                                // CLI check; never starts the runtime
         }
+        let migrationMarker = LegacyMigrationRunner.run(options)    // Telltale → Warden, once; before any store opens
         claimSingleInstance(options)                                // exits if another instance owns the data dir
         DispatchQueue.global(qos: .utility).async { LiveProcessSampler.pruneReports() }   // [Sample] reports > 1 day
         // Dark per window (panel, dashboard, settings), never app-wide: the status bar button must keep the
@@ -91,6 +98,10 @@ import os
         statusItem.willShowMenu = { [weak self] in self?.popover.close() }
         dashboard = DashboardWindowController(env: env, visibility: visibility.tracker)
         settingsWindow = SettingsWindowController(env: env)
+        overlay = OverlayPanelController(env: env, onVisibilityChange: { [weak self] shown in
+            self?.visibility.tracker.update { $0.overlayVisible = shown }
+        })
+        installOverlayWiring()
         power = PowerEvents(willSleep: { env.runtime.systemWillSleep() }, didWake: { env.runtime.systemDidWake() })
         NSApp.mainMenu = mainMenu()
         installTerminationSignal()
@@ -117,6 +128,11 @@ import os
                 if o.openPopover { popover.open() }
             }
         }
+        // Once, after the Telltale → Warden migration moved something (after launch settles, off the launch path).
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            LegacyMigrationRunner.showNoticeIfPending(migrationMarker)
+        }
         #if DEBUG
         if let n = ProcessInfo.processInfo.environment["TELLTALE_POPOVER_CYCLES"].flatMap(Int.init) {
             runPopoverCycles(n)
@@ -136,6 +152,8 @@ import os
                     self?.popover.close()
                     self?.dashboard.close()
                     self?.settingsWindow.close()
+                    self?.overlayLoop?.cancel()
+                    self?.overlay.hide()
                     self?.power?.stop()
                 },
                 shutdown: { await env.runtime.shutdown() },
@@ -207,7 +225,62 @@ import os
             },
             setPaused: { [weak self] p in self?.setPaused(p) },
             closePopover: { [weak self] in self?.popover.close() },
-            quitTelltale: { AppDelegate.requestQuit() })
+            quitTelltale: { AppDelegate.requestQuit() },
+            toggleOverlay: { [weak self] in self?.toggleOverlay() },
+            setHotKeyRecording: { [weak self] recording in self?.setHotKeyRecording(recording) })
+    }
+
+    // MARK: Overlay (spec 2026-09-25 overlay)
+
+    /// Panel follows `settings.overlayEnabled` (opacity and corner are followed by the controller itself);
+    /// the global hotkey follows `settings.overlayHotKey` and publishes its status for Settings.
+    private func installOverlayWiring() {
+        let settings = env.settings
+        overlayForced = env.options.overlay
+        let live = env.live
+        overlayLoop = ObservationLoop({ OverlayKey(enabled: settings.overlayEnabled, ready: live.hasFrame) }) {
+            [weak self] _ in self?.applyOverlay()
+        }
+        hotKeyLoop = ObservationLoop({ settings.overlayHotKey }) { [weak self] _ in self?.registerHotKey() }
+    }
+
+    /// `--overlay`: shown for this run without touching `settings.overlayEnabled`; the first toggle clears it.
+    private var overlayForced = false
+
+    private struct OverlayKey: Equatable {
+        var enabled: Bool
+        var ready: Bool
+    }
+
+    private var overlayWanted: Bool { env.settings.overlayEnabled || overlayForced }
+
+    /// Shown only once the first frame arrived (spec "Launch": never an empty overlay at launch).
+    private func applyOverlay() {
+        if overlayWanted && env.live.hasFrame { overlay.show() } else { overlay.hide() }
+    }
+
+    /// Hotkey, popover footer: flip the wanted state and persist it.
+    private func toggleOverlay() {
+        let on = !overlayWanted
+        overlayForced = false
+        env.settings.overlayEnabled = on
+        applyOverlay()
+        log.notice("overlay \(on ? "on" : "off", privacy: .public)")
+    }
+
+    private func setHotKeyRecording(_ recording: Bool) {
+        guard recording != hotKeyRecording else { return }
+        hotKeyRecording = recording
+        registerHotKey()
+    }
+
+    /// Drops the current registration, then registers `settings.overlayHotKey` unless the recorder is capturing.
+    private func registerHotKey() {
+        hotKey?.invalidate()
+        hotKey = nil
+        guard !hotKeyRecording else { return }
+        hotKey = GlobalHotKey(spec: env.settings.overlayHotKey) { [weak self] in self?.toggleOverlay() }
+        env.hotKeyState.status = hotKey == nil ? .unavailable : .registered
     }
 
     private func setPaused(_ p: Bool) {
@@ -236,7 +309,7 @@ import os
         menu.addItem(item(env.live.alert.paused ? "Resume Sampling" : "Pause Sampling", #selector(togglePauseAction), ""))
         menu.addItem(item("Settings…", #selector(openSettingsAction), ","))
         menu.addItem(.separator())
-        menu.addItem(item("Quit Telltale", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
+        menu.addItem(item("Quit Warden", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
         return menu
     }
 
@@ -245,12 +318,12 @@ import os
     private func mainMenu() -> NSMenu {
         let main = NSMenu()
         let appItem = NSMenuItem()
-        let app = NSMenu(title: "Telltale")
+        let app = NSMenu(title: "Warden")
         app.addItem(item("Open Dashboard", #selector(openDashboardAction), "d"))
         app.addItem(item("Settings…", #selector(openSettingsAction), ","))
         app.addItem(item("Pause/Resume Sampling", #selector(togglePauseAction), "p"))
         app.addItem(.separator())
-        app.addItem(item("Quit Telltale", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
+        app.addItem(item("Quit Warden", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
         appItem.submenu = app
         main.addItem(appItem)
 
@@ -315,7 +388,7 @@ import os
             env.commands.openDashboard(.cpu)
             try? await Task.sleep(for: step)
             log.notice("drill: miniaturize")
-            NSApp.windows.first { $0.title == "Telltale" }?.miniaturize(nil)
+            NSApp.windows.first { $0.title == "Warden" }?.miniaturize(nil)
             try? await Task.sleep(for: step)
             log.notice("drill: deminiaturize")
             env.commands.openDashboard(nil)

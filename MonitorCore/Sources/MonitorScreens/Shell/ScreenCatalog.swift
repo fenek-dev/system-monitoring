@@ -191,8 +191,10 @@ public extension AlertState {
 public extension LiveModel {
     /// Scenario frames 0…`ticks` (only frame 0 for `.collecting`) applied in order (the latest is `frame(at: ticks)`,
     /// ARCHITECTURE §8), then
-    /// presenting, so every snapshot property is filled. `.paused` also pauses the model at the last frame.
-    @MainActor static func mock(_ scenario: MockScenario, ticks: Int = 60) -> LiveModel {
+    /// presenting at `presentation` (`.full`: every snapshot property is filled; `.overlay`: only what the overlay
+    /// reads). `.paused` also pauses the model at the last frame.
+    @MainActor static func mock(_ scenario: MockScenario, ticks: Int = 60,
+                                presentation: LivePresentation = .full) -> LiveModel {
         let provider = MockDataProvider(scenario: scenario)
         let model = LiveModel(device: provider.device)
         var last: SystemFrame?
@@ -205,7 +207,7 @@ public extension LiveModel {
             last = f
         }
         if scenario == .paused, let last { model.setPaused(true, at: last.wallTime) }
-        model.isPresenting = true
+        model.presentation = presentation
         return model
     }
 }
