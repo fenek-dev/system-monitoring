@@ -10,6 +10,7 @@ import MonitorModel
 ///     --open-settings                                   open Settings at launch (verification aid)
 ///     --crash-sensor <id>                               DEBUG canary drill (ignored in Release by the app)
 ///     --status-preview elevated|critical                DEBUG: status item shows a thermals alert (critical pulses)
+///     --login-item register|unregister|status           launch-at-login CLI check: prints SMAppService status, exits
 ///     TELLTALE_DATA_DIR=<dir>                           store + settings suite per data dir
 ///     TELLTALE_DISABLE_SENSORS=coalitions,soc,…         kill switch (merged with defaults "DisabledSensors")
 public struct LaunchOptions: Sendable, Equatable {
@@ -19,6 +20,8 @@ public struct LaunchOptions: Sendable, Equatable {
     public var openSettings = false
     public var crashSensor: SensorID?
     public var statusPreview: AlertLevel?
+    /// `--login-item register|unregister|status`: act on `SMAppService.mainApp`, print the status, exit.
+    public var loginItemCommand: String?
     public var dataDirectory: URL?
     public var disabledSensors: Set<SensorID> = []
 
@@ -62,6 +65,8 @@ public struct LaunchOptions: Sendable, Equatable {
                 o.openSettings = true
             case "--crash-sensor":
                 o.crashSensor = next().flatMap(SensorID.init(rawValue:))
+            case "--login-item":
+                o.loginItemCommand = next() ?? "status"
             case "--status-preview":
                 o.statusPreview = next() == "critical" ? .critical : .elevated
             default:

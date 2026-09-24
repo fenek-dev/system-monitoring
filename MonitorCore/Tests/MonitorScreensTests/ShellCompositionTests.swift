@@ -28,6 +28,8 @@ struct ShellLaunchOptionsTests {
         #expect(LaunchOptions.parse(arguments: ["--status-preview", "critical", "--open-settings"], environment: [:])
             == LaunchOptions(openSettings: true, statusPreview: .critical))
         #expect(LaunchOptions.parse(arguments: ["--status-preview"], environment: [:]).statusPreview == .elevated)
+        #expect(LaunchOptions.parse(arguments: ["--login-item", "register"], environment: [:]).loginItemCommand == "register")
+        #expect(LaunchOptions.parse(arguments: ["--login-item"], environment: [:]).loginItemCommand == "status")
     }
 
     @Test func openDashboardPage() {

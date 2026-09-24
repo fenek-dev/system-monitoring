@@ -19,6 +19,10 @@ import os
     private let log = Logger(subsystem: "dev.telltale", category: "App")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let cmd = LaunchOptions.parse(arguments: ProcessInfo.processInfo.arguments,
+                                         environment: ProcessInfo.processInfo.environment).loginItemCommand {
+            runLoginItemCommand(cmd)                                // CLI check; never starts the runtime
+        }
         // Dark per window (panel, dashboard, settings), never app-wide: the status bar button must keep the
         // menu bar's own appearance so `labelColor` in the glyph follows a light or dark menu bar.
         let env = AppEnvironment()
@@ -97,6 +101,26 @@ import os
     /// the shutdown Task could never run (deadlock seen with SIGTERM). A run-loop perform escapes the job first.
     static func requestQuit() {
         NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
+    }
+
+    /// `--login-item register|unregister|status`: acts on `SMAppService.mainApp`, logs + prints the status, exits.
+    private func runLoginItemCommand(_ cmd: String) -> Never {
+        var code: Int32 = 0
+        do {
+            switch cmd {
+            case "register": try LaunchAtLogin.setEnabled(true)
+            case "unregister": try LaunchAtLogin.setEnabled(false)
+            default: break
+            }
+        } catch {
+            log.error("login item \(cmd, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            print("login-item \(cmd) failed: \(error.localizedDescription)")
+            code = 1
+        }
+        let status = String(describing: LaunchAtLogin.status)
+        log.notice("login item status=\(status, privacy: .public) bundle=\(Bundle.main.bundlePath, privacy: .public)")
+        print("login-item status=\(status) bundle=\(Bundle.main.bundlePath)")
+        exit(code)
     }
 
     /// SIGTERM (scripts `kill -TERM <pid>`, `launchctl`) takes the same graceful path as ⌘Q.

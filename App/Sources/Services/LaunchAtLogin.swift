@@ -1,3 +1,4 @@
+import Foundation
 import MonitorScreens
 import os
 import ServiceManagement
@@ -13,9 +14,16 @@ enum LaunchAtLogin {
         case .enabled: .enabled
         case .requiresApproval: .requiresApproval
         case .notRegistered: .disabled
-        case .notFound: .unavailable("Install with scripts/install.sh to enable launch at login")
+        // Never registered yet also reports `.notFound`; only a build outside an Applications folder is a problem.
+        case .notFound: isStablePath ? .disabled : .unavailable("Install with scripts/install.sh to enable launch at login")
         @unknown default: .disabled
         }
+    }
+
+    /// `/Applications/…` or `~/Applications/…` (worktree Debug builds are not).
+    static var isStablePath: Bool {
+        let path = Bundle.main.bundleURL.deletingLastPathComponent().path
+        return path == "/Applications" || path == NSHomeDirectory() + "/Applications"
     }
 
     static func setEnabled(_ on: Bool) throws {
