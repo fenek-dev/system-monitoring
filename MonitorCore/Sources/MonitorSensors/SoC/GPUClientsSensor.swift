@@ -11,7 +11,7 @@ import MonitorModel
 public final class GPUClientsSensor: Sensor {
     public typealias Reading = GPUClientsReading
     public let id: SensorID = .gpuClients
-    public let cadence: SensorCadence = .totals
+    public let cadence: SensorCadence = .everyTick   // 5 s in overlay: IOReport covers GPU %
 
     private var accel: io_service_t = 0
 

@@ -20,13 +20,16 @@ final class SpySensor<R: Sendable & Codable>: Sensor {
     let log: SpyLog
     let delay: useconds_t
     let make: (SampleContext) -> R
+    /// Throws `.transient` when true for the tick's context.
+    let failsWhen: (SampleContext) -> Bool
 
     init(_ id: SensorID, cadence: SensorCadence = .everyTick, log: SpyLog, delay: useconds_t = 0,
-         make: @escaping (SampleContext) -> R) {
+         failsWhen: @escaping (SampleContext) -> Bool = { _ in false }, make: @escaping (SampleContext) -> R) {
         self.id = id
         self.cadence = cadence
         self.log = log
         self.delay = delay
+        self.failsWhen = failsWhen
         self.make = make
     }
 
@@ -34,15 +37,17 @@ final class SpySensor<R: Sendable & Codable>: Sensor {
     func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: R, capturedNs: UInt64) {
         log.record(id, ctx)
         if delay > 0 { usleep(delay) }
+        if failsWhen(ctx) { throw .transient("spy failure") }
         return (make(ctx), ctx.uptimeNs)
     }
     func invalidate() {}
 }
 
-private func factory(_ log: SpyLog, memoryPressure: MemoryPressureLevel = .normal, tickDelay: useconds_t = 0) -> SensorFactory {
+private func factory(_ log: SpyLog, memoryPressure: MemoryPressureLevel = .normal, tickDelay: useconds_t = 0,
+                     processesFailWhen: @escaping @Sendable (SampleContext) -> Bool = { _ in false }) -> SensorFactory {
     SensorFactory { _ in
         SensorSuite(
-            processes: SpySensor(.processes, log: log, delay: tickDelay) { ctx in
+            processes: SpySensor(.processes, log: log, delay: tickDelay, failsWhen: processesFailWhen) { ctx in
                 ProcessTableReading(processes: [own(10, cpuNs: ctx.uptimeNs / 2, energyNJ: ctx.uptimeNs)])
             },
             rootMemory: SpySensor(.rootMemory, cadence: .every(.zero, background: .zero, requires: [.processTable, .memoryAlert]),
@@ -182,26 +187,56 @@ final class Collector<T: Sendable>: Sendable {
         await e.stop()
     }
 
-    /// R3: in overlay mode only ticks where the process table ran (every 5 s) are recorded, with a 5-s interval.
-    @Test func overlayRecordsOnlyFiveSecondTicks() async {
-        let log = SpyLog()
+    /// Drives `ticks` overlay ticks on a 1-s sample clock (uptime 1000 s + i); returns the frames and, per record,
+    /// the tick index (= seconds since the first tick) it was emitted on.
+    private func overlayRun(_ log: SpyLog, ticks: Int,
+                            processesFailWhen: @escaping @Sendable (SampleContext) -> Bool = { _ in false })
+        async -> (frames: [SystemFrame], records: [(tick: Int, record: HistoryRecord)]) {
         let clock = OSAllocatedUnfairLock<UInt64>(initialState: 0)
-        let e = SamplingEngine(factory: factory(log), resolver: { FixtureAppResolver([10: appID("a")]) },
+        let e = SamplingEngine(factory: factory(log, processesFailWhen: processesFailWhen),
+                               resolver: { FixtureAppResolver([10: appID("a")]) },
                                interactiveInterval: .milliseconds(20), backgroundInterval: .milliseconds(60),
                                uptime: { clock.withLock { $0 } })
         await e.setVisibility(UIVisibility(overlayVisible: true))
-        var frames: [SystemFrame] = [], batches: [RecordBatch] = []
-        for i in 0..<10 {
-            clock.withLock { $0 = 1_000_000_000_000 + UInt64(i) * 1_000_000_000 }   // 1-s grid from uptime 1000 s
+        var frames: [SystemFrame] = [], records: [(Int, HistoryRecord)] = []
+        for i in 0..<ticks {
+            clock.withLock { $0 = Self.base + UInt64(i) * 1_000_000_000 }
             let (frame, batch) = await e.sampleOnceBatch()
             frames.append(frame)
-            batches.append(batch)
+            if let r = batch.record { records.append((i, r)) }
         }
+        return (frames, records)
+    }
+
+    private static let base: UInt64 = 1_000_000_000_000
+
+    /// R3: in overlay mode only ticks where the process table ran (every 5 s) are recorded, with a 5-s interval.
+    @Test func overlayRecordsOnlyFiveSecondTicks() async {
+        let log = SpyLog()
+        let (frames, records) = await overlayRun(log, ticks: 10)
         #expect(frames.count == 10 && frames.allSatisfy { $0.mode == .overlay })
-        let records = batches.compactMap(\.record)
-        #expect(records.count == 2)
-        #expect(records.allSatisfy { $0.interval == .seconds(5) })
+        #expect(records.map(\.tick) == [0, 5])
+        #expect(records.allSatisfy { $0.record.interval == .seconds(5) })
         #expect(log.count(.processes) == 2)
+    }
+
+    /// Overlay history does not depend on the process sensor: with it failing, overdue records still land.
+    @Test func overlayRecordsWhileProcessesFail() async {
+        let (_, records) = await overlayRun(SpyLog(), ticks: 10, processesFailWhen: { _ in true })
+        #expect(records.count == 2)
+        #expect(records.allSatisfy { $0.record.interval == .seconds(5) })
+    }
+
+    /// A process sensor recovering mid-window never produces two records less than 4.5 s apart.
+    @Test func overlayRecordsStaySpacedWhenProcessesRecover() async {
+        for failUntil in 1...6 {
+            let limit = Self.base + UInt64(failUntil) * 1_000_000_000
+            let (_, records) = await overlayRun(SpyLog(), ticks: 30, processesFailWhen: { $0.uptimeNs < limit })
+            let gaps = zip(records.dropFirst(), records).map { $0.tick - $1.tick }
+            #expect(gaps.allSatisfy { $0 >= 5 }, "failUntil \(failUntil): gaps \(gaps)")   // 1-s grid: ≥ 4.5 s → ≥ 5
+            #expect(gaps.allSatisfy { $0 <= 6 }, "failUntil \(failUntil): gaps \(gaps)")   // overdue at 5 s + tick
+            #expect(records.count >= 5)
+        }
     }
 
     @Test func pausedTakesNoSamplesAndEmitsPauseEvent() async throws {

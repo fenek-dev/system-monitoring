@@ -42,6 +42,8 @@ public actor SamplingEngine {
     private var forceSample = true
     /// Next scheduled tick on the uptime grid (deadline-based: no drift; overruns skip to the next slot).
     private var nextDeadlineNs: UInt64?
+    /// Sample-clock time of the last emitted record (any mode); nil after a baseline reset. Paces overlay records.
+    private var lastRecordNs: UInt64?
     private var stopped = false
     private var loop: Task<Void, Never>?
     private var sleeper: Task<Void, Never>?
@@ -261,22 +263,37 @@ public actor SamplingEngine {
                                                  nominalInterval: interval(mode))
         frame.alert = state
         frame.events = alertEvents + episodes.update(frame)
-        // Overlay (R3): record only the ticks where the process table ran (its 5-s cadence), each covering 5 s,
-        // so history volume matches background mode. Events always pass through.
         let record: HistoryRecord?
         if mode == .overlay {
-            record = tick.processes.isFresh
+            record = overlayRecordDue(now: now, processesFresh: tick.processes.isFresh, mode: mode)
                 ? recordBuilder.record(from: frame, interval: SamplingMode.background.interval) : nil
         } else {
             record = recordBuilder.record(from: frame)
         }
+        if record != nil { lastRecordNs = now }
         let batch = RecordBatch(record: record, events: frame.events)
         return (tick, frame, batch)
+    }
+
+    /// Overlay (R3): history volume matches background mode — one record per ~5 s, independent of the process
+    /// sensor. A record is due at `since ≥ 5 s − tick/2` and taken on a tick where the process table was fresh
+    /// (aligned with its 5-s cadence); at `since ≥ 5 s + tick` it is overdue and taken regardless (failing,
+    /// backing-off or disabled process sensor). Each overlay row stores ONE 1-s sample weighted as 5 s
+    /// (`interval_ms` = 5000) — accepted ruling: rollups treat it as covering the 5 s since the previous row.
+    private func overlayRecordDue(now: UInt64, processesFresh: Bool, mode: SamplingMode) -> Bool {
+        guard let last = lastRecordNs, now > last else { return lastRecordNs == nil }
+        let since = now - last                                        // guarded: now > last
+        let period = SensorSlot<Int>.ns(SamplingMode.background.interval) ?? 5_000_000_000
+        let tick = SensorSlot<Int>.ns(mode.interval) ?? 1_000_000_000
+        let due = since >= period - min(tick / 2, period)
+        let overdue = since >= period + tick
+        return (due && processesFresh) || overdue
     }
 
     private func resetBaselines() {
         assembler?.reset()
         nextDeadlineNs = nil
+        lastRecordNs = nil
     }
 
     static func uptimeNs() -> UInt64 { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
