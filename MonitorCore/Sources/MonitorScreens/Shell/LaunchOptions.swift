@@ -9,6 +9,7 @@ import MonitorModel
 ///     --open-popover                                    open the popover at launch
 ///     --open-settings                                   open Settings at launch (verification aid)
 ///     --crash-sensor <id>                               DEBUG canary drill (ignored in Release by the app)
+///     --status-preview elevated|critical                DEBUG: status item shows a thermals alert (critical pulses)
 ///     TELLTALE_DATA_DIR=<dir>                           store + settings suite per data dir
 ///     TELLTALE_DISABLE_SENSORS=coalitions,soc,…         kill switch (merged with defaults "DisabledSensors")
 public struct LaunchOptions: Sendable, Equatable {
@@ -17,6 +18,7 @@ public struct LaunchOptions: Sendable, Equatable {
     public var openPopover = false
     public var openSettings = false
     public var crashSensor: SensorID?
+    public var statusPreview: AlertLevel?
     public var dataDirectory: URL?
     public var disabledSensors: Set<SensorID> = []
 
@@ -59,6 +61,8 @@ public struct LaunchOptions: Sendable, Equatable {
                 o.openSettings = true
             case "--crash-sensor":
                 o.crashSensor = next().flatMap(SensorID.init(rawValue:))
+            case "--status-preview":
+                o.statusPreview = next() == "critical" ? .critical : .elevated
             default:
                 break
             }
