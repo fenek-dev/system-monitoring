@@ -18,6 +18,29 @@ struct ThermalsSnapshotTests {
     @Test func thermalCritical() { assertScreen("thermals", scenario: .thermalCritical) }
     @Test func sensorsUnavailable() { assertScreen("thermals", scenario: .sensorsUnavailable) }
 
+    /// W7 T6 drill: SMC crashed (canary) and HID disabled. Every SoC temperature is unavailable; only the battery
+    /// reports (31 °C, below the floor). The chart shows "—" + the reason, never a flat line on the 40° floor.
+    @Test func allTemperaturesUnavailable() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.thermals = ThermalSnapshot(pressure: .nominal)
+            for m in [HistoryMetric.socTemp, .cpuPTemp, .cpuETemp, .gpuTemp, .ssdTemp, .fan1RPM, .fan2RPM] {
+                f.metrics[m] = nil
+            }
+            f.metrics[.batteryTemp] = 31
+            f.sensorHealth[.smc] = .disabled("Disabled after a crash")
+            f.sensorHealth[.temperatures] = .disabled("Disabled in Settings")
+            live.apply(f)
+        }
+        live.isPresenting = true
+        let ctx = ShellContext(live: live, settings: ScreenCatalog.snapshotSettings(), history: provider.history(),
+                               isSnapshot: true, now: MockDataProvider.referenceDate)
+        assertSnapshot(ThermalsPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent,
+                       named: "thermals-temps-unavailable")
+    }
+
     /// A raw sensor row clicked open: its 30-pt 1H strip ("Collecting…" until the page has recorded samples).
     @Test func rawStripOpen() {
         let key = ThermalGroupCopy.rawKey(RawTemperature(name: "PMU die", group: .cpuPerformance, source: .hid))
@@ -71,6 +94,28 @@ struct ThermalsPageLogicTests {
         let line = SensorsCardLines.lines(t, showRaw: false).first { $0.name == "CPU efficiency cores" }
         #expect(line?.detail == "avg of 4 · approximate")
         #expect(line?.detailHelp == ThermalGroupCopy.eCoreApproximate)
+    }
+
+    /// Missing temperatures are gaps (never 0 / the floor); all-unavailable SoC series → the unavailable state.
+    @Test func temperatureChartGapsAndUnavailable() {
+        let t = Date(timeIntervalSince1970: 0)
+        let raw = [SeriesPoint(time: t, value: 62), SeriesPoint(time: t + 1, value: nil),
+                   SeriesPoint(time: t + 2, value: 0), SeriesPoint(time: t + 3, value: .nan),
+                   SeriesPoint(time: t + 4, value: -5), SeriesPoint(time: t + 5, value: 31)]
+        #expect(ThermalChartData.sanitized(raw).map(\.value) == [62, nil, nil, nil, nil, 31])
+
+        func series(_ id: String, _ values: [Double?]) -> ChartSeries {
+            ChartSeries(id: id, label: id, color: .red,
+                        points: values.enumerated().map { SeriesPoint(time: t + Double($0.offset), value: $0.element) })
+        }
+        let down: [SensorID: SensorStatus] = [.smc: .disabled("Disabled after a crash")]
+        let batteryOnly = [series("p", [nil, nil]), series("gpu", [nil, nil]), series("battery", [31, 31])]
+        #expect(ThermalChartData.unavailableReason(batteryOnly, health: down) == "Disabled after a crash")
+        // SMC fine but no samples yet → draw (Collecting…), not unavailable.
+        #expect(ThermalChartData.unavailableReason(batteryOnly, health: [:]) == nil)
+        // Any SoC data keeps the chart.
+        let withP = [series("p", [nil, 64]), series("gpu", [nil, nil]), series("battery", [31, 31])]
+        #expect(ThermalChartData.unavailableReason(withP, health: down) == nil)
     }
 
     /// Clicking toggles a raw row's strip; group rows ignore clicks.

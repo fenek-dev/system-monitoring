@@ -164,15 +164,14 @@ private struct PowerByComponentCard: View {
             ChartSeries(id: "dram", label: "DRAM", color: TTColor.dram, points: points(.dramWatts),
                         fillOpacity: TTChartFill.powerDRAM),
         ]
-        let reason = unavailableReason(.cpuWatts, health: live.sensorHealth)
-        let empty = series.allSatisfy { ChartSegments.sampleCount($0.points) < 2 }
+        let stacked = PowerChartScale.stackable(series)
         TTCard(spacing: TTSpace.x10) {
             TTCardHeader("Power by component") { TTLegend(series) }
             Group {
-                if let reason, empty {
-                    TTEmptyState(.unavailable(reason))
+                if stacked.isEmpty, let reason = unavailableReason(.cpuWatts, health: live.sensorHealth) {
+                    SystemChartUnavailable(reason: reason)
                 } else {
-                    TTStackedArea(series, yDomain: 0...PowerChartScale.ceiling(series.map(\.points)))
+                    TTStackedArea(stacked, yDomain: 0...PowerChartScale.ceiling(stacked.map(\.points)))
                 }
             }
             .frame(minHeight: 160, maxHeight: .infinity)
@@ -183,6 +182,19 @@ private struct PowerByComponentCard: View {
 }
 
 enum PowerChartScale {
+    /// Series that go into the stack: missing samples (nil, non-finite, negative) are gaps, never 0; a component
+    /// with no samples at all (not reported on this Mac) is left out so it doesn't blank the layers above it.
+    static func stackable(_ series: [ChartSeries]) -> [ChartSeries] {
+        series.compactMap { s in
+            var s = s
+            s.points = s.points.map { p in
+                guard let v = p.value, v.isFinite, v >= 0 else { return SeriesPoint(time: p.time, value: nil) }
+                return p
+            }
+            return ChartSegments.sampleCount(s.points) == 0 ? nil : s
+        }
+    }
+
     /// DESIGN §5.10: smallest nice ceiling ≥ the window's max stacked total (minimum 1 W).
     static func ceiling(_ series: [[SeriesPoint]]) -> Double {
         let n = series.map(\.count).max() ?? 0

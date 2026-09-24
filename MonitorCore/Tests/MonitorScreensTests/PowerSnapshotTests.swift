@@ -169,6 +169,21 @@ struct PowerPageLogicTests {
         #expect(PowerCopy.fillColor(percent: 10) == TTColor.statusCritical)
     }
 
+    /// Missing power samples are gaps, never 0; a component with no samples is left out of the stack.
+    @Test func stackableSeries() {
+        let t = Date(timeIntervalSince1970: 0)
+        func s(_ id: String, _ v: [Double?]) -> ChartSeries {
+            ChartSeries(id: id, label: id, color: .blue,
+                        points: v.enumerated().map { SeriesPoint(time: t + Double($0.offset), value: $0.element) })
+        }
+        let out = PowerChartScale.stackable([s("cpu", [10, nil, .nan, 11]), s("gpu", [4, 5, -1, 6]),
+                                             s("ane", [nil, nil, nil, nil]), s("dram", [1.6, 1.6, 1.6, 1.6])])
+        #expect(out.map(\.id) == ["cpu", "gpu", "dram"])
+        #expect(out[0].points.map(\.value) == [10, nil, nil, 11])
+        #expect(out[1].points.map(\.value) == [4, 5, nil, 6])
+        #expect(PowerChartScale.stackable([s("cpu", [nil]), s("gpu", [])]).isEmpty)
+    }
+
     @Test func chartCeilingStacksNewestAligned() {
         let t = Date(timeIntervalSince1970: 0)
         let a = [SeriesPoint(time: t, value: 10), SeriesPoint(time: t, value: 12)]
