@@ -2,8 +2,9 @@ import Foundation
 
 /// Pure SMC value decoding (docs/findings/smc.md). Byte order depends on the key family:
 /// - `flt ` (Float32): little-endian, always.
-/// - integers of battery/charger keys (`B<digit>…`, `CH…`): LITTLE-endian (verified vs ioreg: B0CT, B0DC, CHBV).
-/// - all other integers and fixed-point (`sp78`, `fpe2`, fan/temp families): big-endian.
+/// - integers AND fixed-point (`sp78`, `fpe2`, `fp88`) follow the key family's byte order:
+///   battery/charger keys (`B<digit>…`, `CH…`) are LITTLE-endian (verified vs ioreg: B0CT, B0DC, CHBV);
+///   every other family (fans, temps, `#KEY`, …) is big-endian.
 enum SMCDecoder {
     enum ByteOrder: Sendable, Equatable { case big, little }
 

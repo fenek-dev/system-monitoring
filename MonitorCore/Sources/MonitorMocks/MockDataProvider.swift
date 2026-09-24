@@ -31,10 +31,13 @@ public struct MockDataProvider: Sendable {
         self.apps = roster
     }
 
-    /// Thu 24 Sep 2026 14:32 local.
+    /// Thu 24 Sep 2026 14:32 Europe/London (BST, UTC+1) — a fixed instant, not "14:32 wherever this
+    /// process happens to run": the snapshot harness pins Europe/London (ARCHITECTURE §8), so building
+    /// this from `Calendar.current`/`TimeZone.current` would make the mock data (and every screen
+    /// golden's cursor/timestamps) depend on the host machine's timezone.
     public static let referenceDate: Date = {
         let components = DateComponents(year: 2026, month: 9, day: 24, hour: 14, minute: 32)
-        return Calendar.current.date(from: components) ?? Date(timeIntervalSince1970: 0)
+        return ReferenceCalendar.calendar.date(from: components) ?? Date(timeIntervalSince1970: 0)
     }()
 
     public func frame(at tick: Int) -> SystemFrame {

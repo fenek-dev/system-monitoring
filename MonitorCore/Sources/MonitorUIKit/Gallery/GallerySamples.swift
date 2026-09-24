@@ -16,10 +16,8 @@ import SwiftUI
             .init(id: "bars", size: CGSize(width: 500, height: 150)) { AnyView(BarsSample()) },
             .init(id: "key-value", size: CGSize(width: 332, height: 170)) { AnyView(KeyValueSample()) },
             .init(id: "states", size: CGSize(width: 1020, height: 90)) { AnyView(StatesSample()) },
-            // Diagnostic: "Open Dashboard" (13) in regular / medium / semibold on 261×30 accent buttons.
-            .init(id: "weights", size: CGSize(width: 261, height: 90)) { AnyView(WeightsSample()) },
         ] + GalleryCharts.items + GalleryTable.items + GalleryGauges.items + GalleryOverlays.items
-            + GalleryPopover.items
+            + GalleryPopover.items + GalleryGlyph.items
     }
 }
 
@@ -130,19 +128,6 @@ private struct ControlsSample: View {
     }
 }
 
-private struct WeightsSample: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach([Font.Weight.regular, .medium, .semibold], id: \.self) { w in
-                Text("Open Dashboard")
-                    .font(.system(size: 13, weight: w))
-                    .foregroundStyle(.white)
-                    .frame(width: 261, height: 30)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(TTColor.accent))
-            }
-        }
-    }
-}
 
 private struct BarsSample: View {
     var body: some View {

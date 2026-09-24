@@ -1,13 +1,14 @@
 import MonitorModel
 import SwiftUI
 
-/// Popover rows (MenuBar@2x rows at (74, 87), 348 wide) and the sidebar nav (Main@2x at (0, 0), 220 wide).
+/// Popover rows (MenuBar@2x popover content at (75, 87), 346 wide: 360 border-box − 1 border − 6 padding per side)
+/// and the sidebar nav (Main@2x at (0, 0), 220 wide).
 @MainActor enum GalleryPopover {
     static var items: [TTGallery.Item] {
         [
-            .init(id: "popover-rows", size: CGSize(width: 348, height: 301)) { AnyView(PopoverRows(stressed: false)) },
-            .init(id: "popover-rows-alert", size: CGSize(width: 348, height: 301)) { AnyView(PopoverRows(stressed: true)) },
-            .init(id: "popover-expanded", size: CGSize(width: 348, height: 272)) { AnyView(PopoverExpanded()) },
+            .init(id: "popover-rows", size: CGSize(width: 346, height: 301)) { AnyView(PopoverRows(stressed: false)) },
+            .init(id: "popover-rows-alert", size: CGSize(width: 346, height: 301)) { AnyView(PopoverRows(stressed: true)) },
+            .init(id: "popover-expanded", size: CGSize(width: 346, height: 272)) { AnyView(PopoverExpanded()) },
             .init(id: "sidebar", size: CGSize(width: 220, height: 460)) { AnyView(SidebarSample()) },
         ]
     }

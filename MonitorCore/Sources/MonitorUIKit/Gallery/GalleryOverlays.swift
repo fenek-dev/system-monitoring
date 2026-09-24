@@ -1,11 +1,12 @@
 import MonitorModel
 import SwiftUI
 
-/// Banner (MenuBarAlert@2x, inside the popover at (74, 87)), confirm dialog, toast.
+/// Banner (MenuBarAlert@2x, popover content at (75, 87): 360 border-box − 1 border − 6 padding per side = 346 wide),
+/// confirm dialog, toast.
 @MainActor enum GalleryOverlays {
     static var items: [TTGallery.Item] {
         [
-            .init(id: "alert-banner", size: CGSize(width: 348, height: 96)) { AnyView(BannerSample()) },
+            .init(id: "alert-banner", size: CGSize(width: 346, height: 96)) { AnyView(BannerSample()) },
             .init(id: "confirm-dialog", size: CGSize(width: 640, height: 260)) { AnyView(DialogSample()) },
             .init(id: "toast", size: CGSize(width: 240, height: 28)) { AnyView(ToastSample()) },
         ]

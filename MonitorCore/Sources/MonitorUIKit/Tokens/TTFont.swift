@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// DESIGN §1.2. SF Pro (system) everywhere; tabular digits on every style (§0 "Numerals").
@@ -29,7 +28,9 @@ public enum TTFont {
     public static let body12ParaSpacing: CGFloat = 4
     /// Use with `.lineSpacing(TTFont.bannerTextSpacing)`.
     public static let bannerText = sf(12)
-    public static let bannerTextSpacing: CGFloat = 3
+    /// CSS line-height 1.45 ≈ 17.4 pt lines; SwiftUI's SF 12 line is ~14.9, so 2.5 matches MenuBarAlert@2x (35 px pitch).
+    /// Pair with `.padding(.vertical, 1)` for the CSS half-leading above the first / below the last line.
+    public static let bannerTextSpacing: CGFloat = 2.5
     public static let caption = sf(11)
     public static let captionMedium = sf(11, .medium)
     public static let captionStrong = sf(11, .semibold)
@@ -39,13 +40,6 @@ public enum TTFont {
     public static let tileLetter20 = sf(10, .bold)
     public static let tileLetter26 = sf(13, .bold)
     public static let tileLetter44 = sf(20, .bold)
-
-    /// Natural single-line height of the system font (what SwiftUI `Text` lays out), e.g. `stat` 20/semibold.
-    /// Use to pin a row's height when `minimumScaleFactor` may shrink the text.
-    public static func lineHeight(size: CGFloat, weight: NSFont.Weight = .regular) -> CGFloat {
-        let f = NSFont.systemFont(ofSize: size, weight: weight)
-        return (f.ascender - f.descender + f.leading).rounded(.up)
-    }
 
     /// W0b placeholder name kept for source compatibility (= `title2`).
     public static let largeValue = title2

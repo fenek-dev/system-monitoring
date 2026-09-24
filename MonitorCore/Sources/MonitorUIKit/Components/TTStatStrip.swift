@@ -29,6 +29,7 @@ public struct TTStatStrip: View, Equatable {
     }
 
     private let items: [Item]
+    static let valueLineBox: CGFloat = 22.5
 
     public init(_ items: [Item]) { self.items = items }
 
@@ -40,15 +41,13 @@ public struct TTStatStrip: View, Equatable {
                         .font(TTFont.caption)
                         .foregroundStyle(TTColor.textSecondary)
                         .lineLimit(1)
-                    // A hidden unscaled line fixes the `stat` line height; the value overlays it and may scale down
-                    // (≥ 0.8) to the cell width without moving the sub-line.
-                    Text("0").font(TTFont.stat).hidden()
+                    // Fixed value line box (so a value scaled down to ≥ 0.8 never moves the sub-line), sized from
+                    // CPU@2x: label→value→sub ink rows 27–42 / 64–93 / 112–127 px ⇒ 22.5-pt box, glyphs centered.
+                    MetricValue(item.text, unavailableReason: item.unavailableReason, font: TTFont.stat)
+                        .foregroundStyle(item.tint ?? TTColor.textPrimary)
+                        .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .overlay(alignment: .leading) {
-                            MetricValue(item.text, unavailableReason: item.unavailableReason, font: TTFont.stat)
-                                .foregroundStyle(item.tint ?? TTColor.textPrimary)
-                                .minimumScaleFactor(0.8)
-                        }
+                        .frame(height: Self.valueLineBox)
                     if let detail = item.detail {
                         Text(detail)
                             .font(TTFont.caption)

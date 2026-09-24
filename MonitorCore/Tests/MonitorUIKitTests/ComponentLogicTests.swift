@@ -1,5 +1,7 @@
+import AppKit
 import MonitorModel
 import SwiftUI
+import UniformTypeIdentifiers
 import Testing
 @testable import MonitorUIKit
 
@@ -68,9 +70,57 @@ import Testing
         #expect(TTPopoverRow.page(.power) == .power)
     }
 
+    @Test func popoverMemoryMetricIsByteValue() {
+        // Guards against `map(Double.init)`, which on UInt64? resolves to Double(bitPattern:).
+        var a = AppSample(identity: AppIdentity(key: AppKey(kind: .app, id: "M"), displayName: "M"))
+        a.memory = 4_294_967_296
+        #expect(TTPopoverRow.metricValue(a, .memory) == 4_294_967_296)
+    }
+
     @Test func sidebarValues() {
         #expect(!TTSidebarItem.hasValue(.overview) && !TTSidebarItem.hasValue(.processes) && !TTSidebarItem.hasValue(.history))
         #expect(TTSidebarItem.hasValue(.cpu) && TTSidebarItem.hasValue(.disk))
+    }
+
+    @MainActor @Test func showsCollectingDefaultsFromUnavailableReason() {
+        #expect(TTMetricTile(category: .gpu, value: nil, unit: "%", detail: nil, points: [], unavailableReason: nil).showsCollecting)
+        #expect(!TTMetricTile(category: .gpu, value: nil, unit: "%", detail: nil, points: [], unavailableReason: "n/a")
+            .showsCollecting)
+        #expect(TTMetricTile(category: .gpu, value: nil, unit: "%", detail: nil, points: [], unavailableReason: "n/a",
+                             yDomain: nil, showsCollecting: true).showsCollecting)
+        #expect(TTTimelineRow(label: "GPU", value: nil, points: [], color: .blue, yDomain: 0...1).showsCollecting)
+        #expect(!TTTimelineRow(label: "GPU", icon: nil, value: nil, unavailableReason: "n/a", points: [], color: .blue,
+                               yDomain: 0...1).showsCollecting)
+    }
+
+    @Test func textRenderingConfigureIsIdempotentAndNotPersisted() {
+        let global = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["AppleFontSmoothing"] as? Int
+        TTTextRendering.configure()
+        TTTextRendering.configure()
+        let arg = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        #expect(arg["AppleFontSmoothing"] as? Int == 0)
+        #expect(UserDefaults.standard.integer(forKey: "AppleFontSmoothing") == 0)
+        // Nothing written to the persistent global (or app) domain.
+        #expect(UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["AppleFontSmoothing"] as? Int == global)
+        if let id = Bundle.main.bundleIdentifier {
+            #expect(UserDefaults.standard.persistentDomain(forName: id)?["AppleFontSmoothing"] == nil)
+        }
+    }
+
+    @MainActor @Test func appIconRuling() {
+        #expect(AppIconCache.hasCustomIcon(bundlePath: "/System/Applications/Calculator.app"))
+        #expect(!AppIconCache.hasCustomIcon(bundlePath: "/bin/ls"))
+        #expect(!AppIconCache.hasCustomIcon(bundlePath: "/nonexistent/Telltale.app"))
+        #expect(AppIconCache.icon(forPath: "/System/Applications/Calculator.app") != nil)
+        #expect(AppIconCache.icon(forPath: "/bin/ls") == nil)
+        #expect(AppIconCache.isGeneric(NSWorkspace.shared.icon(for: .unixExecutable)))
+        #expect(AppIconCache.isGeneric(NSWorkspace.shared.icon(for: .application)))
+        let blank = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { r in
+            NSColor.white.setFill()
+            r.fill()
+            return true
+        }
+        #expect(AppIconCache.isGeneric(blank))
     }
 
     @Test func chartSummary() {
