@@ -50,7 +50,7 @@ public struct SensorCadence: Sendable, Equatable {
     /// [] = always; else only when demand ∩ requires ≠ ∅.
     public var requires: SamplingDemand
 
-    public init(interactive: Duration = .zero, background: Duration? = .zero, requires: SamplingDemand = []) {
+    public init(interactive: Duration = .zero, background: Duration? = nil, requires: SamplingDemand = []) {
         self.interactive = interactive
         self.background = background
         self.requires = requires
