@@ -34,8 +34,13 @@ import Testing
         #expect(TTColor.tileIndex(key: "WindowServer", name: "WindowServer") == 3)
         #expect(TTColor.tileIndex(key: "com.docker.docker", name: "Docker Desktop") == 4)
         #expect(TTColor.tileIndex(key: "com.docker.backend", name: nil) == 4)
-        // Unknown apps hash (FNV-1a mod 8).
-        #expect(TTColor.tileIndex(key: "org.example.App", name: "App") == TTColor.tileIndex(for: "org.example.App"))
+        #expect(TTColor.tileIndex(key: "kernel_task", name: "kernel_task") == 5)
+        #expect(TTColor.tileIndex(key: "/System/Library/.../mds_stores", name: "mds_stores") == 6)
+        #expect(TTColor.tileIndex(key: "com.getdropbox.dropbox", name: "Dropbox") == 7)
+        #expect(TTColor.tileIndex(key: "com.tinyspeck.slackmacgap", name: "Slack") == 0)
+        #expect(TTColor.tileIndex(key: "com.apple.Music", name: "Music") == 1)
+        // Unknown apps hash: FNV-1a("org.example.App") mod 8 == 4 (computed independently).
+        #expect(TTColor.tileIndex(key: "org.example.App", name: "App") == 4)
     }
 
     @Test func iconPathsStayInsideTheGrid() {

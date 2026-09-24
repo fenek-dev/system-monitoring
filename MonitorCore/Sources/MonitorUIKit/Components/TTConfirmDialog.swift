@@ -6,6 +6,8 @@ import SwiftUI
 /// right-aligned buttons (gap 8, 4 top padding): [Cancel (regular secondary)] [confirm (regular destructive)].
 /// Esc = Cancel; no default button. Present with `.transition(TTConfirmDialog.transition)` (opacity + scale
 /// 0.97→1, 0.15 s). Clicking the scrim does nothing (modal).
+/// The content under the scrim must also be disabled (keyboard/VoiceOver): use `.ttConfirmDialog(_:)` on the window
+/// content, which does both.
 public struct TTConfirmDialog: View {
     let title: String
     let message: String
@@ -67,5 +69,18 @@ public struct TTConfirmDialog: View {
         .background(shape.fill(TTColor.bgElevated))
         .overlay(shape.strokeBorder(TTColor.borderPopover, lineWidth: TTStroke.hairline))
         .shadow(color: .black.opacity(TTShadow.dialog.opacity), radius: TTShadow.dialog.radius, y: TTShadow.dialog.y)
+    }
+}
+
+public extension View {
+    /// Presents `dialog` (when non-nil) over this content with the scrim, disabling the content underneath
+    /// (no clicks, keys or VoiceOver focus behind the modal) and animating per `TTConfirmDialog.transition`.
+    func ttConfirmDialog(_ dialog: TTConfirmDialog?) -> some View {
+        self
+            .disabled(dialog != nil)
+            .accessibilityHidden(dialog != nil)
+            .overlay {
+                if let dialog { dialog.transition(TTConfirmDialog.transition) }
+            }
     }
 }

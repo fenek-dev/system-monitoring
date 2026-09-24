@@ -115,7 +115,7 @@ public struct TTRowActionsButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
+        // The Menu itself is the 24×24 hit target (§0: hit target = visual size); the image stays centered.
         .frame(width: 24, height: 24)
         .background(RoundedRectangle(cornerRadius: TTRadius.r5, style: .continuous)
             .fill(hovering ? TTColor.fillIconButton : .clear))

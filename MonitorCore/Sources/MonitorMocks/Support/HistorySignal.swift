@@ -25,7 +25,10 @@ struct HistorySignal {
     static let pausedGapDaysAgo = 5
     static let pausedGapHour = 3
 
-    init(seed: UInt64, end: Date, calendar: Calendar = .current) {
+    /// `calendar` defaults to `ReferenceCalendar.calendar` (Europe/London, fixed), not `.current` — day/
+    /// night, weekend damping and the event-bump minute-of-day must not depend on the host machine's
+    /// timezone (see `MockDataProvider.referenceDate`'s doc comment).
+    init(seed: UInt64, end: Date, calendar: Calendar = ReferenceCalendar.calendar) {
         self.seed = seed
         self.end = end
         self.calendar = calendar

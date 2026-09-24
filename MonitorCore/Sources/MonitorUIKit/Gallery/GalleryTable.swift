@@ -9,6 +9,22 @@ import SwiftUI
             .init(id: "search-field", size: CGSize(width: 240, height: 40)) { AnyView(SearchSample()) },
             // Main@2x "Top processes" at (240, 562): 1020×220 (template 2.2fr 1fr×5 28).
             .init(id: "top-processes", size: CGSize(width: 1020, height: 250)) { AnyView(TopProcesses()) },
+            // Icon ruling: real icon only for an app bundle with its own icon; bundle-less / generic → letter tile.
+            .init(id: "app-icons", size: CGSize(width: 150, height: 40)) {
+                AnyView(
+                    HStack(spacing: 10) {
+                        TTAppTile(identity: AppIdentity(key: AppKey(kind: .app, id: "com.apple.calculator"), displayName: "Calculator",
+                                                        bundlePath: "/System/Applications/Calculator.app"), name: "Calculator", size: 26)
+                        TTAppTile(identity: AppIdentity(key: AppKey(kind: .process, id: "/bin/ls"), displayName: "ls",
+                                                        bundlePath: "/bin/ls"), name: "ls", size: 26)
+                        TTAppTile(identity: AppIdentity(key: AppKey(kind: .app, id: "dev.telltale.Telltale"), displayName: "Telltale",
+                                                        bundlePath: "/nonexistent/Telltale.app"), name: "Telltale", size: 26)
+                    }
+                    .environment(\.ttAppIconsInSnapshots, true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(TTColor.bgPopover)
+                )
+            },
             .init(id: "row-action", size: CGSize(width: 60, height: 34)) {
                 AnyView(
                     TTRowActionsButton(target: .process(pid: 2210, name: "Final Cut Pro", path: nil, uid: 501), name: "Final Cut Pro")
