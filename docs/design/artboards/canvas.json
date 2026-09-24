@@ -1,0 +1,160 @@
+{
+ "v": 3,
+ "createdOnFiles": {
+  "v": 1,
+  "at": "2026-09-24T09:46:45Z"
+ },
+ "title": "Telltale — macOS system monitor",
+ "launch": {
+  "view": "canvas"
+ },
+ "pages": [],
+ "boards": {
+  "MenuBar.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 440,
+   "h": 720,
+   "title": "Menu bar · calm",
+   "is_interactive": true
+  },
+  "MenuBarAlert.dc.html": {
+   "x": 520,
+   "y": 0,
+   "w": 440,
+   "h": 720,
+   "title": "Menu bar · thermal alert",
+   "is_interactive": true
+  },
+  "StatusIcon.dc.html": {
+   "x": 1040,
+   "y": 0,
+   "w": 640,
+   "h": 330,
+   "title": "Status icon states",
+   "is_interactive": false
+  },
+  "Main.dc.html": {
+   "x": 0,
+   "y": 1200,
+   "w": 1280,
+   "h": 860,
+   "title": "Overview",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "CPU.dc.html": {
+   "x": 1360,
+   "y": 1200,
+   "w": 1280,
+   "h": 860,
+   "title": "CPU",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "GPU.dc.html": {
+   "x": 2720,
+   "y": 1200,
+   "w": 1280,
+   "h": 860,
+   "title": "GPU",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "Memory.dc.html": {
+   "x": 4080,
+   "y": 1200,
+   "w": 1280,
+   "h": 860,
+   "title": "Memory",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "Network.dc.html": {
+   "x": 5440,
+   "y": 1200,
+   "w": 1280,
+   "h": 860,
+   "title": "Network",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "Thermals.dc.html": {
+   "x": 0,
+   "y": 2180,
+   "w": 1280,
+   "h": 860,
+   "title": "Thermals",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "Power.dc.html": {
+   "x": 1360,
+   "y": 2180,
+   "w": 1280,
+   "h": 860,
+   "title": "Power & Battery",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "Disk.dc.html": {
+   "x": 2720,
+   "y": 2180,
+   "w": 1280,
+   "h": 860,
+   "title": "Disk",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "Processes.dc.html": {
+   "x": 4080,
+   "y": 2180,
+   "w": 1280,
+   "h": 860,
+   "title": "Processes",
+   "is_interactive": true,
+   "radius": 12
+  },
+  "History.dc.html": {
+   "x": 5440,
+   "y": 2180,
+   "w": 1280,
+   "h": 860,
+   "title": "History",
+   "is_interactive": true,
+   "radius": 12
+  }
+ },
+ "order": [
+  "Main.dc.html",
+  "MenuBar.dc.html",
+  "MenuBarAlert.dc.html",
+  "StatusIcon.dc.html",
+  "CPU.dc.html",
+  "GPU.dc.html",
+  "Memory.dc.html",
+  "Network.dc.html",
+  "Thermals.dc.html",
+  "Power.dc.html",
+  "Disk.dc.html",
+  "Processes.dc.html",
+  "History.dc.html"
+ ],
+ "notes": {
+  "t_menu": {
+   "x": 0,
+   "y": -300,
+   "text": "Menu bar",
+   "kind": "title1",
+   "maxW": 1680
+  },
+  "t_dash": {
+   "x": 0,
+   "y": 900,
+   "text": "Dashboard window",
+   "kind": "title1",
+   "maxW": 6720
+  }
+ },
+ "designSystems": []
+}
