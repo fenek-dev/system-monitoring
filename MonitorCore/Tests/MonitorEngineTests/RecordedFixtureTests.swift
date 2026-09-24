@@ -18,6 +18,18 @@ import Testing
 
     // MARK: format
 
+    @Test func replayUsesTheRecordingsLoginUID() {
+        func p(_ pid: Int32, _ uid: UInt32, restricted: Bool = false) -> RawProcess {
+            RawProcess(id: ProcessID(pid: pid, startTimeUs: 1), uid: uid, comm: "p\(pid)", restricted: restricted)
+        }
+        let procs = [p(1, 0), p(2, 0), p(3, 0), p(10, 502), p(11, 502), p(12, 501), p(13, 89),
+                     p(14, 503, restricted: true), p(15, 503, restricted: true), p(16, 503, restricted: true)]
+        let tick = RawTick(processes: .fresh(ProcessTableReading(processes: procs), capturedNs: 1))
+        #expect(FixtureReplay.recordingUID([tick]) == 502)
+        #expect(FixtureReplay.recordingUID([]) == 501)                         // synthetic default
+        #expect(FixtureReplay.recordingUID(SyntheticRecording.ticks()) == 501)
+    }
+
     @Test func fixtureCodersRoundTripSubSecondDates() throws {
         let date = Date(timeIntervalSince1970: 1_790_000_000.125)          // exactly representable
         let tick = RawTick(wallTime: date, uptimeNs: 42, mode: .interactive,
