@@ -27,6 +27,21 @@ import MonitorModel
         #expect(f.device.efficiencyCores == 4)
     }
 
+    /// `referenceDate` must be "24 Sep 2026 14:32 Europe/London" as a fixed instant, not
+    /// `Calendar.current`-dependent — the snapshot harness pins Europe/London (ARCHITECTURE §8), so a
+    /// machine running with a different `TZ` must compute the exact same `Date`. `referenceDate` is a
+    /// `static let` (computed once and cached for the process), so re-running this test after changing
+    /// `TZ`/`setenv` wouldn't re-trigger the computation — the robust check (equivalent to running this
+    /// suite under `TZ=UTC` and `TZ=Asia/Tashkent` and diffing) is comparing against an instant built
+    /// independently, in UTC, with no dependency on the process's local timezone.
+    @Test func referenceDateIsTZIndependent() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        // 24 Sep 2026 falls in British Summer Time (UTC+1), so 14:32 London == 13:32 UTC.
+        let expectedUTC = utc.date(from: DateComponents(year: 2026, month: 9, day: 24, hour: 13, minute: 32))!
+        #expect(MockDataProvider.referenceDate == expectedUTC)
+    }
+
     // MARK: - `.calm` matches the artboards' character (DESIGN.md §3: CPU ~34%, GPU ~18%, Memory ~15 GB,
     // Network ~12 MB/s down, SoC ~62 °C, package ~18.6 W — within the artboards' own volatility bounds).
 
