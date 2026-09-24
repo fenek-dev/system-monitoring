@@ -1,3 +1,4 @@
+import CoreWLAN
 import Foundation
 import Testing
 @testable import MonitorModel
@@ -71,12 +72,11 @@ struct WiFiSmokeTests {
 
     @Test func captureFixtures() throws {
         guard W6cFixture.capture else { return }
-        let s = WiFiSensor()
-        try s.prepare()
+        let i = try #require(CWWiFiClient.shared().interface())
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try FileManager.default.createDirectory(at: W6cFixture.sourceURL(""), withIntermediateDirectories: true)
-        try enc.encode(try s.fields()).write(to: W6cFixture.sourceURL("wifi_fields.json"))
+        try enc.encode(WiFiBox.fields(i)).write(to: W6cFixture.sourceURL("wifi_fields.json"))
     }
 
     @Test func matchesSystemProfiler() throws {
@@ -84,18 +84,27 @@ struct WiFiSmokeTests {
         let t0 = W6cClock.uptimeNs()
         try s.prepare()
         let prepMs = W6cFixture.ms(W6cClock.uptimeNs() - t0)
-        let r = try s.sample(SampleContext()).reading
+        let first = try s.sample(SampleContext(demand: .wifi))
+        let r = first.reading
         let p = try Self.profiler()
         var ms: [Double] = []
+        var readMs: [Double] = []
+        var captured = first.capturedNs
         for _ in 0..<30 {
             let t = W6cClock.uptimeNs()
-            _ = try s.sample(SampleContext())
+            let x = try s.sample(SampleContext(demand: .wifi))
             ms.append(W6cFixture.ms(W6cClock.uptimeNs() - t))
+            #expect(x.capturedNs >= captured) // last completed read, never older
+            captured = x.capturedNs
+            usleep(30_000)
+            readMs.append(W6cFixture.ms(s.box.lastReadCostNs))
         }
+        #expect(s.cadence.requires == .wifi)
         print("W6c wifi: \(r)")
         print("W6c wifi profiler: \(p)")
-        print(String(format: "W6c wifi bench: prepare %.1f ms; sample() p50 %.2f p95 %.2f ms", prepMs,
-                     W6cFixture.percentile(ms, 0.5), W6cFixture.percentile(ms, 0.95)))
+        print(String(format: "W6c wifi bench: prepare %.1f ms; sample() p50 %.3f p95 %.3f ms; off-queue read p50 %.2f p95 %.2f ms",
+                     prepMs, W6cFixture.percentile(ms, 0.5), W6cFixture.percentile(ms, 0.95),
+                     W6cFixture.percentile(readMs, 0.5), W6cFixture.percentile(readMs, 0.95)))
         guard p.channel != nil else {
             #expect(r.rssi == nil) // not associated
             return

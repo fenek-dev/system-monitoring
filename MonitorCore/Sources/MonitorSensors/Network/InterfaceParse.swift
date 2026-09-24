@@ -15,6 +15,13 @@ struct RawInterface: Sendable, Equatable {
     var isLoopback: Bool { flags & IFF_LOOPBACK != 0 }
 }
 
+/// 64-bit byte counters + link rate of one interface (IFMIB).
+struct IFCounters: Sendable, Equatable {
+    var rx: UInt64
+    var tx: UInt64
+    var baudRate: UInt64
+}
+
 /// What SystemConfiguration says about an interface (FFI side fills it).
 struct InterfaceDescriptor: Sendable, Equatable {
     var bsdName: String
@@ -91,10 +98,37 @@ enum InterfaceParse {
     /// 64-bit counters from `sysctl {CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_IFDATA, index, IFDATA_GENERAL}`
     /// (`struct ifmibdata`). Needed because `NET_RT_IFLIST2` (and getifaddrs) truncate byte counters to 32 bits
     /// for unprivileged callers on macOS 26 (packet counters stay 64-bit).
-    static func ifmib(_ raw: UnsafeRawBufferPointer) -> (rx: UInt64, tx: UInt64, baudRate: UInt64)? {
+    static func ifmib(_ raw: UnsafeRawBufferPointer) -> IFCounters? {
         guard raw.count >= MemoryLayout<ifmibdata>.size else { return nil }
         let d = raw.loadUnaligned(as: ifmibdata.self).ifmd_data
-        return (d.ifi_ibytes, d.ifi_obytes, d.ifi_baudrate)
+        return IFCounters(rx: d.ifi_ibytes, tx: d.ifi_obytes, baudRate: d.ifi_baudrate)
+    }
+
+    /// Replaces each row's 32-bit-truncated IFLIST2 counters with its 64-bit IFMIB ones. A failed IFMIB read
+    /// (`counters[index] == nil`) reuses that interface's last good 64-bit counters; with none, the row is dropped.
+    /// The truncated value is never emitted (it would look like a counter reset to the rate calculator).
+    static func overlay(_ rows: [RawInterface], counters: [UInt16: IFCounters],
+                        lastGood: inout [String: (index: UInt16, counters: IFCounters)]) -> [RawInterface] {
+        var out: [RawInterface] = []
+        out.reserveCapacity(rows.count)
+        for var r in rows {
+            let c: IFCounters
+            if let fresh = counters[r.index] {
+                c = fresh
+                lastGood[r.name] = (r.index, fresh)
+            } else if let good = lastGood[r.name], good.index == r.index {
+                c = good.counters
+            } else {
+                continue
+            }
+            r.rxBytes = c.rx
+            r.txBytes = c.tx
+            r.baudRate = c.baudRate
+            out.append(r)
+        }
+        let present = Set(rows.map(\.name))
+        lastGood = lastGood.filter { present.contains($0.key) }
+        return out
     }
 
     /// Interfaces the reading reports: hardware SystemConfiguration knows, plus the primary one; never loopback.
