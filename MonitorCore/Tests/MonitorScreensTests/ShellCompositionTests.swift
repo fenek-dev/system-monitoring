@@ -158,6 +158,18 @@ struct ShellScreenCatalogTests {
         #expect(p.alert.paused)
     }
 
+    /// DESIGN §3.15 "First launch"/"Collecting": a chart with fewer than 2 samples shows "Collecting…".
+    @Test func collectingMockIsBelowTheChartThreshold() {
+        let collectingThreshold = 2
+        let c = LiveModel.mock(.collecting)
+        #expect(c.isPresenting)
+        for metric in [HistoryMetric.cpuUsage, .gpuUsage, .memUsed] {
+            #expect(c.series(metric).count < collectingThreshold, "\(metric)")
+        }
+        // every other scenario keeps the full 61-tick history
+        #expect(LiveModel.mock(.calm).series(.cpuUsage).count >= collectingThreshold)
+    }
+
     @Test func contextIsSnapshotDeterministic() {
         let ctx = ScreenFixture.context(.calm, page: .cpu)
         #expect(ctx.isSnapshot)
