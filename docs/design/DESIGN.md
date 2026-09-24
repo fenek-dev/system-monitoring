@@ -617,7 +617,7 @@ Elements, top to bottom:
 | 10 | Divider | as #7 | |
 | 11 | Top consumer | HStack gap 10, padding 8×10: tile 26; VStack flex of "Top consumer" `caption` `textSecondary`, name `body13`, detail `caption` `textSecondary` "212% CPU · 3.8 GB"; small secondary "Quit" | App group with the highest CPU (libsysmon, grouped by responsible PID). Quit is disabled for non-user-owned apps |
 | 12 | Divider | as #7 | |
-| 13 | Footer | HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: `popoverPrimary` "Open Dashboard" (flex); `popoverSecondary` "History"; ADDED `iconButton` 30×30 radius 7 bg `fillButton` with the `quit` glyph, tooltip "Quit Telltale" | Open Dashboard opens the window on Overview; History opens it on History; Quit calls `NSApp.terminate` |
+| 13 | Footer | HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: `popoverPrimary` "Open Dashboard" (flex); `popoverSecondary` "History"; ADDED `iconButton` 30×30 radius 7 bg `fillButton` with the `overlay` glyph, tooltip "Overlay (⌥Z)" (current shortcut), tinted `accent` when on (§3.16); ADDED `iconButton` 30×30 radius 7 bg `fillButton` with the `quit` glyph, tooltip "Quit Warden" | Open Dashboard opens the window on Overview; History opens it on History; Overlay toggles the stats overlay (§3.16); Quit calls `NSApp.terminate` |
 
 Interactions:
 - Row hover shows the top-apps flyout (§2.22).

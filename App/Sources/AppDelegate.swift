@@ -73,7 +73,7 @@ import os
         if let cmd = options.loginItemCommand {
             runLoginItemCommand(cmd)                                // CLI check; never starts the runtime
         }
-        let migrationMarker = LegacyMigrationRunner.run(options)    // Telltale → Warden, once; before any store opens
+        LegacyMigrationRunner.run(options)          // Telltale → Warden, once; exits if Telltale runs; before any store
         claimSingleInstance(options)                                // exits if another instance owns the data dir
         DispatchQueue.global(qos: .utility).async { LiveProcessSampler.pruneReports() }   // [Sample] reports > 1 day
         // Dark per window (panel, dashboard, settings), never app-wide: the status bar button must keep the
@@ -128,11 +128,6 @@ import os
                 if o.openPopover { popover.open() }
             }
         }
-        // Once, after the Telltale → Warden migration moved something (after launch settles, off the launch path).
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1))
-            LegacyMigrationRunner.showNoticeIfPending(migrationMarker)
-        }
         #if DEBUG
         if let n = ProcessInfo.processInfo.environment["TELLTALE_POPOVER_CYCLES"].flatMap(Int.init) {
             runPopoverCycles(n)
@@ -153,6 +148,9 @@ import os
                     self?.dashboard.close()
                     self?.settingsWindow.close()
                     self?.overlayLoop?.cancel()
+                    self?.hotKeyLoop?.cancel()
+                    self?.hotKey?.invalidate()
+                    self?.hotKey = nil
                     self?.overlay.hide()
                     self?.power?.stop()
                 },
@@ -238,8 +236,13 @@ import os
         let settings = env.settings
         overlayForced = env.options.overlay
         let live = env.live
+        var lastEnabled = settings.overlayEnabled
         overlayLoop = ObservationLoop({ OverlayKey(enabled: settings.overlayEnabled, ready: live.hasFrame) }) {
-            [weak self] _ in self?.applyOverlay()
+            [weak self] key in
+            // Any change of the persisted switch (Settings, popover, hotkey) supersedes `--overlay`.
+            if key.enabled != lastEnabled { self?.overlayForced = false }
+            lastEnabled = key.enabled
+            self?.applyOverlay()
         }
         hotKeyLoop = ObservationLoop({ settings.overlayHotKey }) { [weak self] _ in self?.registerHotKey() }
     }
@@ -261,6 +264,7 @@ import os
 
     /// Hotkey, popover footer: flip the wanted state and persist it.
     private func toggleOverlay() {
+        guard termination == nil else { return }                    // quitting: the panel stays closed
         let on = !overlayWanted
         overlayForced = false
         env.settings.overlayEnabled = on

@@ -235,7 +235,7 @@ enum Commands {
 
     static func maintainNow(_ o: ProbeOptions) async {
         let dir = URL(fileURLWithPath: o.dataDir ?? ProcessInfo.processInfo.environment["TELLTALE_DATA_DIR"]
-            ?? (NSHomeDirectory() + "/Library/Application Support/dev.telltale"))
+            ?? (NSHomeDirectory() + "/Library/Application Support/dev.warden"))
         let db = dir.appendingPathComponent("history.sqlite")
         guard FileManager.default.fileExists(atPath: db.path) else {
             print("no database at \(db.path)")

@@ -43,7 +43,7 @@ final class LegacyMigrationTests {
                            enable: @escaping () throws -> Void = {}) -> LegacyMigration {
         LegacyMigration(legacyDataDirectory: old, dataDirectory: newDir ?? new,
                         defaults: [(from: domain(oldDefaults), to: domain(newDefaults))], marker: newDefaults,
-                        legacyInstanceRunning: { running },
+                        lockLegacy: { running ? .heldByTelltale : .acquired(nil) },
                         legacyLoginItem: { $0["test.launchAtLogin"] as? Bool },
                         loginItemEnabled: { login }, enableLoginItem: enable)
     }
@@ -82,6 +82,7 @@ final class LegacyMigrationTests {
     @Test func existingNewDataAndDefaultsAreKept() throws {
         try seedOldData()
         try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        try Data("real".utf8).write(to: new.appendingPathComponent("history.sqlite"))   // Warden data: keep
         oldDefaults.set("fahrenheit", forKey: "units.temperature")
         newDefaults.set("celsius", forKey: "units.temperature")
 
@@ -108,6 +109,54 @@ final class LegacyMigrationTests {
         #expect(!r.completed && r.data == .legacyInUse && r.copiedKeys == 0)
         #expect(FileManager.default.fileExists(atPath: old.path) && !FileManager.default.fileExists(atPath: new.path))
         #expect(!newDefaults.bool(forKey: LegacyMigration.doneKey) && !newDefaults.bool(forKey: "overlay.enabled"))
+        #expect(!LegacyMigration.takeNotice(newDefaults))
+    }
+
+    /// Final review 1: a launch deferred by a running Telltale creates no Warden dir; the next launch (Telltale
+    /// quit) migrates everything.
+    @Test func launchAfterADeferralMigrates() throws {
+        try seedOldData()
+        oldDefaults.set(true, forKey: "overlay.enabled")
+        #expect(migration(running: true).run().data == .legacyInUse)
+        #expect(!FileManager.default.fileExists(atPath: new.path))
+        let r = migration().run()
+        #expect(r.completed && r.data == .moved && r.copiedKeys == 1)
+        #expect(FileManager.default.fileExists(atPath: new.appendingPathComponent("history.sqlite").path))
+        #expect(newDefaults.bool(forKey: "overlay.enabled"))
+    }
+
+    /// A new dir left by an earlier launch that couldn't migrate (lock file, empty store) is replaced.
+    @Test func disposableNewDirIsReplaced() throws {
+        try seedOldData()
+        try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        try Data().write(to: new.appendingPathComponent(".instance.lock"))
+        try Data().write(to: new.appendingPathComponent("history.sqlite"))
+        #expect(LegacyMigration.onlyLockOrEmptyFiles(new))
+        let r = migration().run()
+        #expect(r.data == .moved)
+        #expect(try Data(contentsOf: new.appendingPathComponent("history.sqlite")) == Data("db".utf8))
+    }
+
+    /// The old dir's lock token lives until the migration returns (held through the move and the defaults copy).
+    @Test func legacyLockIsHeldThroughTheMigration() throws {
+        final class Token {}
+        try seedOldData()
+        oldDefaults.set(1, forKey: "k")
+        weak var weakToken: Token?
+        var aliveDuringCopy = false
+        let m = LegacyMigration(
+            legacyDataDirectory: old, dataDirectory: new,
+            defaults: [(from: domain(oldDefaults),
+                        to: LegacyMigration.Domain(persisted: { [:] }, replace: { _ in aliveDuringCopy = weakToken != nil }))],
+            marker: newDefaults,
+            lockLegacy: {
+                let t = Token()
+                weakToken = t
+                return .acquired(t)
+            })
+        #expect(m.run().data == .moved)
+        #expect(aliveDuringCopy)
+        #expect(weakToken == nil)
     }
 
     /// Fix 3: a failed move (unwritable parent) copies no defaults and writes no marker; the next launch retries.
@@ -134,7 +183,7 @@ final class LegacyMigrationTests {
         let m = LegacyMigration(legacyDataDirectory: nil, dataDirectory: nil,
                                 defaults: [(from: domain(oldDefaults), to: domain(newDefaults)),
                                            (from: domain(oldSuite), to: domain(newSuite))],
-                                marker: newDefaults, legacyInstanceRunning: { false })
+                                marker: newDefaults)
         let r = m.run()
         #expect(r.completed && r.data == nil && r.copiedKeys == 1)
         #expect(newSuite.double(forKey: "overlay.opacity") == 0.55)
@@ -149,6 +198,8 @@ final class LegacyMigrationTests {
         _ = migration().run()                                        // already done: no new notice
         #expect(!LegacyMigration.takeNotice(newDefaults))
         #expect(LegacyMigration.noticeText.contains("System Settings › General › Login Items"))
+        #expect(LegacyMigration.noticeText.contains(LegacyMigration.noticeLoginButton))
+        #expect(!LegacyMigration.noticeTextWithoutLogin.contains(LegacyMigration.noticeLoginButton))
     }
 
     @Test func loginItemOnlyWhenTheOldDefaultsRecordIt() {
