@@ -29,6 +29,8 @@ targets:
       properties:
         LSUIElement: true
         CFBundleDisplayName: Telltale
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "14.0"
     dependencies:
       - package: MonitorCore

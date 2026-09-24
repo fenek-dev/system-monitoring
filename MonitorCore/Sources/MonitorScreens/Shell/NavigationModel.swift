@@ -16,4 +16,22 @@ import Observation
     public enum ProcessSelection: Hashable, Sendable { case app(AppKey), process(ProcessID) }
 
     public init() {}
+
+    /// AppCommands.openDashboard: nil keeps the current page.
+    public func open(_ page: DashboardPage?) {
+        if let page { self.page = page }
+    }
+
+    /// AppCommands.inspectApp: Processes in Apps mode with the app selected (→ `UIVisibility.inspectedApp`).
+    public func inspect(_ app: AppKey) {
+        page = .processes
+        processesMode = .apps
+        selection = .app(app)
+    }
+
+    /// The range the current page's header control edits (History keeps its own, default 24H).
+    public var currentRange: HistoryRange {
+        get { page == .history ? historyRange : range }
+        set { if page == .history { historyRange = newValue } else { range = newValue } }
+    }
 }
