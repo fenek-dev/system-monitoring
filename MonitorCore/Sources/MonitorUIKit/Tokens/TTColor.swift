@@ -74,6 +74,9 @@ public enum TTColor {
     // MARK: Accent and actions
     public static let accent = Color(hex: 0x0A84FF)
     public static let destructive = Color(hex: 0xC9302C)
+    /// ADDED (W5c, authorized): History scrubber rest track and its hairline edge (History reference crop).
+    public static let scrubberRest = Color(hex: 0xEDEDED)
+    public static let scrubberRestEdge = Color(hex: 0xB0B0B0)
 
     // MARK: Category accents
     public static let cpu = Color(hex: 0x5EA8FF)
