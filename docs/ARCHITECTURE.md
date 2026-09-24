@@ -16,7 +16,7 @@ Contents: 1 Build · 2 Module layout · 3 Data flow · 4 Concurrency · 5 Interf
 - UI lives in the package (`MonitorUIKit`, `MonitorScreens`), not `App/`: `swift build`/`swift test` compile and snapshot-test every view headlessly per worktree. `App/` is the AppKit shell + composition root. (Deviation from SPEC "Structure", for testability.)
 - Swift 6 language mode everywhere except `CPrivate` (C).
 - **Private libraries are weak-linked** so a missing/renamed library on a future macOS makes one sensor unavailable instead of failing app launch: `CPrivate` `linkerSettings: [.unsafeFlags(["-weak-lIOReport", "-F/System/Library/PrivateFrameworks", "-weak_framework", "NetworkStatistics"])]`. Every private declaration carries `__attribute__((weak_import))`; each header exposes `static inline bool tt_<lib>_available(void)` (address-of-symbol != NULL) that the sensor's `prepare()` checks → `.unavailable("… not present on this macOS")`. No `-lsysmon` (libsysmon is unusable, §10). Public frameworks are declared on `MonitorSensors`: `.linkedFramework("IOKit")`, `("CoreWLAN")`, `("SystemConfiguration")`.
-- `unsafeFlags` is legal for a local package; W0 T0.4 verifies it survives `xcodebuild`. Fallback if Xcode rejects it: move the same flags to `OTHER_LDFLAGS` in `project.yml` (and keep them in `Package.swift` for `swift test`).
+- `unsafeFlags` is legal for a local package; W0b T0b.2 verifies it survives `xcodebuild`. Fallback if Xcode rejects it: move the same flags to `OTHER_LDFLAGS` in `project.yml` (and keep them in `Package.swift` for `swift test`).
 
 | Command | What | Owner |
 |---|---|---|
@@ -49,7 +49,7 @@ targets:
       properties: { LSUIElement: true, CFBundleDisplayName: Telltale, LSMinimumSystemVersion: "14.0" }
     dependencies:
       - package: MonitorCore
-        products: [MonitorRuntime, MonitorScreens, MonitorUIKit]
+        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit]   # app imports each explicitly
 ```
 
 Bundle id `dev.telltale.Telltale`. No sandbox, no entitlements file.
@@ -87,8 +87,9 @@ system-monitor/
         Snapshots/ SystemFrame.swift CPU.swift GPU.swift Memory.swift Network.swift Thermals.swift
                    Power.swift Disk.swift ProcessSample.swift AppSample.swift Connection.swift
         Sensors/ Sensor.swift SensorSuite.swift RawTick.swift Sampling.swift
+                 BuiltinSensors.swift       UnavailableSensor, FixtureSensor, CrashingSensor (only home)
         Alerts/ Alert.swift HistoryEvent.swift
-        History/ HistoryProvider.swift HistoryRecord.swift
+        History/ HistoryProvider.swift HistoryRecord.swift (incl. RecordBatch) EmptyHistoryProvider.swift
         Services/ ProcessActions.swift AppCommands.swift Preferences.swift Navigation.swift
       MonitorLive/                 UI-facing state (depends on MonitorModel only)
         RingBuffer.swift LiveHistory.swift LiveModel.swift
@@ -109,11 +110,12 @@ system-monitor/
         Power/ BatterySensor.swift
         Network/ NStatSensor.swift InterfaceSensor.swift WiFiSensor.swift LatencyProbe.swift ReverseDNS.swift
         Disk/ DiskIOSensor.swift VolumeSensor.swift SMARTSensor.swift
-        Support/ UnavailableSensor.swift (W0)   <Stream>+<Topic>.swift (per stream, e.g. W6a+KinfoProc.swift)
+        Support/ <Stream>+<Topic>.swift (per stream, e.g. W6a+KinfoProc.swift)
         LiveSensorFactory.swift    references every adapter type by name (W0, then integrator)
       MonitorStore/  Database.swift Schema.swift HistoryStore.swift Rollup.swift Retention.swift Queries.swift CSVExporter.swift
       MonitorUIKit/
-        Tokens/ Format/ Components/ Charts/ Treemap/ Glyph/ Environment/ Snapshot/
+        Tokens/ Format/ Components/ Charts/ Treemap/ Glyph/ Environment/ Snapshot/SnapshotRenderer.swift
+      MonitorSnapshotTesting/      test-support library (imports Testing): assertSnapshot, PNG diff; never linked by the app
       MonitorScreens/
         Shell/ DashboardRoot.swift Sidebar.swift DeviceHeader.swift PageHeader.swift NavigationModel.swift
                SettingsView.swift ScreenCatalog.swift
@@ -129,7 +131,8 @@ system-monitor/
     Tests/
       MonitorModelTests/  MonitorLiveTests/  MonitorEngineTests/ (+Fixtures/, Fixtures/recorded/)
       MonitorStoreTests/  MonitorUIKitTests/ (+__Snapshots__)  MonitorScreensTests/ (+__Snapshots__)
-      MonitorSensorsTests/ (+Fixtures/)  MonitorMocksTests/  MonitorRuntimeTests/
+      MonitorSensorsTests/ (+Fixtures/<stream>/, e.g. Fixtures/W6b/)  MonitorMocksTests/  MonitorRuntimeTests/
+      MonitorScreensTests/Support/ (shared screen-test helpers, W4)
   Spikes/   docs/{ARCHITECTURE.md, design/, findings/, icr/, perf/, superpowers/plans/}
 ```
 
@@ -143,12 +146,13 @@ MonitorEngine   → MonitorModel
 MonitorSensors  → MonitorModel, CPrivate                    + IOKit, CoreWLAN, SystemConfiguration; resources: SoC/Resources, Thermal/Resources
 MonitorStore    → MonitorModel, GRDB (from: "7.0.0")
 MonitorUIKit    → MonitorModel                              + SwiftUI, Charts, AppKit
+MonitorSnapshotTesting → MonitorUIKit                       + Testing (used only by UIKit/Screens test targets)
 MonitorMocks    → MonitorModel
 MonitorScreens  → MonitorModel, MonitorLive, MonitorUIKit, MonitorMocks
 MonitorRuntime  → MonitorModel, MonitorLive, MonitorEngine, MonitorSensors, MonitorStore, MonitorMocks
 telltale-render → MonitorScreens, MonitorUIKit, MonitorMocks, MonitorLive
-telltale-probe  → MonitorRuntime
-App (Xcode)     → MonitorRuntime, MonitorScreens, MonitorUIKit
+telltale-probe  → MonitorEngine, MonitorSensors, MonitorStore   (builds SensorFactory.live itself; uses sampleOnceRaw)
+App (Xcode)     → MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit
 ```
 
 Rules: UI targets never import `MonitorEngine`, `MonitorSensors` or `MonitorStore`; they see data only through `LiveModel` and `HistoryProvider`.
@@ -178,9 +182,9 @@ Per tick (`SamplingEngine.tick()`):
 4. `FrameAssembler.assemble(tick)`:
    - rates via `RateCalculator`, always timed by the reading's `capturedNs`, recomputed only when `capturedNs` advances (a cached reading yields the previous rate);
    - process list (sysctl) + rusage v6 enrichment → `ProcessSample`s (`provenance = .measured` or `.restricted`);
-   - `CoalitionAttributor`: per coalition, residual = Δcoalition − Σ Δvisible members (clamped ≥ 0); one restricted member ⇒ filled (`.coalition`); otherwise ⇒ one synthetic row per coalition named after the leader's `p_comm`, in the leader's app (or "System" if no leader);
-   - `EnergyAttributor` (§5.6 ruling) → watts per `ProcessID`;
-   - per-app GPU (AGX per client → per pid), network (NStat per `ProcessID`), memory (footprint, or `ps` RSS for restricted pids while `rootMemory` runs);
+   - `CoalitionAttributor`, **only for coalitions with ≥ 1 `.restricted` member** (coalition and rusage meters disagree by ~1 % CPU and ~20 % energy, so all-visible coalitions are left to rusage): residual = Δcoalition − Σ Δvisible members (clamped ≥ 0) for CPU and disk; one restricted member ⇒ filled (`.coalition`); otherwise ⇒ one synthetic row per coalition named after the leader's `p_comm`, in the leader's app (or "System" if no leader);
+   - `EnergyAttributor`, in this order: (1) measured v6 `ri_energy_nj` for permitted pids; (2) coalition energy residual for restricted members of those same coalitions (**disabled when v6 is unavailable**, since the residual would then equal the whole coalition and double-count with step 3); (3) SoC share (IOReport CPU/GPU W × share) fills only the pids still `nil`;
+   - per-app GPU from AGX only (per client → per pid; covers root pids; coalition `gpu_time` is not used — unknown unit), network (NStat per `ProcessID`), memory (footprint, or `ps` RSS for restricted pids while `rootMemory` runs);
    - grouping by responsible PID (`AppGrouper`), `SessionAccumulator` (per-`AppKey` CPU time, GPU time, net bytes since launch);
    - system snapshots + `SystemMetrics`.
 5. `AlertEngine.update` → `AlertState` + transition events; `EventDetector.update` → episodes.
@@ -227,6 +231,8 @@ Conventions:
 public struct ProcessID: Hashable, Sendable, Codable {
     public var pid: Int32
     public var startTimeUs: UInt64            // kinfo_proc p_starttime (µs since epoch); 0 = unknown
+    // ProcessID(pid, 0) (start time unknown, e.g. NStat before resolution) matches the live process with that pid
+    // in the current process list (any start time); if none exists, its data goes to AppKey.system (unattributed).
     public static func coalitionResidual(_ coalitionID: UInt64) -> ProcessID   // pid -1, startTimeUs = id
     public var isSynthetic: Bool { get }      // pid < 0
 }
@@ -253,7 +259,7 @@ public enum Provenance: String, Sendable, Codable {
     case coalition     // counters filled from the process's resource-coalition residual (estimated)
     case restricted    // EPERM, not individually attributable; its usage is in a coalition residual row
 }
-public enum MemorySource: Sendable, Codable, Equatable {
+public enum MemorySource: Sendable, Codable, Hashable {
     case footprint                 // ri_phys_footprint
     case rss(ageNs: UInt64)        // from /bin/ps (restricted pids); age since the ps run
 }
@@ -327,14 +333,19 @@ public enum AppMetric: String, CaseIterable, Sendable, Codable {
     public var sources: [SensorID] { get }
 }
 
-public protocol MetricKey: CaseIterable, Hashable, Sendable, Codable, RawRepresentable where RawValue == String {}
-extension HistoryMetric: MetricKey {}
+public protocol MetricKey: CaseIterable, Hashable, Sendable, Codable, RawRepresentable where RawValue == String {
+    /// Case → storage slot, computed once. Generic types can't hold static stored properties, so each
+    /// concrete enum provides it: `static let ordinals = Dictionary(uniqueKeysWithValues: allCases.enumerated().map { ($1, $0) })`.
+    static var ordinals: [Self: Int] { get }
+    static var count: Int { get }
+}
+extension HistoryMetric: MetricKey {}   // static let ordinals, static let count
 extension AppMetric: MetricKey {}
 
-/// Fixed-size, allocation-free row (ContiguousArray<Double>, NaN = missing).
+/// Fixed-size, allocation-free row (ContiguousArray<Double>, NaN = missing). Subscript uses Key.ordinals (no allCases scan).
 /// Codable **by rawValue** as a keyed container {"cpuUsage": 0.42, …}; NaN omitted; unknown keys ignored,
-/// so fixtures survive enum reordering and additions.
-public struct MetricVector<Key: MetricKey>: Sendable, Codable, Equatable {
+/// so fixtures survive enum reordering and additions. Hashable/Equatable treat NaN slots as equal (bit-pattern compare).
+public struct MetricVector<Key: MetricKey>: Sendable, Codable, Hashable {
     public init()
     public subscript(_ key: Key) -> Double? { get set }
 }
@@ -373,7 +384,7 @@ public struct CoalitionUsage: Sendable, Codable, Hashable {
     public var memberPIDs: [Int32]                // via proc_pidinfo(PROC_PIDCOALITIONINFO)
     public var cpuTimeNs: UInt64                  // mach ticks → ns
     public var energyNJ: UInt64?                  // energy field per findings (energy[11])
-    public var gpuTimeNs: UInt64?
+    public var gpuTimeRaw: UInt64?                // gpu_time [8]: unknown unit — recorded for diagnostics, never used
     public var diskReadBytes: UInt64?, diskWriteBytes: UInt64?
 }
 public struct CoalitionsReading: Sendable, Codable { public var coalitions: [CoalitionUsage] }
@@ -459,6 +470,8 @@ public struct NetworkFlowsReading: Sendable, Codable {
     public var flows: [FlowCounter]
     /// Cumulative bytes of removed flows **since sensor start**, per process; entries pruned 10 min after the process exits.
     public var closedBytes: [ProcessID: ByteCounts]
+    /// Cumulative bytes of sources retired before their pid could be resolved → assembled into AppKey.system.
+    public var unattributedBytes: ByteCounts
 }
 public enum InterfaceKind: String, Sendable, Codable { case wifi, ethernet, thunderbolt, cellular, other }
 public struct InterfaceCounter: Sendable, Codable, Hashable {
@@ -562,10 +575,13 @@ public protocol Sensor<Reading>: AnyObject {
     func invalidate()
 }
 
+// MonitorModel/Sensors/BuiltinSensors.swift (the only home of these three)
 public final class UnavailableSensor<R: Sendable & Codable>: Sensor { public init(_ id: SensorID, reason: String) }
 public final class FixtureSensor<R: Sendable & Codable>: Sensor {
     public init(_ id: SensorID, readings: [Result<R, SensorError>], cadence: SensorCadence = .everyTick)
 }
+/// Debug hook for the crash canary: forwards to `wrapped`, but calls abort() inside the first prepare().
+public final class CrashingSensor<R: Sendable & Codable>: Sensor { public init(wrapping: any Sensor<R>) }
 
 public struct SensorSuite {                           // non-Sendable; lives inside SamplingEngine
     public var processes: any Sensor<ProcessTableReading>
@@ -589,10 +605,13 @@ public struct SensorSuite {                           // non-Sendable; lives ins
     public var sleepAssertions: any Sensor<SleepAssertionsReading>
     public var device: any Sensor<DeviceInfo>
     public static func allUnavailable(reason: String) -> SensorSuite
+    public func crashing(_ id: SensorID) -> SensorSuite      // wraps that field in CrashingSensor
 }
 public struct SensorFactory: Sendable {
     public var make: @Sendable (_ disabled: Set<SensorID>) -> SensorSuite
     public init(make: @escaping @Sendable (Set<SensorID>) -> SensorSuite)
+    /// `--crash-sensor <id>` (DEBUG builds; parsed by AppEnvironment, passed through TelltaleRuntime.make) → canary drill.
+    public func crashing(_ id: SensorID?) -> SensorFactory
 }
 // MonitorSensors/LiveSensorFactory.swift: public extension SensorFactory { static let live: SensorFactory }
 
@@ -636,12 +655,12 @@ Default cadences (W6 may tune; W7 verifies):
 | Sensor | interactive | background | requires | measured cost (M1 Max) |
 |---|---|---|---|---|
 | processes (sysctl + rusage v6) | tick | tick | — | TBD W6a (est. 4–7 ms) |
-| coalitions | tick | tick | — | 1.3–2.1 ms + 0.35 ms membership |
-| rootMemory (`ps`) | 30 s | 30 s | `.processTable` or `.memoryAlert` | TBD (spawn) |
+| coalitions | tick | tick | — | 1.3–2.1 ms (+ membership only for new/exited pids) |
+| rootMemory (`ps`) | 30 s | 30 s | `.processTable` or `.memoryAlert` | ~20 ms, off-queue |
 | hostCPU, memory, thermalState, interfaces, diskIO | tick | tick | — | < 1 ms total |
 | soc (IOReport) | tick | tick | — | ~2 ms |
 | gpuClients (AGX) | tick | tick | — | ~2 ms |
-| networkFlows (NStat) | tick | tick | — (endpoints only with `.connections`) | TBD W6c |
+| networkFlows (NStat) | tick | **10 s** | — (endpoints only with `.connections`) | 21–28 ms per query, on the box queue |
 | smc (fans, catalog T-keys, PSTR/PDTR) | 2 s | 5 s | — | < 1 ms (hard-coded keys) |
 | temperatures (HID raw list) | 2 s | never | `.rawTemperatures` | 65–80 ms |
 | battery | 5 s | 30 s | — | |
@@ -776,7 +795,8 @@ public struct ConnectionSample: Sendable, Codable, Hashable, Identifiable {
 How restricted (root/other-user) processes appear (Processes page, DESIGN §3.12):
 - Every pid from the sysctl list is a row. `provenance == .restricted` rows show name (`p_comm`, or path basename if readable), PID, user; CPU/energy/disk "—" with tooltip `unavailableReason` → "Owned by another user; counted in the ‹leader› coalition row".
 - `.coalition` rows (the only restricted member of a coalition) show values with the DESIGN.md estimated style and tooltip "Estimated from the process's resource coalition".
-- Synthetic rows (`ProcessID.coalitionResidual`) are named after the coalition leader's `p_comm` (or "System"), provenance `.coalition`, and in Apps mode are included in their app's totals.
+- Synthetic rows (`ProcessID.coalitionResidual`) exist only for coalitions with ≥ 1 restricted member and ≠ 1 restricted member; named after the coalition leader's `p_comm` (or "System"), provenance `.coalition`, included in their app's totals in Apps mode.
+- GPU for restricted pids comes from AGX like any pid; if `gpuClients` is unavailable it is "—" (no coalition fallback).
 - Memory for restricted pids: "—" with tooltip "Appears when the process table is open" until `rootMemory` has run; then value with tooltip "RSS from ps, N s old" (`memorySource = .rss(ageNs:)`).
 
 Category ↔ top-3 key (popover rows, treemap default): cpu → `cpuPercent`; gpu → `gpuPercent`; memory → `memory`; network → `netRxBps + netTxBps`; thermals, power → `energyWatts`; disk → `diskReadBps + diskWriteBps`.
@@ -807,26 +827,32 @@ public enum CPUTicks {
     public static func usage(previous: [CoreTicks], current: [CoreTicks]) -> (perCore: [Double], user: Double, system: Double, idle: Double)?
 }
 
+public struct CoalitionDelta: Sendable, Hashable {
+    public var cpuNs: UInt64, energyNJ: UInt64?, diskR: UInt64?, diskW: UInt64?, seconds: Double
+}
 public struct CoalitionDeltas: Sendable {          // per coalition, over the coalition reading's own interval
-    public var byID: [UInt64: (cpuNs: UInt64, energyNJ: UInt64?, gpuNs: UInt64?, diskR: UInt64?, diskW: UInt64?, seconds: Double)]
+    public var byID: [UInt64: CoalitionDelta]
     public var membership: [UInt64: CoalitionUsage]
 }
 
-/// C2: residual = Δcoalition − Σ Δvisible members (clamped ≥ 0), per metric.
+/// Runs ONLY for coalitions with ≥ 1 member whose provenance is .restricted (all-visible coalitions: rusage wins).
+/// residual = Δcoalition − Σ Δvisible members (clamped ≥ 0) for CPU and disk.
 /// Exactly one restricted member → it gets the residual (provenance .coalition).
 /// Otherwise → one synthetic ProcessSample per coalition (leader p_comm, leader's app; no leader → .system "System").
-/// GPU: AGX is authoritative for every pid; coalition GPU residual used only when gpuClients is unavailable.
+/// No GPU: coalition gpu_time has an unknown unit; AGX is the only GPU source.
 public struct CoalitionAttributor: Sendable {
     public init(minResidualCPUPercent: Double = 0.5, minResidualWatts: Double = 0.05)
     public mutating func attribute(_ processes: inout [ProcessSample], coalitions: CoalitionDeltas,
                                    identities: [Int32: AppIdentity]) -> [ProcessSample]   // returns synthetic rows
 }
 
-/// C3 ruling: own-uid pids → Δ ri_energy_nj (v6). Foreign pids → coalition energy residual (via CoalitionAttributor rules).
-/// SoC share (IOReport cpuW × cpu share + gpuW × gpu share) only when v6 energy is unavailable for own-uid pids.
+/// Order (ruling, N6): (1) measured Δ ri_energy_nj (v6) for permitted pids;
+/// (2) coalition energy residual for restricted members, same coalition scope and fill/synthetic rules as CoalitionAttributor —
+///     skipped entirely when v6 is unavailable (residual would equal the whole coalition → double count with step 3);
+/// (3) SoC share (IOReport cpuW × cpu share + gpuW × gpu share) assigned only to pids still without a value.
 public protocol EnergyAttributor: Sendable {
     mutating func watts(processes: [ProcessSample], coalitions: CoalitionDeltas, soc: SoCPowerReading?, dt: Double) -> [ProcessID: Double]
-    var usesSoCShareFallback: Bool { get }        // → energyEstimated for all rows
+    var usesSoCShareFallback: Bool { get }        // step 3 used this tick → energyEstimated on those rows
 }
 public struct RulingEnergyAttributor: EnergyAttributor { public init() }
 
@@ -866,8 +892,8 @@ public actor SamplingEngine {
     public func systemWillSleep()
     public func systemDidWake()
     public func sampleOnce() -> SystemFrame
+    public func sampleOnceRaw() -> (tick: RawTick, frame: SystemFrame)   // telltale-probe --record/--frames
 }
-public struct RecordBatch: Sendable { public var record: HistoryRecord?; public var events: [HistoryEvent] }
 
 final class SensorSlot<R: Sendable & Codable> {    // internal
     init(_ sensor: any Sensor<R>, canary: CrashCanary)
@@ -908,9 +934,15 @@ public final class LiveModel {
     public private(set) var sensorHealth: [SensorID: SensorStatus]
     public private(set) var lastUpdate: Date?
 
-    // Per-category change counters (separate stored properties so observation is per category)
-    public private(set) var cpuVersion, gpuVersion, memoryVersion, networkVersion,
-                            thermalsVersion, powerVersion, diskVersion, appsVersion: Int
+    // Per-category change counters: separate stored properties, one `var` per line (@Observable rejects multi-binding decls)
+    public private(set) var cpuVersion = 0
+    public private(set) var gpuVersion = 0
+    public private(set) var memoryVersion = 0
+    public private(set) var networkVersion = 0
+    public private(set) var thermalsVersion = 0
+    public private(set) var powerVersion = 0
+    public private(set) var diskVersion = 0
+    public private(set) var appsVersion = 0
     public func version(_ c: Category) -> Int                    // reads the matching counter (tracked)
 
     // Ring buffers are @ObservationIgnored; readers depend on the category counter
@@ -1005,6 +1037,7 @@ public struct AppRecord: Sendable, Codable, Equatable { public var identity: App
 public struct HistoryRecord: Sendable, Codable, Equatable {
     public var time: Date, interval: Duration, system: SystemMetrics, apps: [AppRecord]   // above thresholds + .other
 }
+public struct RecordBatch: Sendable { public var record: HistoryRecord?; public var events: [HistoryEvent] }   // Model (Store has no Engine dep)
 public struct AppShare: Sendable, Codable, Hashable, Identifiable {
     public var id: AppKey { identity.key }; public var identity: AppIdentity; public var value: Double; public var fraction: Double
 }
@@ -1023,6 +1056,14 @@ public protocol HistoryProvider: Sendable {
     func coverage() async throws -> DateInterval?
     func exportCSV(range: HistoryRange, end: Date, to url: URL) async throws -> ExportSummary
 }
+/// Protocol requirements can't have default arguments; these overloads pass bucket: nil (= range.displayBucket).
+public extension HistoryProvider {
+    func series(_ metrics: [HistoryMetric], range: HistoryRange, end: Date) async throws -> [HistoryMetric: [SeriesPoint]]
+    func appSeries(_ app: AppKey, _ metrics: [AppMetric], range: HistoryRange, end: Date) async throws -> [AppMetric: [SeriesPoint]]
+}
+/// MonitorModel/History/EmptyHistoryProvider.swift — default env value and "History unavailable" fallback; returns empty/nil.
+public struct EmptyHistoryProvider: HistoryProvider { public init() }
+
 public protocol HistoryRecorder: Sendable {
     func append(_ batch: RecordBatch) async
     func flush() async throws
@@ -1099,7 +1140,7 @@ public struct PopoverLayout: Sendable, Codable, Equatable {   // edited in Setti
 }
 ```
 
-SwiftUI environment (`MonitorUIKit/Environment/EnvironmentValues+Telltale.swift`, `@Entry`): `processActions`, `appCommands`, `unitPreferences`, `popoverLayout`, `historyProvider: any HistoryProvider` (default `EmptyHistoryProvider`), `isSnapshot`, `now: Date?`. Observables via `.environment(_:)`: `LiveModel`, `NavigationModel`.
+SwiftUI environment (`MonitorUIKit/Environment/EnvironmentValues+Telltale.swift`, `@Entry`): `processActions`, `appCommands`, `unitPreferences`, `popoverLayout`, `historyProvider: any HistoryProvider` (default `EmptyHistoryProvider()` from MonitorModel), `isSnapshot`, `now: Date?`. Observables via `.environment(_:)`: `LiveModel`, `NavigationModel`.
 
 ```swift
 @MainActor @Observable public final class NavigationModel {   // MonitorScreens/Shell (W4)
@@ -1125,17 +1166,18 @@ public enum RuntimeMode: Sendable, Equatable { case live, mock(MockScenario) }
     func systemWillSleep(); func systemDidWake(); func shutdown() async
 }
 @MainActor public final class TelltaleRuntime {        // façade (W0 writes; W7 owns); dispatches to:
-    public static func make(mode: RuntimeMode, dataDirectory: URL, disabledSensors: Set<SensorID>) -> TelltaleRuntime
+    public static func make(mode: RuntimeMode, dataDirectory: URL, disabledSensors: Set<SensorID>,
+                            crashSensor: SensorID? = nil) -> TelltaleRuntime   // crashSensor: DEBUG canary drill
     public var live: LiveModel { get }; public var history: any HistoryProvider { get }
     public func start(); public func setVisibility(_ v: UIVisibility); public func setPaused(_ p: Bool)
     public func systemWillSleep(); public func systemDidWake(); public func shutdown() async
 }
 // LivePipeline.swift (W7): engine + SensorFactory.live + HistoryStore.  MockPipeline.swift (Wm): MockDataProvider + MockHistoryProvider.
 // Launch args / env (App/Composition/AppEnvironment.swift):
-//   --mock <scenario> | TELLTALE_MOCK=<scenario>;  --open-dashboard <page>;  --open-popover
+//   --mock <scenario> | TELLTALE_MOCK=<scenario>;  --open-dashboard <page>;  --open-popover;  --crash-sensor <id> (DEBUG)
 //   TELLTALE_DATA_DIR=<dir>;  TELLTALE_DISABLE_SENSORS=coalitions,soc,…  (also UserDefaults "DisabledSensors")
 
-// MonitorMocks (W0: .calm only; Wm: the rest)
+// MonitorMocks (W0b: compiling stubs returning SystemFrame.empty-based frames; Wm: real data for every scenario incl. .calm)
 public enum MockScenario: String, CaseIterable, Sendable, Codable {
     case calm, thermalFair, thermalCritical, memoryWarning, memoryCritical, runaway
     case collecting, sensorsUnavailable, paused
@@ -1231,13 +1273,17 @@ struct TTTreemap: View { init(_ shares: [AppShare], metric: AppMetric, animated:
 struct TTStatusGlyph: View { init(state: AlertState, size: CGFloat = 16, template: Bool) }
 @MainActor enum StatusGlyphRenderer { static func image(for state: AlertState, pointSize: CGFloat = 18) -> NSImage }
 
-@MainActor enum SnapshotRenderer {
+@MainActor enum SnapshotRenderer {                    // MonitorUIKit (no Testing import; used by telltale-render too)
+    enum Path: Sendable { case imageRenderer, hosting }
+    static func render<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2, path: Path = .hosting) -> CGImage?
     static func imageRenderer<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2) -> CGImage?   // pure SwiftUI only
     static func hosting<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2) -> CGImage?         // offscreen NSWindow
     static func writePNG(_ image: CGImage, to url: URL) throws
 }
-func assertSnapshot<V: View>(_ view: V, size: CGSize, named: String, path: SnapshotRenderer.Path = .hosting,
-                             tolerance: Double = 0.005, fileID: StaticString = #fileID, line: UInt = #line)
+
+// MonitorSnapshotTesting (test-support target; imports Testing; linked only by test targets)
+@MainActor func assertSnapshot<V: View>(_ view: V, size: CGSize, named: String, path: SnapshotRenderer.Path = .hosting,
+                                        tolerance: Double = 0.005, sourceLocation: SourceLocation = #_sourceLocation)
 ```
 
 ### 5.13 App shell decisions (W4)
@@ -1255,7 +1301,7 @@ func assertSnapshot<V: View>(_ view: V, size: CGSize, named: String, path: Snaps
 
 ## 6. Errors & unavailable data
 
-1. **Sensor**: `prepare()`/`sample()` throw `SensorError`. Missing weak symbol (`tt_*_available()` false) or versioned-struct size mismatch (coalition usage struct: `_Static_assert` on the header's size + runtime check of the size the call reports) → `.unavailable`. errno failures → `SensorError.fromErrno(context)`. Async waits ≤ 250 ms → `.timeout`. Validate CF types and C buffer bounds; never crash on bad data.
+1. **Sensor**: `prepare()`/`sample()` throw `SensorError`. Missing weak symbol (`tt_*_available()` false) or versioned-struct mismatch → `.unavailable`. Coalition usage struct check: `_Static_assert(sizeof(struct coalition_resource_usage) == <findings size>)` in `Coalition.h`; at `prepare()`, call once on our own coalition with a buffer of `sizeof + 64` bytes pre-filled with sentinel `0xA5` and pass `sizeof` as the size: (a) every byte past `sizeof` must still be `0xA5` (kernel respected our size), (b) the last 8-byte field of our struct must no longer be all-`0xA5` (kernel's struct is at least as long as ours, so the prefix we read is real), (c) `cpu_time` > 0. Any failure → `.unavailable("coalition struct layout changed")`. errno failures → `SensorError.fromErrno(context)`. Async waits ≤ 250 ms → `.timeout`. Validate CF types and C buffer bounds; never crash on bad data.
 2. **SensorSlot**:
    - `.transient`/`.timeout`/`.posix`: `.failed(err, last:, capturedNs:)`; last reading reused ≤ 2 intervals, then values `nil`; 3 consecutive failures → `.degraded`, backoff 2 s → 60 s.
    - `.unavailable`/`.permissionDenied`: status `.unavailable(reason)`, `invalidate()`, retry `prepare()` every 5 min.
@@ -1279,17 +1325,17 @@ Background tick budget at 5 s: ≤ 25 ms (hard ceiling 50 ms).
 |---|---|---|
 | sysctl `KERN_PROC_ALL` | est. < 1 ms | retained buffer (~920 × 648 B); only list fields copied |
 | rusage v6 on ~590 permitted pids | est. 3–6 ms | stack `rusage_info_v6`; name/path/responsible only for **new** `ProcessID`s |
-| coalitions | 1.3–2.1 ms + 0.35 ms membership | membership refreshed only when the pid set changes |
+| coalitions | 1.3–2.1 ms | membership: `PROC_PIDCOALITIONINFO` only for new pids (exited pids dropped); full pass (0.35 ms) at start only |
 | IOReport | ~2 ms (measured) | subscription once; only subscribed channels |
 | AGX walk | ~2 ms (measured) | per-client deltas |
 | SMC (fans + catalog keys + PSTR/PDTR) | < 1 ms | key list from cache; full sweep (0.45–0.57 s) once, off-queue, cached in `~/Library/Caches/dev.telltale/smc-keys-<hwModel>-<osBuild>.json` |
 | HID raw temps | 65–80 ms | **never in background**; 2 s only on Thermals with `.rawTemperatures` |
-| NStat | est. 1–5 ms | long-lived manager; `sample()` returns the last completed query and starts the next |
+| NStat | 21–28 ms per query (measured) | off the sampler queue (box queue); background every 10 s, interactive every tick; `sample()` returns the last completed query and starts the next |
 | host/vm/ifaddrs/disk stats | < 1 ms | `vm_deallocate` processor info each tick |
-| `ps` (rootMemory) | spawn, off-queue | only with `.processTable` or `.memoryAlert`, 30 s |
+| `ps` (rootMemory) | ~20 ms, off-queue | only with `.processTable` or `.memoryAlert`, 30 s |
 | assemble + attribution + alerts + record | 1–3 ms | dictionaries `reserveCapacity`, `removeAll(keepingCapacity:)` |
 
-Estimated background total ≈ 12–20 ms / 5 s ≈ 0.3–0.4 % of a core.
+Estimated background CPU per 5 s ≈ 12–20 ms on the sampler queue + ~12 ms amortized NStat (25 ms / 10 s) ≈ 25–32 ms ≈ 0.5–0.65 % of a core. Interactive (1 s) ≈ 40–50 ms/s ≈ 4–5 % while UI is open (advisory).
 
 Allocation avoidance: scratch buffers kept across ticks; strings interned per `ProcessID`; `MetricVector` instead of dictionaries; no `Date`/formatters in hot loops; CF objects released within the tick; frames are CoW.
 
@@ -1317,7 +1363,7 @@ Measurement (W7): `scripts/perf.sh 10` (UI closed), `scripts/perf.sh 2 --interac
 |---|---|---|
 | Model | Codable round-trip; `MetricVector` by-rawValue coding; `RawTick` missing keys → `.notRequested`; `unavailableReason` table | `MonitorModelTests` |
 | Live model | observation granularity, change-only assignment, presenting gate | `MonitorLiveTests` |
-| Engine | TDD: rates (capturedNs semantics), CPU ticks, grouping, **coalition attribution (no double counting: Σ app CPU/energy == Σ coalition totals for covered pids, synthetic rows only for residual)**, energy attributor (ruling cases), session accumulator, assembly, records, alerts, events, slots, loop wake-up | `MonitorEngineTests` |
+| Engine | TDD: rates (capturedNs semantics), CPU ticks, grouping, **coalition attribution (no double counting, scoped to coalitions with ≥ 1 restricted member: there Σ member CPU/disk == Δcoalition; all-visible coalitions untouched and produce no synthetic rows)**, energy attributor (N6 order; fallback mode: no coalition residual, SoC share only fills nils), session accumulator, assembly, records, alerts, events, slots, loop wake-up | `MonitorEngineTests` |
 | Store | TDD on `.inMemory` + injected clock; ALTER-ADD-COLUMN; rollups; CSV golden | `MonitorStoreTests` |
 | UI kit | `TTFormat`, `TreemapLayout`, chart gap segmentation, glyph; component snapshots | `MonitorUIKitTests` |
 | Screens | snapshots per mock scenario incl. `restricted` | `MonitorScreensTests` |
@@ -1330,7 +1376,7 @@ Framework: Swift Testing; `@MainActor` suites for view tests. Command: `scripts/
 
 Fixtures: `telltale-probe --record Tests/MonitorEngineTests/Fixtures/recorded/<name>.json --ticks 20 --interval 1` (idle, 8× `yes`, many-helper app, sleep/wake). Until they exist W1 uses builders in `Tests/MonitorEngineTests/Support/`. No sudo-based reference checks (ruling); sensors are verified by plausibility (idle vs. `yes`/Metal load) and against `top`, `ps`, `vm_stat`, `nettop`, `iostat`, `ioreg`.
 
-Snapshots (W3 harness): goldens `Tests/<Target>/__Snapshots__/<name>.png`; record with `TELLTALE_RECORD=1`; failures → `.build/snapshot-failures/<name>.{actual,golden,diff}.png`; compare = fraction of pixels with any channel Δ > 8/255 (default 0.5 %). Determinism: `isSnapshot = true`, `now = MockDataProvider.referenceDate`, `en_US`, `Europe/London`, dark, scale 2, `frame(at: 60)`.
+Snapshots (W3; `assertSnapshot` lives in the test-only `MonitorSnapshotTesting` target so the app never links Testing): goldens `Tests/<Target>/__Snapshots__/<name>.png`; record with `TELLTALE_RECORD=1`; failures → `.build/snapshot-failures/<name>.{actual,golden,diff}.png`; compare = fraction of pixels with any channel Δ > 8/255 (default 0.5 %). Determinism: `isSnapshot = true`, `now = MockDataProvider.referenceDate`, `en_US`, `Europe/London`, dark, scale 2, `frame(at: 60)`.
 
 Design verification:
 1. Reference: `docs/design/reference/<Artboard>@2x.png` (design agent).
@@ -1344,7 +1390,7 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 
 ## 9. Change control
 
-- W0 owns `MonitorModel/**`, `Package.swift`, `.gitignore`, `scripts/{gen,build,test,ci}.sh`, `CPrivate/shim.c`, `MonitorSensors/{LiveSensorFactory.swift,Support/UnavailableSensor.swift}`, `MonitorRuntime/TelltaleRuntime.swift` until merge; afterwards the integrator (W7), except `MonitorRuntime/TelltaleRuntime.swift` → W7.
+- W0 (W0a + W0b) owns `MonitorModel/**` (incl. `Sensors/BuiltinSensors.swift`), `Package.swift`, `.gitignore`, `scripts/{gen,build,test,ci}.sh`, `CPrivate/shim.c`, `MonitorSensors/LiveSensorFactory.swift`, `MonitorRuntime/TelltaleRuntime.swift` until merge; afterwards the integrator (W7), except `MonitorRuntime/TelltaleRuntime.swift` → W7.
 - Model changes: `docs/icr/<NNN>-<stream>-<slug>.md` (what, why, Swift diff, affected streams). Integrator lands ICRs as small `model:` commits on `dev`; streams rebase. Meanwhile the stream uses a local extension in its own target.
 - Allowed without ICR: extensions in the stream's own target; new files in owned directories; `MonitorSensors/Support/<Stream>+<Topic>.swift` helpers (one prefix per stream, e.g. `W6a+KinfoProc.swift`); fixtures.
 - Compatibility: additive only (optional fields with defaults, enum cases only where no exhaustive `switch` exists outside the owner, protocol requirements only with default implementations). New `HistoryMetric`/`AppMetric` cases need no store migration (ALTER-ADD at open).
@@ -1354,7 +1400,8 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 ## 10. Rulings applied (2026-09-24, architecture review)
 
 - libsysmon: unusable (sysmond requires the `com.apple.sysmond.client` entitlement; AMFI kills self-signed binaries claiming it). Removed. Root processes come from sysctl + resource coalitions + `ps` RSS.
-- Energy: rusage v6 `ri_energy_nj` for own-uid pids; coalition energy residual for foreign pids; SoC-share only as fallback. `ri_billed_energy` is dead (always 0). Open gap from findings: whether `ri_energy_nj` includes GPU energy — W6a checks with a Metal load; if not, add a `gpuW × gpu share` term via ICR.
+- Energy: rusage v6 `ri_energy_nj` for own-uid pids → coalition energy residual for restricted pids (only in coalitions with a restricted member; off when v6 is unavailable) → SoC share fills remaining nils.
+- Coalition `gpu_time` is not used (unknown unit); AGX is the only per-process GPU source. `ri_billed_energy` is dead (always 0). Open gap from findings: whether `ri_energy_nj` includes GPU energy — W6a checks with a Metal load; if not, add a `gpuW × gpu share` term via ICR.
 - Coalition residual → a named row per coalition (leader `p_comm`), else "System".
 - `ps` runs only while a process table is visible, or in background while a memory alert is active.
 - HID temps = raw list only; groups and thermal background data from SMC via a per-`hw.model` catalog.

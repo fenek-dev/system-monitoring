@@ -57,7 +57,7 @@ CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Di
 |---|---|---|
 | Process list | `sysctl KERN_PROC_ALL` (all pids incl. root) | yes |
 | Per-process CPU time, footprint, disk I/O, energy (own user) | `proc_pid_rusage` `RUSAGE_INFO_V6` (`ri_energy_nj`) + `proc_pidinfo` | yes |
-| Root/other-user CPU, energy, disk, GPU time | resource coalitions (`coalition_info_resource_usage`, private) + `PROC_PIDCOALITIONINFO` | yes (coalition residual) |
+| Root/other-user CPU, energy, disk | resource coalitions (`coalition_info_resource_usage`, private) + `PROC_PIDCOALITIONINFO`; only for coalitions with a restricted member (coalition `gpu_time` unused: unknown unit) | yes (coalition residual) |
 | Root/other-user memory | `/bin/ps -axo pid,rss` (setuid), on demand | yes |
 | CPU total / per-core | `host_processor_info` | – |
 | P/E cluster usage & freq, GPU %, CPU/GPU/ANE/DRAM watts | IOReport (private) | – |
@@ -73,8 +73,9 @@ CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Di
 | Storage | `URLResourceValues` volume capacity | – |
 
 ## Attribution
-- Processes grouped into **apps** via responsible PID (`responsibility_get_pid_responsible_for_pid`, private). Fallback: bundle path of executable.
-- Non-app daemons are grouped under "System". Each app row expands into its processes.
+- Processes grouped into **apps** via responsible PID (`responsibility_get_pid_responsible_for_pid`, private). The app is the outermost `.app` bundle of the responsible process's executable.
+- User-owned executables outside an app bundle (e.g. `node`, Homebrew services) get their own group. Root/other-user daemons outside a bundle are grouped under "System". Each app row expands into its processes.
+- Processes owned by other users (EPERM): CPU/energy/disk come from the resource-coalition residual. If a coalition has exactly one such process, it gets the residual (shown as estimated). Otherwise the residual is one row per coalition, named after the coalition leader, in the leader's app ("System" if there is no leader). GPU for all processes comes from AGX. Details: `docs/ARCHITECTURE.md` §3, §5.5–5.6.
 
 ## Menu bar & popover
 - One icon, no live values in the bar; it shows status states (calm/elevated/critical) per the design.
