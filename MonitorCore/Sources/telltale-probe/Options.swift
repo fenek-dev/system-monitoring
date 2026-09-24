@@ -148,9 +148,25 @@ struct ProbeOptions: Sendable {
         return names.isEmpty ? "none" : names.joined(separator: ",")
     }
 
-    /// Engine visibility for `--record`/`--frames`/`--bench` engine ticks.
+    /// Engine visibility for `--record`/`--frames`/`--bench` engine ticks: `--page`, else the page whose demand
+    /// covers `--demand` (engine demand only comes from visibility; `.connections` → an inspected app).
     var visibility: UIVisibility {
-        if let page { return UIVisibility(dashboardVisible: true, page: page) }
+        Self.visibility(page: page, demand: demand, mode: mode)
+    }
+
+    static func visibility(page: DashboardPage?, demand: SamplingDemand, mode: SamplingMode) -> UIVisibility {
+        let inspected: AppKey? = demand.contains(.connections) ? .other : nil
+        if let page { return UIVisibility(dashboardVisible: true, page: page, inspectedApp: inspected) }
+        let wanted = demand.subtracting([.connections, .memoryAlert])
+        if !wanted.isEmpty {
+            // First page by overlap with the requested demand (a page carries one demand set).
+            let best = DashboardPage.allCases.max { a, b in
+                UIVisibility(dashboardVisible: true, page: a).demand.intersection(wanted).rawValue.nonzeroBitCount
+                    < UIVisibility(dashboardVisible: true, page: b).demand.intersection(wanted).rawValue.nonzeroBitCount
+            }
+            return UIVisibility(dashboardVisible: true, page: best, inspectedApp: inspected)
+        }
+        if inspected != nil { return UIVisibility(dashboardVisible: true, page: .processes, inspectedApp: inspected) }
         return mode == .interactive ? UIVisibility(popoverOpen: true) : UIVisibility()
     }
 }

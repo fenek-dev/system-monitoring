@@ -163,22 +163,70 @@ struct RuntimeHarness {
         #expect(try await h.rows() == n)
     }
 
+    /// `n` buffered one-app records, 1 s apart (unique `ts`), so the shutdown flush has real work.
+    static func buffer(_ n: Int, into store: HistoryStore) async {
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+        let app = AppRecord(identity: AppIdentity(key: AppKey(kind: .process, id: "/usr/bin/a"), displayName: "a"))
+        for i in 0..<n {
+            await store.append(RecordBatch(record: HistoryRecord(time: base.addingTimeInterval(Double(i)),
+                                                                 interval: .seconds(1), apps: [app])))
+        }
+    }
+
     @Test func shutdownLeavesTheMainActorFree() async throws {
-        // A MainActor timer must keep firing while shutdown awaits the store (TerminationController's 3 s timeout).
+        // MainActor timers must keep firing while shutdown awaits a slow store flush (TerminationController's
+        // 3 s timeout runs on the MainActor).
         let h = try RuntimeHarness()
         h.pipeline.start()
         #expect(await h.log.wait(atLeast: 3))
-        let beats = OSAllocatedUnfairLock(initialState: 0)
+        await Self.buffer(40_000, into: h.store)
+        let gaps = OSAllocatedUnfairLock(initialState: (last: ContinuousClock.now, max: Duration.zero, beats: 0))
         let heart = Task { @MainActor in
             while !Task.isCancelled {
-                beats.withLock { $0 += 1 }
-                await Task.yield()
-                try? await Task.sleep(for: .milliseconds(1))
+                let now = ContinuousClock.now
+                gaps.withLock { $0 = (now, max($0.max, now - $0.last), $0.beats + 1) }
+                try? await Task.sleep(for: .milliseconds(2))
             }
         }
+        await Task.yield()
+        let t0 = ContinuousClock.now
         await h.pipeline.shutdown()
+        let took = ContinuousClock.now - t0
         heart.cancel()
-        #expect(beats.withLock { $0 } > 0)
+        let g = gaps.withLock { $0 }
+        #expect(took > .milliseconds(100), "flush too fast to prove anything: \(took)")
+        #expect(g.beats > 10)
+        #expect(g.max < .milliseconds(50), "MainActor blocked \(g.max) during a \(took) shutdown")
+        #expect(try await h.rows() == h.log.count + 40_000)
+    }
+
+    @Test func concurrentShutdownsBothWaitForTheFlush() async throws {
+        let h = try RuntimeHarness()
+        h.pipeline.start()
+        #expect(await h.log.wait(atLeast: 2))
+        await Self.buffer(20_000, into: h.store)
+        let p = h.pipeline
+        async let first: Void = p.shutdown()
+        async let second: Void = p.shutdown()
+        _ = await (first, second)
+        #expect(try await h.rows() == h.log.count + 20_000)
+        // A late third call also returns only after the (finished) flush.
+        await p.shutdown()
+    }
+
+    @Test func secondShutdownReturnsOnlyAfterTheFirstFlushed() async throws {
+        let h = try RuntimeHarness()
+        h.pipeline.start()
+        #expect(await h.log.wait(atLeast: 2))
+        await Self.buffer(20_000, into: h.store)
+        let p = h.pipeline
+        let first = Task { @MainActor in await p.shutdown() }
+        await Task.yield()                                        // first shutdown is under way
+        await p.shutdown()                                        // must not return before the flush
+        await h.store.writesSettled()
+        #expect(await h.store.pendingRecordCount == 0)
+        #expect(try await h.rows() == h.log.count + 20_000)
+        await first.value
     }
 
     @Test func fileStoreSurvivesRelaunchAndBadDirFallsBackToMemory() async throws {
@@ -186,11 +234,30 @@ struct RuntimeHarness {
         defer { try? FileManager.default.removeItem(at: dir) }
         let (store, persistent) = LivePipeline.openStore(in: dir)
         #expect(persistent && store != nil)
+        if let store { await Self.buffer(25, into: store) }
         try await store?.shutdown()
-        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("history.sqlite").path))
+
+        let (reopened, again) = LivePipeline.openStore(in: dir)   // relaunch
+        #expect(again)
+        #expect(try await reopened?.intValue("SELECT COUNT(*) FROM system_raw") == 25)
+        try await reopened?.shutdown()
 
         let (fallback, ok) = LivePipeline.openStore(in: URL(fileURLWithPath: "/dev/null/telltale"))
         #expect(!ok && fallback != nil)                          // in-memory: History still works this launch
         try await fallback?.shutdown()
+    }
+
+    @Test func historyPersistentReachesTheFacade() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("telltale-runtime-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(TelltaleRuntime.make(mode: .live, dataDirectory: dir, disabledSensors: Set(SensorID.allCases))
+            .historyPersistent)
+        #expect(!TelltaleRuntime.make(mode: .live, dataDirectory: URL(fileURLWithPath: "/dev/null/telltale"),
+                                      disabledSensors: Set(SensorID.allCases)).historyPersistent)
+        #expect(TelltaleRuntime.make(mode: .mock(.calm), dataDirectory: dir, disabledSensors: []).historyPersistent)
+        let h = try RuntimeHarness()
+        #expect(h.pipeline.historyPersistent)
+        #expect(!LivePipeline(engine: SamplingEngine(factory: SensorFactory { _ in SensorSuite() }), store: h.store,
+                              persistent: false).historyPersistent)
     }
 }
