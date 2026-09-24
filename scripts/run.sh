@@ -3,7 +3,8 @@
 # Usage: scripts/run.sh [--mock [<scenario>]] [--open-dashboard [<page>]] [--open-popover] [--open-settings]
 #                       [--crash-sensor <id>] [other app args…]
 #   scripts/run.sh --mock calm        (build first: scripts/build.sh)
-# Env passed through when set: TELLTALE_DISABLE_SENSORS, TELLTALE_MOCK.
+# Every TELLTALE_* env var is passed through (TELLTALE_DISABLE_SENSORS, TELLTALE_MOCK, DEBUG
+# TELLTALE_POPOVER_CYCLES=N …); TELLTALE_DATA_DIR defaults to .build/data of this worktree.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,8 +25,9 @@ fi
 
 mkdir -p "$DATA"
 envs=(--env "TELLTALE_DATA_DIR=$DATA")
-[[ -n "${TELLTALE_DISABLE_SENSORS:-}" ]] && envs+=(--env "TELLTALE_DISABLE_SENSORS=$TELLTALE_DISABLE_SENSORS")
-[[ -n "${TELLTALE_MOCK:-}" ]] && envs+=(--env "TELLTALE_MOCK=$TELLTALE_MOCK")
+while IFS='=' read -r name value; do                      # forward every other TELLTALE_* variable
+    [[ "$name" == TELLTALE_* && "$name" != TELLTALE_DATA_DIR ]] && envs+=(--env "$name=$value")
+done < <(env)
 
 open -n "${envs[@]}" "$APP" --args "$@"
 sleep 1
