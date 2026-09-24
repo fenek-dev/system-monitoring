@@ -131,6 +131,29 @@ struct PowerPageLogicTests {
             == "Charging · full in 1 h 10 m")
         #expect(PowerCopy.batteryPhrase(battery(onAC: true, percent: 100, remaining: nil)) == "Charged")
         #expect(PowerCopy.batteryPhrase(battery(remaining: nil)) == "On battery")
+        // ICR-15: macOS still estimating.
+        var calc = battery(remaining: nil)
+        calc.timeRemainingCalculating = true
+        #expect(PowerCopy.batteryPhrase(calc) == "On battery · Calculating…")
+        calc.isCharging = true
+        calc.onAC = true
+        #expect(PowerCopy.batteryPhrase(calc) == "Charging · Calculating…")
+    }
+
+    /// ICR-15 on the Battery card.
+    @Test func calculatingSnapshot() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = LiveModel(device: provider.device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.power.battery?.timeRemaining = nil
+            f.power.battery?.timeRemainingCalculating = true
+            live.apply(f)
+        }
+        live.isPresenting = true
+        let ctx = ShellContext(live: live, settings: ScreenCatalog.snapshotSettings(), history: provider.history(),
+                               isSnapshot: true, now: MockDataProvider.referenceDate)
+        assertSnapshot(PowerPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent, named: "power-calculating")
     }
 
     @Test func adapterAndFill() {
