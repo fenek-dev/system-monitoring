@@ -10,7 +10,8 @@ import SwiftUI
             .init(id: "cpu-usage", size: CGSize(width: 1020, height: 196)) { AnyView(CPUUsageCard()) },
             .init(id: "net-throughput", size: CGSize(width: 676, height: 268)) { AnyView(ThroughputCard()) },
             .init(id: "thermal-lines", size: CGSize(width: 676, height: 250)) { AnyView(TemperaturesCard()) },
-            .init(id: "gpu-dual", size: CGSize(width: 676, height: 230)) { AnyView(GPUCard()) },
+            // GPU@2x "Utilization & frequency" at (240, 168): 676×249.
+            .init(id: "gpu-dual", size: CGSize(width: 676, height: 249)) { AnyView(GPUCard()) },
         ]
     }
 }
@@ -29,7 +30,9 @@ private struct TimelineCard: View {
                 VStack(spacing: TTSpace.x4) {
                     TTTimelineRow(label: "CPU", value: "29%", points: SampleSeries.wave(base: 0.29, amplitude: 0.05, seed: 1),
                                   color: TTColor.cpu, yDomain: 0...1)
-                    TTTimelineRow(label: "GPU", value: "22%", points: SampleSeries.wave(base: 0.13, amplitude: 0.05, seed: 2),
+                    // Gap (paused 6 s): line and area break, no interpolation.
+                    TTTimelineRow(label: "GPU", value: "22%",
+                                  points: SampleSeries.wave(base: 0.13, amplitude: 0.05, seed: 2, gaps: 20..<26),
                                   color: TTColor.gpu, yDomain: 0...1)
                     TTTimelineRow(label: "Memory", value: "15.2 GB", points: SampleSeries.wave(base: 15.2, amplitude: 0.1, seed: 3),
                                   color: TTColor.mem, yDomain: 0...24)
@@ -111,11 +114,12 @@ private struct GPUCard: View {
                                points: SampleSeries.wave(base: 1180, amplitude: 200, seed: 42))
         return onWindow(
             TTCard(spacing: TTSpace.x10) {
-                TTCardHeader("Utilization") { TTLegend([util, freq]) }
+                TTCardHeader("Utilization & frequency") { TTLegend([util, freq]) }
                 TTDualChart(solid: util, dashed: freq, yDomain: 0...1, dashedDomain: 0...1_578)
                     .frame(height: 160)
                 TTTimeAxis(range: .live, end: end)
             }
+            .frame(minHeight: 249, alignment: .top)
         )
     }
 }

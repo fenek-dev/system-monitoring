@@ -32,13 +32,18 @@ public struct TTAppTile: View, Equatable {
         }
     }
 
-    var letter: String {
-        let source = name.isEmpty ? (identity?.displayName ?? "") : name
-        guard let c = source.first(where: { $0.isLetter || $0.isNumber }) else { return "?" }
+    var letter: String { Self.letter(name.isEmpty ? (identity?.displayName ?? "") : name) }
+
+    var radius: CGFloat { Self.radius(size) }
+
+    /// Uppercase first alphanumeric character ("?" when none): "com.docker.backend" → "C".
+    nonisolated static func letter(_ name: String) -> String {
+        guard let c = name.first(where: { $0.isLetter || $0.isNumber }) else { return "?" }
         return String(c).uppercased()
     }
 
-    var radius: CGFloat {
+    /// 16 → 4, 20 → 5, 26 → 7, 44 → 10.
+    nonisolated static func radius(_ size: CGFloat) -> CGFloat {
         switch size {
         case ..<18: TTRadius.r4
         case ..<24: TTRadius.r5

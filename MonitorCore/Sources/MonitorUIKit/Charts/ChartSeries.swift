@@ -3,7 +3,7 @@ import SwiftUI
 
 /// One chart series. `color` is the opaque series color (legend swatches use it as is); the chart applies
 /// `fillOpacity` / `lineWidth` / `lineOpacity` / `dash` (DESIGN §1.1 "Chart series fills"; see `TTChartFill`).
-public struct ChartSeries: Identifiable, Equatable {
+public struct ChartSeries: Identifiable, Equatable, Sendable {
     public var id: String
     public var label: String
     public var color: Color
@@ -45,6 +45,18 @@ public enum ChartGrid {
             path.addLine(to: CGPoint(x: size.width, y: y))
         }
         ctx.stroke(path, with: .color(color), lineWidth: 1)
+    }
+}
+
+/// VoiceOver summary for page charts: "Chart, last 60 samples: User latest 22%, System latest 12%".
+public enum ChartAccessibility {
+    public static func summary(_ series: [ChartSeries], format: ((Double) -> String)? = nil) -> String {
+        let parts = series.map { s -> String in
+            guard let last = s.points.last(where: { $0.value?.isFinite == true })?.value else { return "\(s.label), no data" }
+            return "\(s.label) latest \(format?(last) ?? TTFormat.number(last, digits: 2))"
+        }
+        let n = series.map(\.points.count).max() ?? 0
+        return "Chart, \(n) samples: " + parts.joined(separator: ", ")
     }
 }
 

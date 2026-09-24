@@ -16,7 +16,7 @@ import SwiftUI
             .init(id: "bars", size: CGSize(width: 500, height: 150)) { AnyView(BarsSample()) },
             .init(id: "key-value", size: CGSize(width: 332, height: 170)) { AnyView(KeyValueSample()) },
             .init(id: "states", size: CGSize(width: 1020, height: 90)) { AnyView(StatesSample()) },
-        ] + GalleryCharts.items + GalleryTable.items
+        ] + GalleryCharts.items + GalleryTable.items + GalleryGauges.items
     }
 }
 
