@@ -21,15 +21,15 @@ public enum PopoverPlacement {
     }
 
     /// Re-clamps an existing frame (after AppKit resized the panel to its content): height capped like `frame`,
-    /// horizontally inside the margins, the top edge pinned 8 below the menu bar (the popover hangs from it), and
-    /// never below the visible bottom. y is derived from the top.
+    /// horizontally inside the margins, and y derived from the top edge, which is always pinned 8 below the menu
+    /// bar (the popover hangs from it). With the height cap the bottom stays inside the visible frame whenever the
+    /// visible height is ≥ 108 pt; below that (only the 100-pt floor could overflow) the top rule wins.
     public static func clamp(_ frame: CGRect, visibleFrame: CGRect) -> CGRect {
         var f = frame
         f.size.height = min(f.height, maxHeight(visibleFrame))
         f.origin.x = min(f.origin.x, visibleFrame.maxX - margin - f.width)
         f.origin.x = max(f.origin.x, visibleFrame.minX + margin)
-        let top = visibleFrame.maxY - margin
-        f.origin.y = max(top - f.height, visibleFrame.minY)
+        f.origin.y = visibleFrame.maxY - margin - f.height
         return f
     }
 }
