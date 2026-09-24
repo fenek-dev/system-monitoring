@@ -48,4 +48,22 @@ public struct RateCalculator<Key: Hashable & Sendable>: Sendable {
 
     /// A baseline exists for `key` (false = the next call is its first sight, as opposed to a counter reset).
     public func isTracking(_ key: Key) -> Bool { states[key] != nil }
+
+    /// `delta(for:…)` plus whether a nil result was the key's first sight (not a counter reset) — one hash lookup
+    /// instead of `isTracking` + `delta` (per process, per counter, per tick).
+    public mutating func deltaNoting(for key: Key, counter: UInt64, capturedNs: UInt64)
+        -> (delta: (delta: UInt64, seconds: Double)?, firstSight: Bool) {
+        guard let prev = states[key] else {
+            states[key] = State(counter: counter, capturedNs: capturedNs, last: nil)
+            return (nil, true)
+        }
+        if capturedNs == prev.capturedNs { return (prev.last, false) }
+        guard capturedNs > prev.capturedNs, counter >= prev.counter else {
+            states[key] = State(counter: counter, capturedNs: capturedNs, last: nil)
+            return (nil, false)
+        }
+        let result = (delta: counter &- prev.counter, seconds: Double(capturedNs &- prev.capturedNs) / 1e9)
+        states[key] = State(counter: counter, capturedNs: capturedNs, last: result)
+        return (result, false)
+    }
 }

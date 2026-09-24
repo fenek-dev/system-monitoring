@@ -45,6 +45,11 @@ cpu_seconds() {
         printf "%.2f\n", t + d * 86400 }'
 }
 rss_mb() { ps -o rss= -p "$1" 2>/dev/null | awk '{ printf "%.1f\n", $1 / 1024 }'; }
+# Physical footprint (dirty + compressed; Activity Monitor's "Memory") — RSS also counts ~60 MB of shared framework pages.
+footprint_mb() {
+    footprint "$1" 2>/dev/null | sed -n 's/.*Footprint: \([0-9.]*\) \([KMG]B\).*/\1 \2/p' | head -1 \
+        | awk '{ v = $1; if ($2 == "KB") v /= 1024; if ($2 == "GB") v *= 1024; printf "%.1f\n", v }'
+}
 
 if [[ $release -eq 1 ]]; then
     # Release build in its own derived-data dir; launched and stopped by exact binary path (never other instances).
@@ -84,12 +89,18 @@ start_wall=$(date +%s)
 start_cpu=$(cpu_seconds "$pid")
 rss_first=$(rss_mb "$pid")
 rss_samples=("$rss_first")
+fp_first=$(footprint_mb "$pid")
+fp_samples=("$fp_first")
 end_at=$(awk -v s="$start_wall" -v m="$minutes" 'BEGIN { printf "%d", s + m * 60 }')
 while [[ $(date +%s) -lt $end_at ]]; do
     sleep 10
     kill -0 "$pid" 2>/dev/null || { echo "perf.sh: app exited during the run" >&2; exit 1; }
     rss_samples+=("$(rss_mb "$pid")")
+    fp_samples+=("$(footprint_mb "$pid")")
 done
+fp_last=$(footprint_mb "$pid")
+fp_stats=$(printf '%s\n' "${fp_samples[@]}" | awk 'NR == 1 { mn = $1; mx = $1 } { s += $1; if ($1 < mn) mn = $1; if ($1 > mx) mx = $1 }
+    END { printf "min %.1f / avg %.1f / max %.1f MB", mn, s / NR, mx }')
 end_wall=$(date +%s)
 end_cpu=$(cpu_seconds "$pid")
 rss_last=$(rss_mb "$pid")
@@ -103,7 +114,11 @@ intervals=$(/usr/bin/log show --last "${since_min}m" --style compact \
     --predicate "processID == $pid AND subsystem == \"dev.telltale\" AND category == \"Runtime\"" 2>/dev/null \
     | grep -o 'frame intervals.*' | tail -4 || true)
 
-echo "perf.sh: CPU ${cpu_pct} % of one core over $((end_wall - start_wall)) s; RSS ${rss_stats}; drift ${drift} MB"
+visibility=$(/usr/bin/log show --last "${since_min}m" --style compact \
+    --predicate "processID == $pid AND subsystem == \"dev.telltale\" AND category == \"Visibility\"" 2>/dev/null \
+    | grep -c 'mode=' || true)
+echo "perf.sh: CPU ${cpu_pct} % of one core over $((end_wall - start_wall)) s; footprint ${fp_stats} (${fp_first} → ${fp_last}); RSS ${rss_stats}; drift ${drift} MB"
+echo "perf.sh: visibility changes during the run (incl. launch): ${visibility}"
 [[ -n "$intervals" ]] && echo "$intervals"
 
 bench_out=""
@@ -123,7 +138,7 @@ if [[ ! -f "$out" ]]; then
         echo
         echo "Machine: $(sysctl -n hw.model), $(sysctl -n machdep.cpu.brand_string), $(( $(sysctl -n hw.memsize) / 1073741824 )) GB, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))."
         echo "Budget (ARCHITECTURE §7, advisory): UI closed < 1 % of one core avg, < 80 MB RSS; interactive ≈ 4–5 %."
-        echo "Build: Debug app from scripts/build.sh; probe bench in release. Shared machine: other agents run builds/tests concurrently."
+        echo "Build: per section (Debug = scripts/build.sh, Release = perf.sh --release); probe bench in release. Shared machine: other agents run builds/tests concurrently."
     } > "$out"
 fi
 {
@@ -131,7 +146,9 @@ fi
     echo "## ${mode} — ${minutes} min ($(date +%H:%M), commit $(git rev-parse --short HEAD))"
     echo
     echo "- CPU: **${cpu_pct} %** of one core (Δ CPU time $(awk -v a="$start_cpu" -v b="$end_cpu" 'BEGIN { printf "%.2f", b - a }') s over $((end_wall - start_wall)) s wall, after ${warmup} s warm-up)"
-    echo "- RSS: ${rss_stats}; start ${rss_first} MB → end ${rss_last} MB (drift ${drift} MB)"
+    echo "- Footprint (budget metric): **${fp_stats}**; start ${fp_first} MB → end ${fp_last} MB"
+    echo "- RSS (incl. shared framework pages): ${rss_stats}; start ${rss_first} MB → end ${rss_last} MB (drift ${drift} MB)"
+    echo "- Visibility changes logged since launch: ${visibility} (a UI-closed run expects 0; more = someone used the UI)"
     if [[ -n "$intervals" ]]; then
         echo "- Tick periods (LivePipeline log):"
         echo "$intervals" | sed 's/^/  - /'

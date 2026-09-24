@@ -60,7 +60,9 @@ public struct AppGrouper {
         case let (x?, y?) where x != y: return x > y
         case (.some, nil): return true
         case (nil, .some): return false
-        default: return a.identity.displayName < b.identity.displayName
+        // Tie-break (most of ~550 apps sit at 0 % or nil): UTF-8 byte order — deterministic and without String's
+        // Unicode-collation slow path, which was the top cost of assembly (W7 T4 profile: ~30 % of assemble).
+        default: return a.identity.displayName.utf8.lexicographicallyPrecedes(b.identity.displayName.utf8)
         }
     }
 

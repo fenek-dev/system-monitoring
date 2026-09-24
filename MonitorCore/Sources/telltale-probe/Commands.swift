@@ -205,12 +205,30 @@ enum Commands {
             print("replay: \(error)")
             exit(1)
         }
+        guard !o.benchReplay else { return benchReplay(ticks, rounds: o.ticks) }
         var fa = FrameAssembler(resolver: BundleAppResolver())
         for (k, t) in ticks.enumerated() {
             let f = fa.assemble(t, inspectedApp: nil)
             print("── tick \(k)")
             print(Report.frame(f, verbose: !o.quiet))
         }
+    }
+
+    /// `--replay <file> --bench`: assembly cost on real data — `rounds` passes over the recording, each through a
+    /// fresh FrameAssembler (first tick excluded: no baselines).
+    static func benchReplay(_ ticks: [RawTick], rounds: Int) {
+        var stats = Stats()
+        let resolver = BundleAppResolver()
+        for _ in 0..<rounds {
+            var fa = FrameAssembler(resolver: resolver)
+            for (k, t) in ticks.enumerated() {
+                let t0 = Clock.ns()
+                _ = fa.assemble(t, inspectedApp: nil)
+                if k > 0 { stats.add(Clock.ns() - t0) }
+            }
+        }
+        print("assemble (\(ticks.first?.processes.value?.processes.count ?? 0) procs, \(stats.samples.count) ticks): "
+            + "mean \(Clock.ms(stats.mean)) p50 \(Clock.ms(stats.percentile(0.5))) p95 \(Clock.ms(stats.percentile(0.95))) ms")
     }
 
     // MARK: --maintain-now

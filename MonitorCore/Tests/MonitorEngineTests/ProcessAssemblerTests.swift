@@ -110,8 +110,9 @@ import Testing
         // A newborn's counter regressing later is a rebaseline (nil), never "first sight" again.
         let w0 = Date(timeIntervalSince1970: 1_790_000_000)
         var pa = ProcessAssembler(currentUID: testUID, sessionStartUs: UInt64((w0.timeIntervalSince1970 - 10) * 1e6))
-        // Born at tick 2's capture: at tick 3 startTimeUs ≥ bornAfterUs still holds, so only the explicit-first-sight
-        // rule keeps the regressed counter from being counted as a newborn again.
+        // Born at tick 2's capture (w0 + 2 s). Tick 2: newborn (start ≥ tick 1's capture). Tick 3: bornAfterUs = tick 2's
+        // capture == startTimeUs, so the time test alone would call it a newborn again; the regressed counter is
+        // rejected only because the process is already tracked (isTracking: a counter reset, not a first sight).
         let born = UInt64((w0.timeIntervalSince1970 + 2) * 1e6)
         func run(_ ps: [RawProcess], _ n: Double) -> ProcessAssembly {
             pa.assemble(ProcessInputs(processes: table(ps, at: UInt64(n) * sec), uptimeNs: UInt64(n) * sec,
