@@ -154,7 +154,7 @@ struct SystemAssembler {
         snap.swapInsPerSec = rates.rate(for: .swapins, counter: m.swapins, capturedNs: t)
         snap.swapOutsPerSec = rates.rate(for: .swapouts, counter: m.swapouts, capturedNs: t)
         s.memory = snap
-        // `{ Double($0) }`, never `map(Double.init)`: that picks `Double(bitPattern:)` for UInt64.
+        // Closure form on purpose: an unapplied Double initializer picks `Double(bitPattern:)` for UInt64.
         s.metrics[.memUsed] = snap.used.map { Double($0) }
         s.metrics[.memApp] = snap.appMemory.map { Double($0) }
         s.metrics[.memWired] = snap.wired.map { Double($0) }
@@ -181,8 +181,15 @@ struct SystemAssembler {
                 if let irx { rx = (rx ?? 0) + irx }
                 if let itx { tx = (tx ?? 0) + itx }
             }
-            n.rxBps = rx
-            n.txBps = tx
+            // System totals = the primary interface (DESIGN): summing double counts bridge members and utun
+            // tunnels over en0. Without a primary, fall back to the sum over up, non-loopback interfaces.
+            if let primary = n.interfaces.first(where: { $0.isPrimary }) {
+                n.rxBps = primary.rxBps
+                n.txBps = primary.txBps
+            } else {
+                n.rxBps = rx
+                n.txBps = tx
+            }
             n.routerIPv4 = r.routerIPv4
             n.localIPv4 = (r.interfaces.first { $0.isPrimary && $0.ipv4 != nil } ?? r.interfaces.first { $0.isUp && $0.ipv4 != nil && !$0.bsdName.hasPrefix("lo") })?.ipv4
         }
@@ -278,7 +285,7 @@ struct SystemAssembler {
         var d = DiskSnapshot()
         if let r = tick.diskIO.value, let t = tick.diskIO.capturedNs {
             var rb: Double?, wb: Double?, ro: Double?, wo: Double?
-            for (i, drv) in r.drivers.enumerated() {
+            for (i, drv) in r.drivers.enumerated() where Self.countsTowardDiskTotals(drv) {
                 let name = drv.bsdName ?? "#\(i)"
                 let keys: [Counter] = [.diskReadBytes(name), .diskWriteBytes(name), .diskReadOps(name), .diskWriteOps(name)]
                 live.formUnion(keys)
@@ -302,6 +309,13 @@ struct SystemAssembler {
     }
 
     // MARK: - Helpers
+
+    /// Disk-image (DMG) drivers are excluded: their I/O is also counted on the physical disk underneath.
+    /// TODO(W6d ICR): `return !driver.isDiskImage` once `BlockDriverCounter.isDiskImage` lands in MonitorModel;
+    /// until then no driver carries the flag (see the disabled test in SystemAssemblerTests).
+    static func countsTowardDiskTotals(_ driver: BlockDriverCounter) -> Bool {
+        true
+    }
 
     static func mean(_ v: [Double]) -> Double? { v.isEmpty ? nil : v.reduce(0, +) / Double(v.count) }
 
