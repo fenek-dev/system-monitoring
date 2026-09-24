@@ -1429,5 +1429,8 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 | 10 | `NavigationModel.inspectedApp` + `VisibilityInputs.inspectedApp`; set by Processes page only while the inspector detail is expanded (process selection → its app). | W4 / W5c |
 | 11 | `BlockDriverCounter.isDiskImage: Bool` (default false); engine excludes disk-image drivers from disk totals. | W6d / W7 |
 | 12 | `HistoryMetric.memPressureLevel` (1/2/4); rollups keep time-weighted avg; consumers map > 2.5 critical, > 1.0 warning. | W7 / W5a |
+| 13 | "Exited processes" synthetic row (`ProcessID.exitedResidual`, pid −2) in the leader's app for all-visible coalitions when residual > 5% of a core AND > 10% of Δcoalition; CPU + disk, energy via EnergyAttributor step 2; estimated, provenance `.coalition`, no row actions. One-tick sticky pid→coalition membership. | W7 / W5c |
+| 14 | `ProcessSample`/`AppSample.diskReadSession`/`diskWriteSession: UInt64?` (bytes since Telltale start); engine baseline per ProcessID (born after engine start → 0, else first-sample counter; counter regress rebases; pruned on exit). | W7 / Wm / W5b |
+| 15 | `BatteryReading.timeRemainingCalculating: Bool` (decodeIfPresent, default false); UI shows "Calculating…". | W6b / W7 / W5b |
 
 Grouping rule 3 (§5.1) changed 2026-09-24: all bundle-less processes (any uid) are their own `.process` group.

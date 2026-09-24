@@ -5,7 +5,7 @@ import Testing
 @testable import MonitorSensors
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh GPUClientsSmokeTests`.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
 struct GPUClientsSmokeTests {
     private func ownGPUTime(_ r: GPUClientsReading) -> UInt64 {
         r.clients.filter { $0.pid == getpid() }.reduce(0) { $0 + $1.gpuTimeNs }
@@ -45,8 +45,10 @@ struct GPUClientsSmokeTests {
                        (b.reading.inUseSystemMemory ?? 0) >> 20))
         #expect(!mine.isEmpty)
         #expect(pct >= 30, "own pid GPU share \(pct) %")
-        #expect((b.reading.deviceUtilization ?? 0) >= 80)
-        #expect(abs(sum - (b.reading.deviceUtilization ?? 0)) <= 25, "Σ clients \(sum) vs util")
+        // Saturating compute load: the clients' time deltas must cover (nearly) the whole GPU.
+        // deviceUtilization is informational only (resets on every read by any process; printed above).
+        #expect(sum >= 80, "Σ client share \(sum) %")
+        #expect(sum <= 110, "Σ client share \(sum) % (double counting?)")
         #expect((b.reading.inUseSystemMemory ?? 0) > 0)
         #expect(b.reading.clients.allSatisfy { $0.pid > 0 || $0.creatorName == "kernel_task" })
     }

@@ -1,1 +1,36 @@
-{}
+{
+  "version": 1,
+  "models": [
+    {
+      "name": "M1 Pro/Max (verified on MacBookPro18,4, macOS 26.5; docs/findings/temps.md)",
+      "prefixes": ["MacBookPro18,", "Mac13,1"],
+      "smc": {
+        "TC10": "cpuPerformance", "TC11": "cpuPerformance", "TC12": "cpuPerformance", "TC13": "cpuPerformance",
+        "TC20": "cpuPerformance", "TC21": "cpuPerformance", "TC22": "cpuPerformance", "TC23": "cpuPerformance",
+        "TC30": "cpuPerformance", "TC31": "cpuPerformance", "TC32": "cpuPerformance", "TC33": "cpuPerformance",
+        "TC40": "cpuEfficiency", "TC41": "cpuEfficiency", "TC42": "cpuEfficiency", "TC43": "cpuEfficiency",
+        "TC50": "cpuEfficiency", "TC51": "cpuEfficiency", "TC52": "cpuEfficiency", "TC53": "cpuEfficiency",
+        "Tg04": "gpu", "Tg05": "gpu", "Tg0C": "gpu", "Tg0D": "gpu",
+        "Tg0K": "gpu", "Tg0L": "gpu", "Tg0S": "gpu", "Tg0T": "gpu",
+        "TB0T": "battery", "TB1T": "battery", "TB2T": "battery",
+        "TAOL": "airflow"
+      }
+    }
+  ],
+  "generic": [
+    { "pattern": "Te0?", "group": "cpuEfficiency" },
+    { "pattern": "Tf0?", "group": "cpuPerformance" },
+    { "pattern": "Tp0?", "group": "cpuPerformance" },
+    { "pattern": "Tg0?", "group": "gpu" },
+    { "pattern": "TB?T", "group": "battery" },
+    { "pattern": "TAOL", "group": "airflow" }
+  ],
+  "hid": [
+    { "pattern": "NAND*", "group": "ssd" },
+    { "pattern": "gas gauge battery", "group": "battery" },
+    { "pattern": "PMU tdie*", "group": "soc" },
+    { "pattern": "PMU tdev*", "group": "soc" },
+    { "pattern": "PMU TP*", "group": "soc" }
+  ],
+  "hidIgnore": ["PMU tcal"]
+}
