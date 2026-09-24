@@ -182,6 +182,27 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
         #expect(ps == before)
     }
 
+    @Test func exitedProcessesRowThresholdBoundaries() throws {
+        // ICR-13: residual must exceed BOTH 5 % of a core AND 10 % of Δcoalition.
+        func run(coalitionCPU: Double, visible: [Double]) -> [ProcessSample] {
+            var ps = visible.enumerated().map { measured(Int32(10 + $0.offset), cid: 3, cpu: $0.element) }
+            var ca = CoalitionAttributor()
+            return ca.attribute(&ps, coalitions: deltas([3: (delta(cpu: coalitionCPU, diskR: 5_000, diskW: 0), 10,
+                                                             ps.map(\.pid))]), identities: [:])
+        }
+        #expect(run(coalitionCPU: 55.5, visible: [40, 10]).isEmpty)          // 5.5 > 5 but < 10 % of 55.5
+        #expect(run(coalitionCPU: 7, visible: [1, 1]).isEmpty)               // 5 % of a core: not > 5
+        #expect(run(coalitionCPU: 50.5, visible: [40, 10]).isEmpty)          // ~1 % meter noise
+        let row = try #require(run(coalitionCPU: 56, visible: [40, 10]).first)   // 6 > 5 and > 5.6
+        #expect(row.id == .exitedResidual(3) && row.id.isSynthetic)
+        #expect(row.name == "Exited processes")
+        #expect(abs(row.cpuPercent! - 6) < 1e-9)
+        #expect(row.diskReadBps == 5_000 && row.diskWriteBps == 0)
+        #expect(row.provenance == .coalition)
+        #expect(row.app == AppKey(kind: .app, id: "m10"))                    // the leader's app
+        #expect(row.coalitionLeaderName == "m10")
+    }
+
     @Test func coalitionWithoutDeltaIsSkipped() {
         var ps = [restricted(7, cid: 9), restricted(8, cid: 9)]
         var ca = CoalitionAttributor()
@@ -226,7 +247,8 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
                     members.append(pid); pid += 1
                 }
                 // coalition meter ≥ Σ visible (the residual is the restricted members' share), or ~1 % off when all visible
-                let extraCPU = hidden > 0 ? Double.random(in: 0...200, using: &rng) : visCPU * 0.01
+                // all visible: ~1 % meter noise, or (ICR-13) exited members' CPU up to 2 cores
+                let extraCPU = hidden > 0 || Bool.random(using: &rng) ? Double.random(in: 0...200, using: &rng) : visCPU * 0.01
                 let extraR = Double(Int.random(in: 0...50_000, using: &rng)), extraW = Double(Int.random(in: 0...50_000, using: &rng))
                 let seconds = Double.random(in: 0.5...5, using: &rng)
                 let d = CoalitionDelta(cpuNs: UInt64(((visCPU + extraCPU) * 1e7 * seconds).rounded(.up)), energyNJ: nil,
@@ -249,8 +271,22 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
                     #expect(abs(rows.reduce(0) { $0 + ($1.diskWriteBps ?? 0) } - Double(d.diskW!) / d.seconds) < 1e-6, "round \(round) cid \(cid) diskW")
                     #expect(synthetic.filter { $0.coalitionID == cid }.count <= 1)
                 } else {
-                    #expect(rows == before.filter { $0.coalitionID == cid }, "all-visible coalition changed")
-                    #expect(!synthetic.contains { $0.coalitionID == cid })
+                    // Real rows untouched; at most one "Exited processes" row, exactly when the residual passes both
+                    // ICR-13 thresholds, and then Σ rows == Δcoalition (no double count).
+                    #expect(ps.filter { $0.coalitionID == cid } == before.filter { $0.coalitionID == cid },
+                            "all-visible coalition rows changed")
+                    let d = entry.0
+                    let cpu = Double(d.cpuNs) / d.seconds / 1e7
+                    let vis = before.filter { $0.coalitionID == cid }.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+                    let exited = synthetic.filter { $0.coalitionID == cid }
+                    if cpu - vis > 5, cpu - vis > 0.1 * cpu {
+                        #expect(exited.count == 1 && exited[0].id == .exitedResidual(cid), "round \(round) cid \(cid)")
+                        #expect(abs(rows.reduce(0) { $0 + ($1.cpuPercent ?? 0) } - cpu) < 1e-9 * max(1, cpu))
+                        #expect(abs(rows.reduce(0) { $0 + ($1.diskReadBps ?? 0) } - Double(d.diskR!) / d.seconds) < 1e-6)
+                        #expect(exited[0].provenance == .coalition && exited[0].id.isSynthetic)
+                    } else {
+                        #expect(exited.isEmpty, "round \(round) cid \(cid): below threshold")
+                    }
                 }
             }
         }
@@ -260,12 +296,13 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
     @Test func noDoubleCountAppLevelAndEnergyProperty() {
         var rng = SplitMix64(seed: 0xC0A1_1710)
         let apps = (0..<5).map { AppKey(kind: .app, id: "app\($0)") }
-        var clampRounds = 0, droppedRounds = 0
+        var clampRounds = 0, droppedRounds = 0, exitedRounds = 0
         for round in 0..<200 {
             var ca = CoalitionAttributor()                           // 0.5 %, 0.05 W
             var ps: [ProcessSample] = []
             var byID: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int32])] = [:]
             var expectedResidualCPU: [UInt64: Double] = [:]          // emitted residual per restricted coalition
+            var expectedExitedCPU: [UInt64: Double] = [:]            // ICR-13 row per all-visible coalition
             var visCPUByID: [UInt64: Double] = [:], visWattsByID: [UInt64: Double] = [:], coalWatts: [UInt64: Double] = [:]
             var pid: Int32 = 1
             for c in 0..<Int.random(in: 1...6, using: &rng) {
@@ -311,6 +348,11 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
                     expectedResidualCPU[cid] = emitted ? res : 0
                     if d.cpuPercent < visCPU { clampRounds += 1 }
                     if !emitted { droppedRounds += 1 }
+                } else {
+                    // ICR-13: all visible → "Exited processes" row only above both thresholds
+                    let res = d.cpuPercent - visCPU
+                    expectedExitedCPU[cid] = res > 5 && res > 0.1 * d.cpuPercent ? res : 0
+                    if expectedExitedCPU[cid]! > 0 { exitedRounds += 1 }
                 }
             }
             let before = ps
@@ -324,14 +366,18 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
                     let got = rows.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
                     #expect(abs(got - (visCPUByID[cid]! + res)) < 1e-6, "round \(round) cid \(cid)")
                 } else {
-                    #expect(rows == before.filter { $0.coalitionID == cid }, "all-visible coalition changed")
+                    #expect(ps.filter { $0.coalitionID == cid } == before.filter { $0.coalitionID == cid },
+                            "all-visible coalition rows changed")
+                    let got = rows.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+                    #expect(abs(got - (visCPUByID[cid]! + expectedExitedCPU[cid]!)) < 1e-6, "round \(round) cid \(cid) exited")
                 }
             }
 
-            // app level: Σ app CPU == Σ visible + Σ emitted residuals
+            // app level: Σ app CPU == Σ visible + Σ emitted residuals (+ ICR-13 exited rows)
             let grouped = AppGrouper.group(all, identities: [:])
             let appCPU = grouped.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
             let expectedCPU = visCPUByID.values.reduce(0, +) + expectedResidualCPU.values.reduce(0, +)
+                + expectedExitedCPU.values.reduce(0, +)
             #expect(abs(appCPU - expectedCPU) < 1e-6, "round \(round) app-level")
 
             // energy (v6 mode): Σ W over a restricted coalition == max(coalition W, Σ visible v6) when a residual row exists
@@ -339,7 +385,7 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
             var ea = RulingEnergyAttributor()
             let watts = ea.watts(processes: all, coalitions: deltas(byID), soc: nil, dt: 1)
             for i in all.indices { all[i].energyWatts = watts[all[i].id] }
-            for cid in expectedResidualCPU.keys {
+            for cid in Set(expectedResidualCPU.keys).union(expectedExitedCPU.keys) {
                 let rows = all.filter { $0.coalitionID == cid }
                 let hasTarget = rows.contains { $0.provenance == .coalition }
                 let got = rows.reduce(0) { $0 + ($1.energyWatts ?? 0) }
@@ -347,7 +393,7 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
                 #expect(abs(got - expected) < 1e-6, "round \(round) cid \(cid) energy")
             }
         }
-        #expect(clampRounds > 0 && droppedRounds > 0)                // the generator hits both edge cases
+        #expect(clampRounds > 0 && droppedRounds > 0 && exitedRounds > 0)   // the generator hits every edge case
     }
 
     // MARK: CoalitionTracker (reading → deltas)
@@ -370,6 +416,18 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
         #expect(c.diskR == 4_000 && c.diskW == 0)
         #expect(d.membership[5]?.memberPIDs == [1, 2])
         #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [u1]), capturedNs: 3 * sec)) == [1: 5, 2: 5])
+    }
+
+    @Test func memberThatJustExitedKeepsItsCoalitionForOneTick() {
+        // pid 2 is in the process table but exited before the coalition read: it keeps coalition 5 so its Δ is
+        // subtracted from the residual (no double count); one tick later it's forgotten.
+        var t = CoalitionTracker()
+        let full = CoalitionUsage(id: 5, leaderPID: 1, memberPIDs: [1, 2], cpuTimeNs: sec)
+        var gone = full
+        gone.memberPIDs = [1]
+        _ = t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [full]), capturedNs: sec))
+        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 2 * sec)) == [1: 5, 2: 5])
+        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 3 * sec)) == [1: 5])
     }
 
     @Test func trackerFirstSightHasNoDelta() {

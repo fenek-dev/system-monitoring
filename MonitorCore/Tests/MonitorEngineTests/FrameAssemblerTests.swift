@@ -21,7 +21,8 @@ import Testing
         let coal = CoalitionsReading(coalitions: [
             CoalitionUsage(id: 7, leaderPID: 418, memberPIDs: [418, 419], cpuTimeNs: n * sec * 3 / 5, energyNJ: n * sec / 2),
             CoalitionUsage(id: 8, leaderPID: 500, memberPIDs: [500], cpuTimeNs: n * sec / 5, energyNJ: n * sec / 5),
-            CoalitionUsage(id: 9, leaderPID: 10, memberPIDs: [10, 11, 20], cpuTimeNs: n * sec, energyNJ: n * sec),
+            // all visible: coalition meter ~1 % above Σ rusage (85 %) — below the ICR-13 "Exited processes" threshold
+            CoalitionUsage(id: 9, leaderPID: 10, memberPIDs: [10, 11, 20], cpuTimeNs: n * sec * 86 / 100, energyNJ: n * sec),
         ])
         let gpu = GPUClientsReading(clients: [GPUClientCounter(clientID: 1, pid: 20, creatorName: "p20", gpuTimeNs: n * sec / 5),
                                               GPUClientCounter(clientID: 2, pid: 777, creatorName: "gone", gpuTimeNs: n * sec / 10)])
@@ -77,6 +78,35 @@ import Testing
         let p20 = try #require(f.processes[pid: 20])
         #expect(abs(p20.energyWatts! - 0.5) < 1e-9)
         #expect(p20.energyEstimated)
+    }
+
+    @Test func spawnAndExitLoadIsRecoveredThroughTheCoalition() throws {
+        // A build: pid 10 (50 %) keeps spawning children that start and exit between ticks (100 % of a core in total,
+        // never in any process table). Only the all-visible coalition 4 sees their CPU. 2 cores; the host sees 150 %.
+        func tick(_ n: UInt64) -> RawTick {
+            let core = CoreTicks(user: n * 75, system: 0, idle: n * 25)              // 75 % busy per core × 2
+            return RawTick(wallTime: Date(timeIntervalSince1970: Double(n)), uptimeNs: n * sec, mode: .interactive,
+                           processes: .fresh(ProcessTableReading(processes: [own(10, cpuNs: n * sec / 2, energyNJ: n * sec)]),
+                                             capturedNs: n * sec),
+                           coalitions: .fresh(CoalitionsReading(coalitions: [
+                               CoalitionUsage(id: 4, leaderPID: 10, memberPIDs: [10], cpuTimeNs: n * sec * 3 / 2,
+                                              energyNJ: n * sec * 3),
+                           ]), capturedNs: n * sec),
+                           hostCPU: .fresh(HostCPUReading(cores: [core, core], coreKinds: [.performance, .performance]),
+                                           capturedNs: n * sec))
+        }
+        var fa = Self.assembler()
+        _ = fa.assemble(tick(1), inspectedApp: nil)
+        let f = fa.assemble(tick(2), inspectedApp: nil)
+        let system = try #require(f.cpu.usage) * 100 * 2
+        let appSum = f.apps.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+        #expect(abs(system - 150) < 1e-6)
+        #expect(abs(appSum - system) < 1e-6)                                     // was 50 of 150 before ICR-13
+        let exited = try #require(f.processes.first { $0.id == .exitedResidual(4) })
+        #expect(abs(exited.cpuPercent! - 100) < 1e-9)
+        #expect(exited.app == Self.a.key)                                        // counted in the leader's app
+        #expect(abs(exited.energyWatts! - 2) < 1e-9 && exited.energyEstimated)   // 3 W coalition − 1 W v6
+        #expect(f.apps.first { $0.identity.key == Self.a.key }?.cpuPercent == 150)
     }
 
     @Test func energyEstimatedPropagatesToAppsInFallbackMode() throws {
