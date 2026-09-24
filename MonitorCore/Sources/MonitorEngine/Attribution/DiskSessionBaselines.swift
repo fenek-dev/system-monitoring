@@ -33,12 +33,13 @@ struct DiskSessionBaselines: Sendable {
 
         /// (session value, growth since the previous call)
         mutating func update(_ counter: UInt64) -> (UInt64, UInt64) {
+            // Invariant base ≤ last ≤ counter after a rebase; the guards keep a later edit from trapping on it.
             if counter < last {                              // went backwards: rebase, keep what was counted
-                carried = ProcessAssembler.saturatingAdd(carried, last - base)
+                carried = ProcessAssembler.saturatingAdd(carried, last >= base ? last - base : 0)
                 base = counter
             }
             last = counter
-            let session = ProcessAssembler.saturatingAdd(carried, counter - base)
+            let session = ProcessAssembler.saturatingAdd(carried, counter >= base ? counter - base : 0)
             let growth = session >= lastSession ? session - lastSession : 0
             lastSession = session
             return (session, growth)

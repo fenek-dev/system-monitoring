@@ -135,7 +135,10 @@ import Testing
         #expect(ProcessAssembler.coalition(of: child, in: map) == 7)
         child.ppid = 1                                                     // launchd child: responsible's coalition
         child.responsiblePID = 20
-        #expect(ProcessAssembler.coalition(of: child, in: map) == 9)
+        #expect(ProcessAssembler.coalition(of: child, in: map, rawByPID: [20: own(20)]) == 9)
+        #expect(ProcessAssembler.coalition(of: child, in: map) == nil)     // responsible gone → none
+        // pid reuse: pid 20 now belongs to a process started after the child → not its responsible process
+        #expect(ProcessAssembler.coalition(of: child, in: map, rawByPID: [20: own(20, start: 2)]) == nil)
         child.responsiblePID = nil
         #expect(ProcessAssembler.coalition(of: child, in: map) == nil)
         #expect(ProcessAssembler.coalition(of: own(10), in: map) == 7)     // listed members use their own
@@ -147,7 +150,7 @@ import Testing
         grandchild.ppid = 50
         grandchild.responsiblePID = 20                                       // ancestors win over responsible
         #expect(ProcessAssembler.coalition(of: grandchild, in: map, rawByPID: [50: parent]) == 7)
-        #expect(ProcessAssembler.coalition(of: grandchild, in: map) == 9)    // ancestry unknown → responsible
+        #expect(ProcessAssembler.coalition(of: grandchild, in: map, rawByPID: [20: own(20)]) == 9)  // ancestry unknown → responsible
     }
 
     @Test func cachedReadingKeepsPreviousRates() throws {
@@ -248,6 +251,23 @@ import Testing
                     gpu: gpu([GPUClientCounter(clientID: 1, pid: 77, creatorName: "gone", gpuTimeNs: sec / 2)], at: 2 * sec))
         #expect(a.unattributed.gpuPercent == 50)
         #expect(a.unattributedDelta.gpuNs == sec / 2)
+    }
+
+    @Test func gpuSharesAboveTheWholeGPUAreNormalized() throws {
+        // Σ client time 160 % of the interval (overlapping clients) → shares of 100 %, like the ICR-8 energy term.
+        var pa = ProcessAssembler(currentUID: testUID)
+        let ps = [own(10), own(20)]
+        func g(_ a: UInt64, _ b: UInt64, _ c: UInt64) -> [GPUClientCounter] {
+            [GPUClientCounter(clientID: 1, pid: 10, creatorName: "a", gpuTimeNs: a),
+             GPUClientCounter(clientID: 2, pid: 20, creatorName: "b", gpuTimeNs: b),
+             GPUClientCounter(clientID: 3, pid: 77, creatorName: "gone", gpuTimeNs: c)]
+        }
+        _ = run(&pa, ps, at: sec, gpu: gpu(g(0, 0, 0), at: sec))
+        let a = run(&pa, ps, at: 2 * sec, gpu: gpu(g(sec * 8 / 10, sec * 6 / 10, sec * 2 / 10), at: 2 * sec))
+        let p10 = try #require(a.samples[pid: 10]?.gpuPercent), p20 = try #require(a.samples[pid: 20]?.gpuPercent)
+        let sys = try #require(a.unattributed.gpuPercent)
+        #expect(abs(p10 - 50) < 1e-9 && abs(p20 - 37.5) < 1e-9 && abs(sys - 12.5) < 1e-9)
+        #expect(a.deltas[a.samples[pid: 10]!.id]?.gpuNs == sec * 8 / 10)   // session GPU time stays the raw counter
     }
 
     @Test func gpuUnavailableIsNil() {
@@ -364,7 +384,7 @@ import Testing
         #expect(cached.unattributedDelta == ProcessDelta())
         // …while the displayed rates stay the previous ones
         let p = try #require(cached.samples[pid: 10])
-        #expect(p.cpuPercent == 100 && p.gpuPercent == 100 && p.netRxBps == 1_000)
+        #expect(p.cpuPercent == 100 && p.gpuPercent == 50 && p.netRxBps == 1_000)   // GPU: Σ 200 % normalized to 100
     }
 
     // MARK: misc
@@ -381,6 +401,14 @@ import Testing
         var pa = ProcessAssembler(currentUID: testUID)
         let a = run(&pa, [own(20), own(21, responsible: 20)], at: sec)
         #expect(a.samples[pid: 21]?.app == AppKey(kind: .app, id: "b"))
+    }
+
+    @Test func reusedResponsiblePidIsIgnored() {
+        // 21 outlived its responsible process; pid 20 now belongs to a process started after 21 → not responsible.
+        var pa = ProcessAssembler(currentUID: testUID)
+        let a = run(&pa, [own(20, start: 5), own(21, start: 2, responsible: 20)], at: sec)
+        #expect(a.samples[pid: 21]?.app == .system)                       // own identity (fixture: unmapped pid)
+        #expect(a.samples[pid: 20]?.app == AppKey(kind: .app, id: "b"))
     }
 
     @Test func nameFallsBackToPathThenComm() {
