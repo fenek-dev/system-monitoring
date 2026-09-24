@@ -29,7 +29,7 @@ public struct EventDetector: Sendable {
     }
 
     static let swapGrowthBytes = Double(1 << 30)
-    static let swapWindow: TimeInterval = 600
+    static let swapWindow: TimeInterval = 1_800        // DESIGN: "swap growth ≥ 1 GB within 30 min"
     static let swapRearmBytes = Double(256 << 20)
 
     public let config: EpisodeConfig
@@ -76,7 +76,7 @@ public struct EventDetector: Sendable {
             }
         }
         let minDuration = config.minDuration.seconds, mergeGap = config.mergeGap.seconds
-        for key in Array(episodes.keys) {
+        for key in episodes.keys.sorted(by: Self.order) {           // deterministic event order within a frame
             guard var e = episodes[key] else { continue }
             if above.contains(key) {
                 if !e.opened, up - e.startUp >= minDuration {
@@ -94,6 +94,7 @@ public struct EventDetector: Sendable {
     }
 
     /// Closes every open episode (pause, shutdown); only episodes of at least `minDuration` produce an event.
+    /// `at` is not used: an episode ends at its last sample above the threshold.
     public mutating func flush(at: Date) -> [HistoryEvent] {
         let out = closeAll()
         swapSamples.removeAll()
@@ -103,12 +104,16 @@ public struct EventDetector: Sendable {
 
     private mutating func closeAll() -> [HistoryEvent] {
         let minDuration = config.minDuration.seconds
-        let out = episodes
-            .filter { $0.value.lastAboveUp - $0.value.startUp >= minDuration }
-            .map { event($0.value, $0.key, end: $0.value.lastAbove) }
-            .sorted { $0.start < $1.start }
+        let out = episodes.keys.sorted(by: Self.order).compactMap { key -> HistoryEvent? in
+            guard let e = episodes[key], e.lastAboveUp - e.startUp >= minDuration else { return nil }
+            return event(e, key, end: e.lastAbove)
+        }
         episodes.removeAll()
         return out
+    }
+
+    private static func order(_ a: Key, _ b: Key) -> Bool {
+        a.app.description != b.app.description ? a.app.description < b.app.description : a.metric.rawValue < b.metric.rawValue
     }
 
     // MARK: - Private
@@ -120,7 +125,7 @@ public struct EventDetector: Sendable {
     }
 
     private func event(_ e: Episode, _ key: Key, end: Date?) -> HistoryEvent {
-        HistoryEvent(id: e.id, kind: .appEpisode, start: e.start, end: end, level: .calm, app: e.identity,
+        HistoryEvent(id: e.id, kind: .appEpisode, start: e.start, end: end, level: .elevated, app: e.identity,
                      metric: key.metric, peak: e.peak, label: "\(e.identity.displayName): \(Self.noun(key.metric))")
     }
 
@@ -149,8 +154,9 @@ public struct EventDetector: Sendable {
               bytes - low.bytes >= Self.swapGrowthBytes else { return [] }
         swapArmed = false
         swapPeakSinceFire = bytes
+        swapSamples = [(now, up, bytes)]                 // the next event needs new growth from here
         let grown = (bytes - low.bytes) / Double(1 << 30)
         return [HistoryEvent(kind: .swapGrowth, start: low.time, end: now, level: .elevated, peak: bytes,
-                             label: String(format: "Swap grew by %.1f GB", grown))]
+                             label: String(format: "Swap +%.1f GB", grown))]
     }
 }

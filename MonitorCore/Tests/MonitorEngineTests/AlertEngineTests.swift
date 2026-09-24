@@ -241,6 +241,7 @@ private func app(_ id: String, cpu: Double?, kind: AppKey.Kind = .app, mem: UInt
         let opened = try #require(start.first)
         #expect(start.count == 1)
         #expect(opened.kind == .thermalPressure && opened.end == nil && opened.level == .elevated && opened.start == at(0))
+        #expect(opened.label == "Thermal: Fair")
         #expect(e.update(thermal: .fair, memory: nil, apps: [], at: at(1)).events.isEmpty)
         let up = try #require(e.update(thermal: .serious, memory: nil, apps: [], at: at(2)).events.first)
         #expect(up.id == opened.id && up.level == .critical && up.end == nil)
@@ -259,6 +260,7 @@ private func app(_ id: String, cpu: Double?, kind: AppKey.Kind = .app, mem: UInt
         let ev = try #require(events.first)
         #expect(ev.kind == .runawayApp && ev.app?.displayName == "x" && ev.metric == .cpu && ev.peak == 250)
         #expect(ev.start == at(300))
+        #expect(ev.label == "x CPU spike")
     }
 
     // MARK: paused

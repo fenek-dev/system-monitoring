@@ -135,9 +135,10 @@ public struct AlertEngine: Sendable {
     // MARK: - Thermal / memory
 
     private static func label(_ kind: HistoryEvent.Kind, _ raw: Int) -> String {
+        // DESIGN History chips: "Thermal: Fair", "{App} CPU spike".
         kind == .thermalPressure
-            ? "Thermal pressure: \(name(ThermalPressure(rawValue: raw) ?? .nominal))"
-            : "Memory pressure: \(name(MemoryPressureLevel(rawValue: raw) ?? .normal))"
+            ? "Thermal: \(name(ThermalPressure(rawValue: raw) ?? .nominal))"
+            : "Memory: \(name(MemoryPressureLevel(rawValue: raw) ?? .normal))"
     }
 
     private static func step(_ t: inout LevelTracker, to condition: AlertLevel, raw: Int?, now: Date, clock: Double,
@@ -271,7 +272,7 @@ public struct AlertEngine: Sendable {
     private static func runawayEvent(_ r: Runaway, end: Date?) -> HistoryEvent {
         HistoryEvent(id: r.eventID, kind: .runawayApp, start: r.since ?? end ?? .distantPast, end: end, level: .elevated,
                      app: r.identity, metric: .cpu, peak: r.peak,
-                     label: "\(r.identity.displayName) using \(Int(r.peak.rounded())) % CPU")
+                     label: "\(r.identity.displayName) CPU spike")
     }
 
     // MARK: - State
