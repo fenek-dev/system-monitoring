@@ -265,13 +265,7 @@ func pad(_ s: String, _ n: Int) -> String {
     s.count >= n ? s : s + String(repeating: " ", count: n - s.count)
 }
 
-/// `[RawTick]` fixture coding. Matches W1's `FixtureReplay` decoder (ISO-8601 dates) until the shared
-/// `MonitorEngine/Fixtures/FixtureCoding.swift` lands; then this forwards to it.
+/// `[RawTick]` fixture coding: W1's shared format (`MonitorEngine/Fixtures/FixtureCoding.swift`).
 enum FixtureFormat {
-    static let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        e.dateEncodingStrategy = .iso8601
-        e.outputFormatting = [.sortedKeys]
-        return e
-    }()
+    static var encoder: JSONEncoder { RawTick.fixtureEncoder }
 }
