@@ -65,7 +65,7 @@ public struct SettingsView: View {
                 section("General") { launchAtLoginRow }
                 section("Units") { unitRows }
                 section("Popover") { popoverRows }
-                if !disabledSensorRows.isEmpty || !settings.disabledSensors.isEmpty { section("Sensors") { sensorRows } }
+                if !disabledSensorRows.isEmpty { section("Sensors") { sensorRows } }
                 section("About") { aboutRows }
             }
             .padding(20)
@@ -204,16 +204,21 @@ public struct SettingsView: View {
 
     // Sensors (ADDED: ARCHITECTURE §5.13 "re-enable crashed/disabled sensors")
 
-    private var disabledSensorRows: [(SensorID, String)] {
-        live.sensorHealth.compactMap { id, status in
-            if case .disabled(let reason) = status { return (id, reason) }
+    /// Sensors the Sensors section lists: crash-disabled (`live.sensorHealth`, updated even while nothing is
+    /// presenting) plus the kill-switch list in Settings. Sorted by id. Empty → no Sensors section.
+    @MainActor public static func disabledSensors(live: LiveModel, settings: SettingsStore) -> [SensorID] {
+        _ = live.healthVersion                                   // track health changes explicitly
+        let crashed = live.sensorHealth.compactMap { id, status -> SensorID? in
+            if case .disabled = status { return id }
             return nil
         }
-        .sorted { $0.0.rawValue < $1.0.rawValue }
+        return Set(crashed).union(settings.disabledSensors).sorted { $0.rawValue < $1.rawValue }
     }
 
+    private var disabledSensorRows: [SensorID] { Self.disabledSensors(live: live, settings: settings) }
+
     @ViewBuilder private var sensorRows: some View {
-        let ids = Set(disabledSensorRows.map(\.0)).union(settings.disabledSensors).sorted { $0.rawValue < $1.rawValue }
+        let ids = disabledSensorRows
         row(divider: false) {
             VStack(alignment: .leading, spacing: 2) {
                 label("Disabled sensors")

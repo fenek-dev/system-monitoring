@@ -10,7 +10,8 @@ public enum LivePhase: Sendable, Equatable {
 }
 
 /// UI-facing live state. One `apply` per tick (ARCHITECTURE §5.7, §7):
-/// - `alert`, `phase`, `samplingInterval` and the ring buffers always update (status item);
+/// - `alert`, `phase`, `samplingInterval`, `sensorHealth` (+ `healthVersion`) and the ring buffers always update
+///   (status item, Settings › Sensors);
 /// - everything else updates only while `isPresenting`, and each property is assigned only when it changed;
 /// - per-category version counters let a page depend on one category; ring buffers and derived caches are
 ///   `@ObservationIgnored` and tracked through those counters.
@@ -20,6 +21,10 @@ public final class LiveModel {
     public private(set) var alert: AlertState = .calm
     public private(set) var phase: LivePhase
     public private(set) var samplingInterval: Duration?
+    /// Always updated (ruling, W7 T6 drill): Settings › Sensors must list crashed/disabled sensors even with the
+    /// popover and dashboard closed. Assigned only when it changed, then `healthVersion` is bumped.
+    public private(set) var sensorHealth: [SensorID: SensorStatus] = [:]
+    public private(set) var healthVersion = 0
 
     // Updated only while presenting
     public private(set) var device: DeviceInfo
@@ -33,7 +38,6 @@ public final class LiveModel {
     public private(set) var processes: [ProcessSample] = []
     public private(set) var apps: [AppSample] = []
     public private(set) var connections: [ConnectionSample] = []
-    public private(set) var sensorHealth: [SensorID: SensorStatus] = [:]
     public private(set) var lastUpdate: Date?
 
     public private(set) var cpuVersion = 0
@@ -64,7 +68,7 @@ public final class LiveModel {
         self.history = LiveHistory(capacity: historyCapacity, appCapacity: appHistoryCapacity, maxTrackedApps: 64)
     }
 
-    /// While false, only `alert`, `phase`, `samplingInterval` and the ring buffers change.
+    /// While false, only `alert`, `phase`, `samplingInterval`, `sensorHealth` and the ring buffers change.
     /// Switching it on applies the latest frame and bumps every counter (the ring buffers moved meanwhile).
     public var isPresenting: Bool {
         get { presenting }
@@ -86,6 +90,7 @@ public final class LiveModel {
 
         set(\.alert, frame.alert)
         set(\.samplingInterval, frame.mode.interval)
+        if set(\.sensorHealth, frame.sensorHealth) { healthVersion += 1 }
         if frame.interval != nil {
             set(\.phase, .live)
         } else if case .collecting = phase {
@@ -205,7 +210,6 @@ public final class LiveModel {
         }
         if processesChanged || appsChanged || forceBump { appsVersion += 1 }
         set(\.connections, f.connections)
-        set(\.sensorHealth, f.sensorHealth)
         set(\.lastUpdate, f.wallTime)
     }
 

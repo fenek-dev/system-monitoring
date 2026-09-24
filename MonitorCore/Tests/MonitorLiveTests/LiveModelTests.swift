@@ -170,6 +170,27 @@ func frame(t: Double, cpuUsage: Double = 0.4, memUsed: UInt64 = 1_000, apps: [Ap
         #expect(model.topApps(.cpu).first?.cpuPercent == 2)
     }
 
+    /// Ruling (W7 T6 drill): health reaches Settings › Sensors with the popover and dashboard closed.
+    @Test func sensorHealthUpdatesWhileNotPresentingAndBumpsOnlyOnChange() {
+        let model = LiveModel()
+        #expect(!model.isPresenting)
+        let health = observe { _ = model.sensorHealth; _ = model.healthVersion }
+        let snapshots = observe { _ = model.cpu; _ = model.version(.cpu) }
+        var f = frame(t: 0)
+        f.sensorHealth = [.smc: .disabled("Disabled after a crash")]
+        model.apply(f)
+        #expect(health.value == 1 && snapshots.value == 0)
+        #expect(model.status(of: .smc) == .disabled("Disabled after a crash"))
+        #expect(model.healthVersion == 1)
+        var g = frame(t: 1)
+        g.sensorHealth = f.sensorHealth                                 // unchanged health: no bump
+        model.apply(g)
+        #expect(model.healthVersion == 1)
+        g.sensorHealth = [:]
+        model.apply(g)                                                  // cleared: bump
+        #expect(model.healthVersion == 2 && model.status(of: .smc) == .ok)
+    }
+
     @Test func lookupsByKey() {
         let model = LiveModel()
         model.isPresenting = true
