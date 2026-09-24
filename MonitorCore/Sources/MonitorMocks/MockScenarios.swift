@@ -1,4 +1,4 @@
-// W0b stub (ARCHITECTURE §5.11). Wm replaces this file.
+// ARCHITECTURE §5.11. Drives MockDataProvider (`.calm` reproduces the design artboards' numbers).
 
 public enum MockScenario: String, CaseIterable, Sendable, Codable {
     case calm, thermalFair, thermalCritical, memoryWarning, memoryCritical, runaway
