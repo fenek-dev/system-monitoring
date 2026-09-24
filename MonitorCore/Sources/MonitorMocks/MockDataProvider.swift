@@ -127,10 +127,48 @@ public struct MockDataProvider: Sendable {
         MockHistoryProvider(scenario: scenario, seed: seed, end: start)
     }
 
-    // TODO(Wm T3): wire real recording actions through `ActionLog`; `.noop` until then.
+    /// Records every call to `log` and mimics `canControl`'s real-world rule (false for root/other-user
+    /// processes and synthetic coalition rows): `.app` targets are controllable when they're a real
+    /// bundled app (our roster's daemons — WindowServer, mds_stores — use `AppKey.Kind.process`);
+    /// `.process` targets are controllable when they run as the mock's own user (uid 501, DemoApps'
+    /// `isCurrentUser` convention).
     public func processActions(log: ActionLog) -> ProcessActions {
-        _ = log
-        return .noop
+        func name(_ target: ProcessTarget) -> String {
+            switch target {
+            case .app(let identity, _): identity.displayName
+            case .process(_, let name, _, _): name
+            }
+        }
+        func controllable(_ target: ProcessTarget) -> Bool {
+            switch target {
+            case .app(let identity, _): identity.key.kind == .app
+            case .process(_, _, _, let uid): uid == 501
+            }
+        }
+        return ProcessActions(
+            canControl: { controllable($0) },
+            quit: { target in
+                let result: ActionResult = controllable(target) ? .done : .notPermitted
+                log.record(.quit, target: name(target), result: result)
+                return result
+            },
+            forceQuit: { target in
+                let result: ActionResult = controllable(target) ? .done : .notPermitted
+                log.record(.forceQuit, target: name(target), result: result)
+                return result
+            },
+            revealInFinder: { target in
+                log.record(.revealInFinder, target: name(target), result: .done)
+            },
+            openInActivityMonitor: { target in
+                log.record(.openInActivityMonitor, target: name(target), result: .done)
+            },
+            eject: { volume in
+                let result: ActionResult = volume.isEjectable ? .done : .notPermitted
+                log.record(.eject, target: volume.name, result: result)
+                return result
+            }
+        )
     }
 
     // MARK: - CPU
