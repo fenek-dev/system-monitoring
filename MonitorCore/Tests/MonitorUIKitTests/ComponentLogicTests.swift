@@ -169,4 +169,16 @@ import Testing
                             points: [SeriesPoint(value: 0.1), SeriesPoint(value: 0.22), SeriesPoint(value: nil)])
         #expect(ChartAccessibility.summary([s], format: { TTFormat.percent($0) }) == "Chart, 3 samples: User latest 22%")
     }
+
+    /// Overlay R6: the memory stats row drops the unit but keeps `memory(.headline)`'s divisor and digits.
+    @Test(.enUS) func memoryNumberMatchesHeadlineWithoutUnit() {
+        let b: UInt64 = 16_320_000_000
+        #expect(TTFormat.memoryNumber(b) == "15.2")
+        #expect(TTFormat.memory(b, style: .headline) == TTFormat.memoryNumber(b) + " GB")
+        for v: UInt64 in [0, 900_000_000, 1_073_741_824, 2_199_023_255_552] {
+            let headline = TTFormat.memory(v, style: .headline)
+            #expect(TTFormat.memoryNumber(v) == String(headline.prefix { $0 != " " }))
+        }
+        #expect(TTFormat.memoryNumber(nil) == "—")
+    }
 }
