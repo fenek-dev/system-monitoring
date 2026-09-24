@@ -20,7 +20,15 @@ struct AppInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let row {
+            if let row, row.isExitedResidual {
+                // ICR-13: no process detail and no actions for the "Exited processes" row.
+                VStack(spacing: TTSpace.x3) {
+                    Text(row.name).font(TTFont.pageTitle).italic().foregroundStyle(TTColor.textSecondary)
+                    Text("Estimated usage of \(row.appKey.kind == .app ? "this app’s " : "")processes that exited since the last sample. No process to inspect.")
+                        .font(TTFont.caption).foregroundStyle(TTColor.textTertiary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+            } else if let row {
                 header(row)
                 if detailExpanded {
                     TTSeparator().padding(.vertical, TTSpace.x16)
@@ -36,7 +44,9 @@ struct AppInspector: View {
             }
         }
         .padding(TTSpace.cardPadding + TTStroke.hairline)
-        .frame(maxWidth: .infinity, minHeight: row != nil && detailExpanded ? Self.expandedMinHeight : Self.collapsedHeight,
+        .frame(maxWidth: .infinity,
+               minHeight: row != nil && row?.isExitedResidual == false && detailExpanded
+                   ? Self.expandedMinHeight : Self.collapsedHeight,
                alignment: .topLeading)
         .ttCardBackground()
     }

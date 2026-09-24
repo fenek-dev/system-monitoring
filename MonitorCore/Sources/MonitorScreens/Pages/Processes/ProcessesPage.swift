@@ -14,6 +14,7 @@ public struct ProcessesPage: View {
     @Environment(\.processActions) private var actions
     @Environment(\.processesDetailOnAppear) private var detailOnAppear
     @Environment(\.processesExpandSelectionOnAppear) private var expandOnAppear
+    @Environment(\.processesExpandOnAppear) private var expandKeysOnAppear
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var table = ProcessTableModel()
     @State private var coordinator = ProcessActionCoordinator()
@@ -86,6 +87,7 @@ public struct ProcessesPage: View {
                 refresh()
                 detailExpanded = detailOnAppear ?? (nav.selection != nil)
                 if expandOnAppear, case .app(let key)? = nav.selection { table.setExpanded(key, true) }
+                for key in expandKeysOnAppear { table.setExpanded(key, true) }
                 publishInspectedApp()
             }
         }
@@ -236,4 +238,6 @@ extension EnvironmentValues {
     @Entry var processesDetailOnAppear: Bool? = nil
     /// Expand the selected app group when the page appears (snapshot tests).
     @Entry var processesExpandSelectionOnAppear: Bool = false
+    /// App groups expanded when the page appears (snapshot tests).
+    @Entry var processesExpandOnAppear: Set<AppKey> = []
 }

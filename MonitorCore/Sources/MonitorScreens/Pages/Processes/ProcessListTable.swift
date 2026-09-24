@@ -155,7 +155,8 @@ struct ProcessTableRow: View, Equatable {
         .font(TTFont.body12)
         .monospacedDigit()
         .lineLimit(1)
-        .foregroundStyle(row.depth > 0 ? TTColor.textSecondary : TTColor.textPrimary)
+        .foregroundStyle(row.depth > 0 || row.isExitedResidual ? TTColor.textSecondary : TTColor.textPrimary)
+        .italic(row.isExitedResidual)
         .padding(.horizontal, TTSpace.tableRowInset)
         .frame(height: row.depth > 0 ? 30 : 34)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -219,6 +220,10 @@ struct ProcessTableRow: View, Equatable {
                         nameAndKind(Self.shortKind(kind), truncating: true)
                     }
                     .help("\(row.name) · \(kind)")
+                } else if row.isExitedResidual {
+                    // ICR-13: italic secondary, estimated (values carry the estimated tooltip).
+                    Text(row.name).italic().foregroundStyle(TTColor.textSecondary).lineLimit(1)
+                        .help("Processes that exited since the last sample (estimated)")
                 } else {
                     Text(row.name).lineLimit(1).truncationMode(.middle).help(row.name)
                 }

@@ -203,6 +203,43 @@ struct ProcessTableBuildTests {
     }
 }
 
+@Suite("ProcessTableModel — ICR-13 exited processes")
+struct ProcessTableExitedTests {
+    /// Docker Desktop plus an "Exited processes" residual (pid −2) with the highest CPU of the table.
+    static func input(_ mode: NavigationModel.ProcessesMode, expanded: Set<AppKey> = []) -> ProcessTableInput {
+        var t = PT.table()
+        let exited = ProcessSample(id: ProcessID(pid: -2, startTimeUs: 77), name: "", user: "arthur", uid: PT.me,
+                                   isCurrentUser: true, app: PT.docker, provenance: .coalition, cpuPercent: 300,
+                                   diskReadBps: 1e6, energyWatts: 2, energyEstimated: true)
+        t.processes.append(exited)
+        t.apps = PT.group(t.processes, names: [PT.docker: "Docker Desktop"],
+                          bundles: [PT.docker: "/Applications/Docker.app"])
+        return ProcessTableInput(processes: t.processes, apps: t.apps, mode: mode, expanded: expanded, processCount: 612)
+    }
+
+    @Test func staysWithItsAppAndHasNoActions() {
+        let procs = ProcessTableModel.build(Self.input(.processes))
+        let names = procs.lines.map(\.name)
+        let i = names.firstIndex(of: "Exited processes")!
+        #expect(procs.lines[i - 1].appKey == PT.docker)                    // after its app's last row, not first
+        #expect(i != 0)
+        let row = procs.lines[i]
+        #expect(row.isExitedResidual && row.target == nil && row.pid == nil && row.kindLabel == nil)
+        #expect(row.cpuEstimated && row.energyEstimated)
+        #expect(!ProcessTableModel.availability(for: row, serviceCanControl: true).canForceQuit)
+        #expect(ProcessTableModel.inspectedApp(row: row, detailExpanded: true) == nil)
+    }
+
+    @Test func lastChildOfItsAppAndNotCountedAsAProcess() {
+        let apps = ProcessTableModel.build(Self.input(.apps, expanded: [PT.docker]))
+        let docker = apps.lines.first { $0.id == .app(PT.docker) }!
+        #expect(docker.kindLabel == "App · 2 processes")
+        let kids = apps.lines.filter { $0.depth == 1 && $0.appKey == PT.docker }
+        #expect(kids.last?.isExitedResidual == true)
+        #expect(docker.target.map { if case .app(_, let pids) = $0 { !pids.contains(-2) } else { false } } == true)
+    }
+}
+
 @Suite("ProcessTableModel — actions by owner")
 struct ProcessTableActionTests {
     @Test func ownedRowsEnabledOthersDisabledWithOwner() {
