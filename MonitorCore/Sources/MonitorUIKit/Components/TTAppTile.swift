@@ -1,16 +1,19 @@
 import AppKit
 import MonitorModel
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// DESIGN §2.19 app tile. Sizes 16 (child rows, radius 4), 20 (tables, radius 5), 26 (popover, radius 7),
 /// 44 (inspector, radius 10). Bundle icon when available (cached, `NSWorkspace.icon(forFile:)`), else a letter
 /// tile: palette color by FNV-1a of the bundle id / executable name, uppercase first alphanumeric in white.
-/// Snapshots always use the letter tile (icons differ per machine).
+/// Real icons only for proper app bundles with a non-generic icon (see `AppIconCache`). Snapshots use the letter tile
+/// (icons differ per machine) unless `\.ttAppIconsInSnapshots` is set.
 public struct TTAppTile: View, Equatable {
     let identity: AppIdentity?
     let name: String
     let size: CGFloat
     @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(\.ttAppIconsInSnapshots) private var iconsInSnapshots
 
     public init(identity: AppIdentity?, name: String, size: CGFloat = 20) {
         self.identity = identity
@@ -63,11 +66,11 @@ public struct TTAppTile: View, Equatable {
 
     public var body: some View {
         Group {
-            if !isSnapshot, let path = identity?.bundlePath, let icon = AppIconCache.icon(forPath: path) {
+            if !isSnapshot || iconsInSnapshots, let path = identity?.bundlePath, let icon = AppIconCache.icon(forPath: path) {
                 Image(nsImage: icon).resizable().interpolation(.high)
             } else {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(TTColor.tile(for: tileKey))
+                    .fill(TTColor.tiles[TTColor.tileIndex(key: tileKey, name: name.isEmpty ? identity?.displayName : name)])
                     .overlay(
                         Text(letter).font(letterFont).foregroundStyle(TTColor.textOnAccent)
                     )
@@ -78,19 +81,60 @@ public struct TTAppTile: View, Equatable {
     }
 }
 
-/// App icons cached per bundle path (ARCHITECTURE §7: `NSCache`).
+/// App icons cached per bundle path (ARCHITECTURE §7). Ruling (CP2): the real icon is used only for a proper `.app`
+/// bundle that declares its own icon (CFBundleIconFile / CFBundleIconName / CFBundleIcons) and whose icon is not
+/// the generic application/executable/document icon; otherwise nil → letter tile. Negative results are cached too.
 @MainActor enum AppIconCache {
-    private static let cache: NSCache<NSString, NSImage> = {
-        let c = NSCache<NSString, NSImage>()
+    private final class Entry {
+        let image: NSImage?
+        init(_ image: NSImage?) { self.image = image }
+    }
+
+    private static let cache: NSCache<NSString, Entry> = {
+        let c = NSCache<NSString, Entry>()
         c.countLimit = 256
         return c
     }()
 
     static func icon(forPath path: String) -> NSImage? {
-        if let hit = cache.object(forKey: path as NSString) { return hit }
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
-        let icon = NSWorkspace.shared.icon(forFile: path)
-        cache.setObject(icon, forKey: path as NSString)
-        return icon
+        if let hit = cache.object(forKey: path as NSString) { return hit.image }
+        let icon = hasCustomIcon(bundlePath: path) ? NSWorkspace.shared.icon(forFile: path) : nil
+        let usable = icon.flatMap { isGeneric($0) ? nil : $0 }
+        cache.setObject(Entry(usable), forKey: path as NSString)
+        return usable
+    }
+
+    /// A `.app` bundle whose Info.plist names an icon.
+    nonisolated static func hasCustomIcon(bundlePath path: String) -> Bool {
+        guard path.hasSuffix(".app"), let bundle = Bundle(path: path), let info = bundle.infoDictionary else { return false }
+        return info["CFBundleIconFile"] != nil || info["CFBundleIconName"] != nil || info["CFBundleIcons"] != nil
+    }
+
+    private static let genericIcons: [Data] = [UTType.application, .unixExecutable, .data, .applicationBundle]
+        .compactMap { thumbnail(NSWorkspace.shared.icon(for: $0)) }
+
+    /// 16×16 rasterization used to compare against the generic system icons.
+    private static func thumbnail(_ image: NSImage) -> Data? {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 64, bitsPerPixel: 32) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: 16, height: 16))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let data = rep.bitmapData else { return nil }
+        return Data(bytes: data, count: 16 * 64)
+    }
+
+    /// Generic system icon, or blank (all pixels near-white or transparent).
+    static func isGeneric(_ image: NSImage) -> Bool {
+        guard let t = thumbnail(image) else { return true }
+        if genericIcons.contains(t) { return true }
+        var opaque = 0, whiteish = 0
+        for i in stride(from: 0, to: t.count, by: 4) where t[i + 3] > 32 {
+            opaque += 1
+            if t[i] > 235 && t[i + 1] > 235 && t[i + 2] > 235 { whiteish += 1 }
+        }
+        return opaque == 0 || Double(whiteish) / Double(opaque) > 0.9
     }
 }

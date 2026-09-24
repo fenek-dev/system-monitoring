@@ -128,6 +128,29 @@ public enum TTColor {
 
     public static func tile(for key: String) -> Color { tiles[tileIndex(for: key)] }
 
+    /// Artboard tile colors for the design's sample apps (Main/Processes/MenuBar row positions: Xcode tile0,
+    /// Final Cut Pro tile1, Safari tile2, WindowServer tile3, Docker tile4, kernel_task tile5, mds_stores tile6;
+    /// Dropbox 7, Slack 0, Music 1 as the continuation), matched by bundle id, executable name or display name.
+    static let knownTiles: [String: Int] = [
+        "com.apple.dt.xcode": 0, "xcode": 0,
+        "com.apple.finalcut": 1, "com.apple.finalcutpro": 1, "final cut pro": 1,
+        "com.apple.safari": 2, "safari": 2,
+        "windowserver": 3,
+        "com.docker.docker": 4, "com.docker.backend": 4, "docker desktop": 4, "docker": 4,
+        "kernel_task": 5,
+        "mds_stores": 6,
+        "com.getdropbox.dropbox": 7, "dropbox": 7,
+        "com.tinyspeck.slackmacgap": 0, "slack": 0,
+        "com.apple.music": 1, "music": 1,
+    ]
+
+    /// Tile index: artboard color for known sample apps (key, then name), else FNV-1a of `key` mod 8.
+    public static func tileIndex(key: String, name: String?) -> Int {
+        if let i = knownTiles[key.lowercased()] { return i }
+        if let name, let i = knownTiles[name.lowercased()] { return i }
+        return tileIndex(for: key)
+    }
+
     // MARK: Lookups
 
     public static func category(_ c: MonitorModel.Category) -> Color {

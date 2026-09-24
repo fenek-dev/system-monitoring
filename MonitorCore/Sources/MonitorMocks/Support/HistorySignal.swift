@@ -25,7 +25,10 @@ struct HistorySignal {
     static let pausedGapDaysAgo = 5
     static let pausedGapHour = 3
 
-    init(seed: UInt64, end: Date, calendar: Calendar = .current) {
+    /// `calendar` defaults to `ReferenceCalendar.calendar` (Europe/London, fixed), not `.current` — day/
+    /// night, weekend damping and the event-bump minute-of-day must not depend on the host machine's
+    /// timezone (see `MockDataProvider.referenceDate`'s doc comment).
+    init(seed: UInt64, end: Date, calendar: Calendar = ReferenceCalendar.calendar) {
         self.seed = seed
         self.end = end
         self.calendar = calendar
@@ -80,6 +83,9 @@ struct HistorySignal {
         case .memWired: return demo(.mem, metricSeed: 4) * 0.15 * 1_073_741_824
         case .memCompressed: return demo(.mem, metricSeed: 4) * 0.10 * 1_073_741_824
         case .memPressure: return demo(.press, metricSeed: 5) / 100
+        case .memPressureLevel:                                   // ICR-12: MemoryPressureLevel.rawValue
+            let p = demo(.press, metricSeed: 5) / 100
+            return p >= 0.9 ? 4 : (p >= 0.7 ? 2 : 1)
         case .swapUsed: return demo(.swap, metricSeed: 6) * 1_073_741_824
         case .netRx: return demo(.netd, metricSeed: 7) * 1_000_000
         case .netTx: return demo(.netu, metricSeed: 8) * 1_000_000

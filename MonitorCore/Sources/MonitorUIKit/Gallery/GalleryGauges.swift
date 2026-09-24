@@ -9,9 +9,27 @@ import SwiftUI
             .init(id: "fan-gauges", size: CGSize(width: 332, height: 230)) { AnyView(FansCard()) },
             // History "App share" treemap (ADDED): ≈ 760×190.
             .init(id: "treemap", size: CGSize(width: 760, height: 190)) { AnyView(TreemapSample()) },
+            // Thermals@2x "Thermal pressure" card at (240, 168): 1020 wide.
+            .init(id: "thermal-scale", size: CGSize(width: 1020, height: 110)) { AnyView(ThermalScaleCard()) },
             // DESIGN §3.15: collecting (first launch) vs unavailable (sensor missing).
             .init(id: "tile-states", size: CGSize(width: 676, height: 290)) { AnyView(TileStatesSample()) },
         ]
+    }
+}
+
+private struct ThermalScaleCard: View {
+    var body: some View {
+        TTCard(spacing: TTSpace.x10) {
+            TTCardHeader("Thermal pressure") { TTCaption("Reported by macOS · changes are logged to History") }
+            TTThermalScale(levels: [
+                .init(title: "Nominal", detail: "Full performance", color: TTColor.statusCalm),
+                .init(title: "Fair", detail: "Mild fan boost", color: TTColor.statusFair),
+                .init(title: "Serious", detail: "Clock limiting likely", color: TTColor.statusElevated),
+                .init(title: "Critical", detail: "Heavy throttling", color: TTColor.statusCritical),
+            ], current: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(TTColor.bgWindow)
     }
 }
 

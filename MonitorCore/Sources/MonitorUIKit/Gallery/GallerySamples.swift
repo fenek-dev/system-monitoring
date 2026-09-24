@@ -12,11 +12,12 @@ import SwiftUI
             .init(id: "metric-tiles", size: CGSize(width: 1020, height: 168)) { AnyView(MetricTilesSample()) },
             // CPU@2x: stat strip at (240, 72), 1020×82.
             .init(id: "stat-strip", size: CGSize(width: 1020, height: 82)) { AnyView(StatStripSample()) },
-            .init(id: "controls", size: CGSize(width: 1020, height: 120)) { AnyView(ControlsSample()) },
+            .init(id: "controls", size: CGSize(width: 1020, height: 150)) { AnyView(ControlsSample()) },
             .init(id: "bars", size: CGSize(width: 500, height: 150)) { AnyView(BarsSample()) },
             .init(id: "key-value", size: CGSize(width: 332, height: 170)) { AnyView(KeyValueSample()) },
             .init(id: "states", size: CGSize(width: 1020, height: 90)) { AnyView(StatesSample()) },
         ] + GalleryCharts.items + GalleryTable.items + GalleryGauges.items + GalleryOverlays.items
+            + GalleryPopover.items + GalleryGlyph.items
     }
 }
 
@@ -126,6 +127,7 @@ private struct ControlsSample: View {
         )
     }
 }
+
 
 private struct BarsSample: View {
     var body: some View {

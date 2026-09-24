@@ -31,10 +31,13 @@ public struct MockDataProvider: Sendable {
         self.apps = roster
     }
 
-    /// Thu 24 Sep 2026 14:32 local.
+    /// Thu 24 Sep 2026 14:32 Europe/London (BST, UTC+1) — a fixed instant, not "14:32 wherever this
+    /// process happens to run": the snapshot harness pins Europe/London (ARCHITECTURE §8), so building
+    /// this from `Calendar.current`/`TimeZone.current` would make the mock data (and every screen
+    /// golden's cursor/timestamps) depend on the host machine's timezone.
     public static let referenceDate: Date = {
         let components = DateComponents(year: 2026, month: 9, day: 24, hour: 14, minute: 32)
-        return Calendar.current.date(from: components) ?? Date(timeIntervalSince1970: 0)
+        return ReferenceCalendar.calendar.date(from: components) ?? Date(timeIntervalSince1970: 0)
     }()
 
     public func frame(at tick: Int) -> SystemFrame {
@@ -84,7 +87,7 @@ public struct MockDataProvider: Sendable {
         let sensorHealth = makeSensorHealth()
         let alert = makeAlert()
 
-        return SystemFrame(
+        var frame = SystemFrame(
             wallTime: wallTime,
             uptimeNs: uptimeNs,
             interval: interval,
@@ -99,13 +102,95 @@ public struct MockDataProvider: Sendable {
             disk: disk,
             processes: processes,
             apps: allApps,
-            connections: [],
+            connections: makeConnections(),
             alert: alert,
             events: [],
             sensorHealth: sensorHealth,
             metrics: makeMetrics(cpu: cpu.snapshot, gpu: gpu, memory: memory, network: network,
                                   thermals: thermals, power: power, disk: disk)
         )
+        applyScenarioUnavailability(to: &frame)
+        return frame
+    }
+
+    /// `.collecting`: nothing that needs two samples is available yet (every rate/delta), only
+    /// instantaneous reads (memory levels, thermals, load average, process/app identity + memory).
+    /// `.sensorsUnavailable` (soc/smc/networkFlows): per-app/process network, which comes only from
+    /// `networkFlows` — CPU/GPU-usage/memory/disk/thermal-pressure/interface totals use other sensors and
+    /// stay put (already handled field-by-field in `makeGPU`/`makeThermals`/`makePower`).
+    private func applyScenarioUnavailability(to frame: inout SystemFrame) {
+        switch scenario {
+        case .collecting:
+            frame.cpu.usage = nil; frame.cpu.user = nil; frame.cpu.system = nil; frame.cpu.idle = nil
+            frame.cpu.cores = []; frame.cpu.clusters = []
+            frame.gpu.usage = nil; frame.gpu.frequencyMHz = nil; frame.gpu.watts = nil; frame.gpu.aneWatts = nil
+            frame.gpu.mediaEngines = []
+            frame.network.rxBps = nil; frame.network.txBps = nil
+            frame.network.interfaces = frame.network.interfaces.map { i in
+                var i = i; i.rxBps = nil; i.txBps = nil; return i
+            }
+            frame.disk.readBps = nil; frame.disk.writeBps = nil; frame.disk.readIOPS = nil; frame.disk.writeIOPS = nil
+            frame.processes = frame.processes.map(Self.clearingRates)
+            frame.apps = frame.apps.map(Self.clearingRates)
+            frame.connections = []
+
+        case .sensorsUnavailable:
+            frame.processes = frame.processes.map { p in
+                var p = p; p.netRxBps = nil; p.netTxBps = nil; p.netRxTotal = nil; p.netTxTotal = nil
+                p.connectionCount = nil; return p
+            }
+            frame.apps = frame.apps.map { a in
+                guard a.identity.key != .other else { return a }   // `.other`'s residual stays put below
+                var a = a; a.netRxBps = nil; a.netTxBps = nil; a.netRxSession = nil; a.netTxSession = nil
+                a.connectionCount = nil; return a
+            }
+            frame.connections = []
+
+        default:
+            break
+        }
+    }
+
+    private static func clearingRates(_ p: ProcessSample) -> ProcessSample {
+        var p = p
+        p.cpuPercent = nil; p.gpuPercent = nil
+        p.netRxBps = nil; p.netTxBps = nil; p.netRxTotal = nil; p.netTxTotal = nil
+        p.diskReadBps = nil; p.diskWriteBps = nil; p.diskReadTotal = nil; p.diskWriteTotal = nil
+        p.energyWatts = nil
+        return p
+    }
+
+    private static func clearingRates(_ a: AppSample) -> AppSample {
+        var a = a
+        a.cpuPercent = nil; a.gpuPercent = nil
+        a.netRxBps = nil; a.netTxBps = nil; a.diskReadBps = nil; a.diskWriteBps = nil
+        a.energyWatts = nil
+        return a
+    }
+
+    /// A few live flows on network-active apps (Safari, Dropbox), so the Processes inspector's
+    /// "Live connections" table has something to show regardless of which app a test/render inspects.
+    private func makeConnections() -> [ConnectionSample] {
+        guard scenario != .sensorsUnavailable, scenario != .collecting else { return [] }
+        let safari = (ProcessID(pid: 967, startTimeUs: 1), AppKey(kind: .app, id: "com.apple.Safari"))
+        let dropbox = (ProcessID(pid: 703, startTimeUs: 1), AppKey(kind: .app, id: "com.getdropbox.dropbox"))
+        return [
+            ConnectionSample(id: 1, process: safari.0, app: safari.1, proto: .tcp, localPort: 51_820,
+                              remoteAddress: "142.250.72.14", remotePort: 443, remoteHost: "www.google.com",
+                              tcpState: "ESTABLISHED", rxBps: 42_000, txBps: 6_000, rxTotal: 1_200_000, txTotal: 300_000),
+            ConnectionSample(id: 2, process: safari.0, app: safari.1, proto: .tcp, localPort: 51_821,
+                              remoteAddress: "151.101.1.69", remotePort: 443, remoteHost: "github.com",
+                              tcpState: "ESTABLISHED", rxBps: 18_000, txBps: 2_000, rxTotal: 800_000, txTotal: 150_000),
+            ConnectionSample(id: 3, process: safari.0, app: safari.1, proto: .tcp, localPort: 51_822,
+                              remoteAddress: "17.253.5.203", remotePort: 443, tcpState: "ESTABLISHED",
+                              rxBps: 4_000, txBps: 1_000, rxTotal: 200_000, txTotal: 90_000),
+            ConnectionSample(id: 4, process: dropbox.0, app: dropbox.1, proto: .tcp, localPort: 52_010,
+                              remoteAddress: "162.125.66.1", remotePort: 443, remoteHost: "dl-client.dropbox.com",
+                              tcpState: "ESTABLISHED", rxBps: 180_000, txBps: 20_000, rxTotal: 5_400_000, txTotal: 600_000),
+            ConnectionSample(id: 5, process: dropbox.0, app: dropbox.1, proto: .tcp, localPort: 52_011,
+                              remoteAddress: "162.125.66.7", remotePort: 443, remoteHost: "notify.dropboxapi.com",
+                              tcpState: "ESTABLISHED", rxBps: 800, txBps: 800, rxTotal: 40_000, txTotal: 40_000),
+        ]
     }
 
     public func frames(interval: Duration) -> AsyncStream<SystemFrame> {
@@ -225,21 +310,24 @@ public struct MockDataProvider: Sendable {
 
     // MARK: - GPU
 
+    /// `usage` can come from `gpuClients` (AGX) even without `soc`, so it stays available in
+    /// `.sensorsUnavailable`; frequency/watts/ANE watts/media engines are soc (IOReport) only.
     private func makeGPU(tick: Int) -> GPUSnapshot {
         let encPercent = signals.value(.enc, at: tick)
+        let socAvailable = scenario != .sensorsUnavailable
         return GPUSnapshot(
             usage: Self.fraction(signals.value(.gpu, at: tick)),
-            frequencyMHz: signals.value(.gfreq, at: tick),
-            maxFrequencyMHz: 1_578,
-            watts: signals.value(.pg, at: tick),
+            frequencyMHz: socAvailable ? signals.value(.gfreq, at: tick) : nil,
+            maxFrequencyMHz: socAvailable ? 1_578 : nil,
+            watts: socAvailable ? signals.value(.pg, at: tick) : nil,
             allocatedMemory: 3_100 * 1_048_576,
             coreCount: device.gpuCores,
-            aneWatts: signals.value(.pa, at: tick),
-            mediaEngines: [
+            aneWatts: socAvailable ? signals.value(.pa, at: tick) : nil,
+            mediaEngines: socAvailable ? [
                 MediaEngineReading(name: "Video encode", activeFraction: Self.fraction(encPercent)),
                 MediaEngineReading(name: "Video decode", activeFraction: Self.fraction(encPercent * 0.6)),
                 MediaEngineReading(name: "ProRes engine", activeFraction: Self.fraction(encPercent * 0.3)),
-            ]
+            ] : []
         )
     }
 
@@ -311,11 +399,12 @@ public struct MockDataProvider: Sendable {
         let pTemp = signals.value(.tp, at: tick)
         let gTemp = signals.value(.tg, at: tick)
         let bTemp = signals.value(.tb, at: tick)
-        let pressure: ThermalPressure? =
+        // `.thermalState` is its own sensor, separate from `smc`/`soc`, so thermal pressure stays
+        // available even in `.sensorsUnavailable` (only the smc/hid-sourced temps/fans below go nil).
+        let pressure: ThermalPressure =
             switch scenario {
             case .thermalCritical: .critical
             case .thermalFair: .fair
-            case .sensorsUnavailable: nil
             default: .nominal
             }
         let groups = [
@@ -521,6 +610,7 @@ public struct MockDataProvider: Sendable {
         m[.memWired] = memory.wired.map { Double($0) }
         m[.memCompressed] = memory.compressed.map { Double($0) }
         m[.memPressure] = memory.pressureFraction
+        m[.memPressureLevel] = memory.pressureLevel.map { Double($0.rawValue) }     // ICR-12
         m[.swapUsed] = memory.swapUsed.map { Double($0) }
         m[.netRx] = network.rxBps
         m[.netTx] = network.txBps

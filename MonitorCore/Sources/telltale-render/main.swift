@@ -19,7 +19,8 @@ usage: telltale-render [options]
   --compare <ref.png>             write [reference | ours | 50% overlay] instead of the render
   --crop x,y,w,h                  crop (points, @2x applied) before writing/comparing
   --path hosting|imageRenderer    render path (default hosting)
-  --cg smooth|nosmooth            (with --component) diagnostic ImageRenderer→CGContext path, font smoothing on/off
+  --stats                         print the mean luminance of the (cropped) render/image (text-weight proxy)
+  --profile                       print the vertical ink rows (@2x px) of the (cropped) render/image
   --out <path>                    output file (or directory with --all); default .build/renders/<name>.png
 """
 
@@ -27,7 +28,8 @@ struct Options {
     var list = false, all = false, gallery = false
     var screen: String?, scenario = "calm", component: String?, image: String?, compare: String?, out: String?
     var crop: CGRect?
-    var cgSmooth: Bool?
+    var stats = false
+    var profile = false
     var path: SnapshotRenderer.Path = .hosting
 }
 
@@ -59,11 +61,13 @@ func parse(_ args: [String]) -> Options {
             let parts = value().split(separator: ",").compactMap { Double($0) }
             guard parts.count == 4 else { fail("--crop expects x,y,w,h") }
             o.crop = CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
-        case "--cg":
-            // Diagnostic: ImageRenderer into our CGContext; "smooth" or "nosmooth" font smoothing.
-            o.cgSmooth = value() != "nosmooth"
+        case "--stats": o.stats = true
+        case "--profile": o.profile = true
         case "--path":
             o.path = value() == "imageRenderer" ? .imageRenderer : .hosting
+        case let arg where arg.hasPrefix("-Apple") || arg.hasPrefix("-CG"):
+            // NSArgumentDomain defaults (e.g. -AppleFontSmoothing 0): read by AppKit/CoreText at launch; skip value.
+            _ = value()
         case "-h", "--help":
             print(usage)
             exit(0)
@@ -145,13 +149,6 @@ func cropped(_ image: CGImage, _ crop: CGRect?) -> CGImage {
     } else if let screen = o.screen {
         ours = renderScreen(screen, scenario: o.scenario, path: o.path)
         name = "\(screen)-\(o.scenario)"
-    } else if let component = o.component, let smooth = o.cgSmooth {
-        guard let item = TTGallery.item(component),
-              let img = SnapshotRenderer.imageRendererCG(item.make(), size: item.size, smoothFonts: smooth) else {
-            fail("render failed: \(component)")
-        }
-        ours = img
-        name = "component-\(component)-cg\(smooth ? "" : "-nosmooth")"
     } else if let component = o.component {
         ours = renderComponent(component, path: o.path)
         name = "component-\(component)"
@@ -163,6 +160,41 @@ func cropped(_ image: CGImage, _ crop: CGRect?) -> CGImage {
     } else {
         print(usage)
         exit(2)
+    }
+
+    if o.profile {
+        // Vertical ink runs (rows whose max luminance differs from the first row's by > 60/255), in @2x pixels.
+        let img = cropped(ours, o.crop)
+        guard let px = SnapshotImage.pixels(img) else { fail("no pixels") }
+        let w = img.width
+        func lum(_ i: Int) -> Double { 0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2]) }
+        let bg = lum(0)
+        var runs: [(Int, Int)] = []
+        var start: Int?
+        for y in 0..<img.height {
+            var ink = false
+            for x in 0..<w where abs(lum((y * w + x) * 4) - bg) > 60 { ink = true; break }
+            if ink, start == nil { start = y }
+            if !ink, let s = start { runs.append((s, y - 1)); start = nil }
+        }
+        if let s = start { runs.append((s, img.height - 1)) }
+        print("ink rows @2x: " + runs.map { "\($0.0)–\($0.1)" }.joined(separator: ", "))
+        return
+    }
+
+    if o.stats {
+        // Mean luminance (0…1) of the (cropped) image: a proxy for text ink weight in comparisons.
+        let img = cropped(ours, o.crop)
+        if let px = SnapshotImage.pixels(img) {
+            var sum = 0.0
+            var i = 0
+            while i < px.count {
+                sum += 0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])
+                i += 4
+            }
+            print(String(format: "mean luminance: %.4f", sum / Double(px.count / 4) / 255))
+        }
+        return
     }
 
     if let ref = o.compare {
@@ -179,4 +211,5 @@ func cropped(_ image: CGImage, _ crop: CGRect?) -> CGImage {
     }
 }
 
+SnapshotRenderer.configureTextRendering()
 MainActor.assumeIsolated { run() }

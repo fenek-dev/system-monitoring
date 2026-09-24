@@ -58,12 +58,12 @@ import MonitorModel
 
     @Test func pausedHourIsAGap() async throws {
         let p = MockHistoryProvider(end: Self.end)
-        let calendar = Calendar.current
+        // `HistorySignal` computes day/hour against `ReferenceCalendar` (Europe/London, fixed), not the
+        // host machine's `Calendar.current` — this test must agree, or it would only pass in that TZ.
+        let calendar = ReferenceCalendar.calendar
         let gapDay = calendar.date(byAdding: .day, value: -HistorySignal.pausedGapDaysAgo, to: calendar.startOfDay(for: Self.end))!
-        let gapHourStart = calendar.date(bySettingHour: HistorySignal.pausedGapHour, minute: 5, second: 0, of: gapDay)!
         let outsideGap = calendar.date(bySettingHour: HistorySignal.pausedGapHour + 3, minute: 0, second: 0, of: gapDay)!
         #expect(try await p.total(.cpuUsage, in: DateInterval(start: outsideGap, duration: 60)) != nil)  // sanity: elsewhere works
-        _ = gapHourStart
         let points = try await p.series([.cpuUsage], range: .day,
                                          end: calendar.date(byAdding: .day, value: 1, to: gapDay)!, bucket: .seconds(300))
         let gapBucketIndex = HistorySignal.pausedGapHour * 12   // 12 five-minute buckets/hour
@@ -89,7 +89,7 @@ import MonitorModel
 
     @Test func eventsIncludeTheArtboardStoryline() async throws {
         let p = MockHistoryProvider(end: Self.end)
-        let today = Calendar.current.startOfDay(for: Self.end)
+        let today = ReferenceCalendar.calendar.startOfDay(for: Self.end)
         let events = try await p.events(in: DateInterval(start: today, end: Self.end))
         #expect(events.contains { $0.label == "Xcode build" })
         #expect(events.contains { $0.label == "FCP export" })

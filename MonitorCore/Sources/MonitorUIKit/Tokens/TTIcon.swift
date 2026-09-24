@@ -140,26 +140,22 @@ public struct TTIconShape: Shape {
     }
 }
 
-/// Rasterized template `NSImage`s of the icons, for places that only accept images (macOS `Menu` labels keep only
-/// Image/Text). Drawn at @2x, black on clear, `isTemplate` so the menu tints them; cached per (name, size).
+/// Icons as `NSImage`s for places that only accept images (macOS `Menu` labels keep only Image/Text). The image is
+/// vector-drawn at whatever scale it is displayed (drawing handler), pre-colored: the borderless menu button ignores
+/// tints on template images (a template rendered black in the row-action button). Cached per (name, size, stroke, color).
 @MainActor public enum TTIconImage {
-    private static var cache: [String: NSImage] = [:]
-
-    public static func template(_ name: TTIconName, size: CGFloat = 16, gridStroke: CGFloat = TTStroke.icon) -> NSImage {
-        make(name, size: size, gridStroke: gridStroke, hex: nil)
+    private struct Key: Hashable {
+        let name: TTIconName, size: CGFloat, gridStroke: CGFloat, hex: UInt32
     }
 
-    /// Pre-colored (non-template) image: menu buttons draw it as is, independent of their tint handling.
+    private static var cache: [Key: NSImage] = [:]
+
     public static func colored(_ name: TTIconName, hex: UInt32, size: CGFloat = 16, gridStroke: CGFloat = TTStroke.icon) -> NSImage {
-        make(name, size: size, gridStroke: gridStroke, hex: hex)
-    }
-
-    private static func make(_ name: TTIconName, size: CGFloat, gridStroke: CGFloat, hex: UInt32?) -> NSImage {
-        let key = "\(name.rawValue)@\(size)/\(gridStroke)/\(hex.map { String($0) } ?? "t")"
+        let key = Key(name: name, size: size, gridStroke: gridStroke, hex: hex)
         if let hit = cache[key] { return hit }
         let path = TTIconShape(name).path(in: CGRect(x: 0, y: 0, width: size, height: size))
         let lineWidth = gridStroke * size / 16
-        let color = hex.map { NSColor(hex: $0) } ?? .black
+        let color = NSColor(hex: hex)
         let image = NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.addPath(path.cgPath)
@@ -170,7 +166,6 @@ public struct TTIconShape: Shape {
             ctx.strokePath()
             return true
         }
-        image.isTemplate = hex == nil
         cache[key] = image
         return image
     }

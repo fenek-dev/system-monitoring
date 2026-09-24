@@ -2,8 +2,9 @@ import Foundation
 
 /// Pure SMC value decoding (docs/findings/smc.md). Byte order depends on the key family:
 /// - `flt ` (Float32): little-endian, always.
-/// - integers of battery/charger keys (`B<digit>…`, `CH…`): LITTLE-endian (verified vs ioreg: B0CT, B0DC, CHBV).
-/// - all other integers and fixed-point (`sp78`, `fpe2`, fan/temp families): big-endian.
+/// - integers AND fixed-point (`sp78`, `fpe2`, `fp88`) follow the key family's byte order:
+///   battery/charger keys (`B<digit>…`, `CH…`) are LITTLE-endian (verified vs ioreg: B0CT, B0DC, CHBV);
+///   every other family (fans, temps, `#KEY`, …) is big-endian.
 enum SMCDecoder {
     enum ByteOrder: Sendable, Equatable { case big, little }
 
@@ -41,7 +42,7 @@ enum SMCDecoder {
         switch type {
         case "flt ":
             v = unsigned(bytes, 4, .little).map { Double(Float(bitPattern: UInt32(truncatingIfNeeded: $0))) }
-        // `{ Double($0) }`, never `.map(Double.init)`: on UInt64 that resolves to Double(bitPattern:).
+        // `{ Double($0) }`, never a bare Double-init map: on UInt64 that resolves to Double(bitPattern:).
         case "ui8 ", "flag": v = unsigned(bytes, 1, order).map { Double($0) }
         case "ui16": v = unsigned(bytes, 2, order).map { Double($0) }
         case "ui32": v = unsigned(bytes, 4, order).map { Double($0) }

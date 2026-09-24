@@ -8,11 +8,15 @@ import UniformTypeIdentifiers
 @MainActor public enum SnapshotRenderer {
     public enum Path: Sendable { case imageRenderer, hosting }
 
+    /// See `TTTextRendering.configure()`.
+    public nonisolated static func configureTextRendering() { TTTextRendering.configure() }
+
     public static let locale = Locale(identifier: "en_US")
     public static let timeZone = TimeZone(identifier: "Europe/London")!
 
     public static func render<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2, path: Path = .hosting) -> CGImage? {
-        switch path {
+        configureTextRendering()
+        return switch path {
         case .imageRenderer: imageRenderer(view, size: size, scale: scale)
         case .hosting: hosting(view, size: size, scale: scale)
         }
@@ -38,26 +42,6 @@ import UniformTypeIdentifiers
             renderer.proposedSize = ProposedViewSize(size)
             renderer.isOpaque = false
             return renderer.cgImage.flatMap(SnapshotImage.normalized)
-        }
-    }
-
-    /// ImageRenderer drawing into our own CGContext, with font smoothing (stem darkening) switchable.
-    /// Diagnostic path for the font-weight comparison against Chrome's grayscale AA (W3 report).
-    public static func imageRendererCG<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2, smoothFonts: Bool) -> CGImage? {
-        TTFormat.$locale.withValue(locale) {
-            let renderer = ImageRenderer(content: prepared(view, size: size))
-            renderer.proposedSize = ProposedViewSize(size)
-            let pw = Int((size.width * scale).rounded()), ph = Int((size.height * scale).rounded())
-            guard let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: SnapshotImage.colorSpace,
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-            ctx.setAllowsFontSmoothing(smoothFonts)
-            ctx.setShouldSmoothFonts(smoothFonts)
-            ctx.setAllowsFontSubpixelPositioning(true)
-            ctx.setShouldSubpixelPositionFonts(true)
-            ctx.scaleBy(x: scale, y: scale)
-            renderer.render { _, draw in draw(ctx) }
-            return ctx.makeImage()
         }
     }
 

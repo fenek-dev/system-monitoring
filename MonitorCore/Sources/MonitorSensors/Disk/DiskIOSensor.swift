@@ -36,7 +36,8 @@ public final class DiskIOSensor: Sensor {
                 readOps: stats.readOps,
                 writeOps: stats.writeOps,
                 readBytes: stats.readBytes,
-                writeBytes: stats.writeBytes
+                writeBytes: stats.writeBytes,
+                isDiskImage: ttIsDiskImageDriver(driver)
             ))
         }
         return (DiskIOReading(drivers: counters), ctx.uptimeNs)
