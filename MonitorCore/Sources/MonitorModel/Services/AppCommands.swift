@@ -8,6 +8,8 @@ public struct AppCommands: Sendable {
     public var setPaused: @MainActor @Sendable (Bool) -> Void
     public var closePopover: @MainActor @Sendable () -> Void
     public var quitTelltale: @MainActor @Sendable () -> Void
+    /// Shows or hides the on-screen overlay and persists the new state (same as the global hotkey).
+    public var toggleOverlay: @MainActor @Sendable () -> Void
 
     public init(
         openDashboard: @escaping @MainActor @Sendable (DashboardPage?) -> Void = { _ in },
@@ -15,7 +17,8 @@ public struct AppCommands: Sendable {
         openSettings: @escaping @MainActor @Sendable () -> Void = {},
         setPaused: @escaping @MainActor @Sendable (Bool) -> Void = { _ in },
         closePopover: @escaping @MainActor @Sendable () -> Void = {},
-        quitTelltale: @escaping @MainActor @Sendable () -> Void = {}
+        quitTelltale: @escaping @MainActor @Sendable () -> Void = {},
+        toggleOverlay: @escaping @MainActor @Sendable () -> Void = {}
     ) {
         self.openDashboard = openDashboard
         self.inspectApp = inspectApp
@@ -23,6 +26,7 @@ public struct AppCommands: Sendable {
         self.setPaused = setPaused
         self.closePopover = closePopover
         self.quitTelltale = quitTelltale
+        self.toggleOverlay = toggleOverlay
     }
 
     /// Every command does nothing.

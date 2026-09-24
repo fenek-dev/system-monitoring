@@ -133,7 +133,8 @@ struct PopoverTests {
                     inspectApp: { k in log.withLock { $0.append("inspect \(k.id)") } },
                     openSettings: { log.withLock { $0.append("settings") } },
                     setPaused: { v in log.withLock { $0.append("paused \(v)") } },
-                    quitTelltale: { log.withLock { $0.append("quitTelltale") } })
+                    quitTelltale: { log.withLock { $0.append("quitTelltale") } },
+                    toggleOverlay: { log.withLock { $0.append("toggleOverlay") } })
     }
 
     @Test func bannerButtonsShowPageAndQuitCulprit() async throws {
@@ -161,8 +162,9 @@ struct PopoverTests {
         ops.openApp(AppKey(kind: .app, id: "com.apple.dt.Xcode"))   // top-consumer click
         ops.setPaused(true)
         ops.openSettings()
+        ops.toggleOverlay()
         #expect(log.withLock { $0 } == ["open overview", "open history", "quitTelltale",
-                                         "inspect com.apple.dt.Xcode", "paused true", "settings"])
+                                         "inspect com.apple.dt.Xcode", "paused true", "settings", "toggleOverlay"])
         // Row double-click / expansion-line clicks are TTPopoverRow's (W3), via the same `appCommands`.
     }
 
@@ -222,6 +224,16 @@ struct PopoverTests {
         assertScreen("popover", scenario: .collecting)
         assertScreen("popover", scenario: .paused)
         assertScreen("popover", scenario: .deviceUnknown)
+    }
+
+    /// Overlay toggle "on": accent glyph + accent-tinted fill (golden `popover-footer-overlay-on`, checked by eye).
+    @Test func footerOverlayOnSnapshot() {
+        let ctx = ScreenFixture.context(.calm)
+        ctx.settings.overlayEnabled = true
+        let size = CGSize(width: 360, height: 48)
+        assertSnapshot(PopoverFooter().padding(.horizontal, 6).frame(width: size.width, height: size.height)
+                        .background(TTColor.bgPopover).telltaleEnvironment(ctx),
+                       size: size, named: "popover-footer-overlay-on")
     }
 
     @Test func expandedSnapshot() {

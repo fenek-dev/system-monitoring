@@ -118,20 +118,25 @@ struct PopoverConsumerSection: View {
     }
 }
 
-/// HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: Open Dashboard (flex), History, Quit Telltale (ADDED).
+/// HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: Open Dashboard (flex), History, Overlay toggle (spec
+/// 2026-09-25 overlay; accent tint while on), Quit Telltale (ADDED).
 struct PopoverFooter: View {
     @Environment(LiveModel.self) private var live
+    @Environment(SettingsStore.self) private var settings: SettingsStore?
     @Environment(\.appCommands) private var commands
     @Environment(\.processActions) private var actions
 
     var body: some View {
         let ops = PopoverActions(commands: commands, actions: actions, live: live)
+        let hotKey = settings?.overlayHotKey ?? .defaultOverlay
         HStack(spacing: 8) {
             Button("Open Dashboard") { ops.openDashboard() }
                 .buttonStyle(TTButtonStyle(.popoverPrimary))
                 .keyboardShortcut("d", modifiers: .command)
             Button("History") { ops.openHistory() }
                 .buttonStyle(TTButtonStyle(.popoverSecondary))
+            TTIconButton(.overlay, label: "Overlay (\(hotKey.display))", variant: .footer,
+                         tint: settings?.overlayEnabled == true ? TTColor.accent : nil) { ops.toggleOverlay() }
             TTIconButton(.quit, label: "Quit Telltale", variant: .footer) { ops.quitTelltale() }
                 .keyboardShortcut("q", modifiers: .command)
         }
