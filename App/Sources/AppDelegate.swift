@@ -16,13 +16,35 @@ import os
     private var visibility: VisibilityWiring!
     private var power: PowerEvents?
     private var termination: TerminationController?
+    /// Held for the process lifetime: one instance per data dir (A-M1 ruling).
+    private var instanceLock: InstanceLock?
+    private var activationObserver: NSObjectProtocol?
     private let log = Logger(subsystem: "dev.telltale", category: "App")
 
+    /// Single instance per data dir: take the lock, or ask the running instance to open its dashboard and exit
+    /// before a second runtime (status item, sampler, store writer) is built.
+    private func claimSingleInstance(_ options: LaunchOptions) {
+        let dir = options.dataDirectory ?? AppEnvironment.defaultDataDirectory()
+        switch InstanceLock.acquire(dataDirectory: dir) {
+        case .acquired(let lock):
+            instanceLock = lock
+        case .heldByAnotherInstance:
+            log.notice("already running on \(dir.path, privacy: .public); activating that instance")
+            InstanceActivation.post(dataDirectory: dir, page: options.openDashboard)
+            exit(0)
+        case .unavailable(let why):
+            log.error("instance lock unavailable (\(why, privacy: .public)); continuing")
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let cmd = LaunchOptions.parse(arguments: ProcessInfo.processInfo.arguments,
-                                         environment: ProcessInfo.processInfo.environment).loginItemCommand {
+        let options = LaunchOptions.parse(arguments: ProcessInfo.processInfo.arguments,
+                                          environment: ProcessInfo.processInfo.environment)
+        if let cmd = options.loginItemCommand {
             runLoginItemCommand(cmd)                                // CLI check; never starts the runtime
         }
+        claimSingleInstance(options)                                // exits if another instance owns the data dir
+        DispatchQueue.global(qos: .utility).async { LiveProcessSampler.pruneReports() }   // [Sample] reports > 1 day
         // Dark per window (panel, dashboard, settings), never app-wide: the status bar button must keep the
         // menu bar's own appearance so `labelColor` in the glyph follows a light or dark menu bar.
         let env = AppEnvironment()
@@ -48,6 +70,10 @@ import os
         power = PowerEvents(willSleep: { env.runtime.systemWillSleep() }, didWake: { env.runtime.systemDidWake() })
         NSApp.mainMenu = mainMenu()
         installTerminationSignal()
+        activationObserver = InstanceActivation.observe(dataDirectory: env.dataDirectory) { [weak self] page in
+            self?.log.notice("second launch → open dashboard")
+            self?.env.commands.openDashboard(page)
+        }
 
         #if DEBUG
         if let level = env.options.statusPreview {

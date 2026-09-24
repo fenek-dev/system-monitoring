@@ -1294,6 +1294,7 @@ struct TTStatusGlyph: View { init(state: AlertState, size: CGFloat = 16, templat
 ### 5.13 App shell decisions (W4)
 
 - `main.swift` + `AppDelegate` (AppKit lifecycle), `.accessory` activation policy (+ `LSUIElement`).
+- Single instance per data dir (ruling): `InstanceLock` (`flock` on `<dataDir>/.instance.lock`) is taken before `AppEnvironment` is built; a second launch posts `InstanceActivation` (distributed notification, object = data dir; the running instance opens its dashboard, optionally the `--open-dashboard` page), yields activation to it and exits.
 - Status item: button image from `StatusGlyphRenderer`; re-armed `withObservationTracking` on `live.alert`; dimmed when paused; one pulse per `pulseToken` change.
 - Popover: **borderless non-activating `NSPanel`** (design: 360 pt dark rounded panel, no arrow). Closes on outside click / Esc / status click. Hosting view created on open, released on close.
 - Dashboard: `NSWindow` 1280×860 (min 1040×700), `.fullSizeContentView`, transparent titlebar, `.darkAqua`, released on close; occlusion/miniaturize → `VisibilityTracker`.
