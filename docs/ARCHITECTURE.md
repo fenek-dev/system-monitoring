@@ -268,8 +268,8 @@ public enum MemorySource: Sendable, Codable, Hashable {
 Grouping (W1 `AppResolver`/`AppGrouper`) — **group by responsible PID**:
 1. `r = responsiblePID ?? pid`; path of `r` (cached per `ProcessID`; `nil` if EPERM).
 2. Path contains `.app/` → outermost `.app` → `AppKey(.app, bundleID ?? bundlePath)`, name `CFBundleDisplayName ?? CFBundleName ?? filename`.
-3. Else, owned by the current uid and not under `/System/`, `/usr/`, `/sbin/`, `/bin/`, `/Library/Apple/` → `AppKey(.process, path ?? p_comm)` (ruling: user-owned non-bundle executables get their own group).
-4. Else → `.system` ("System").
+3. Else (bundle-less, any uid — daemons like WindowServer, kernel_task, mds_stores, and user executables incl. `/usr/local/*`, Homebrew) → `AppKey(.process, path ?? p_comm)`, name = executable name (ruling 2026-09-24, DESIGN §3.12: bundle-less daemons are their own rows). If the responsible pid's path is unreadable (EPERM) use its `p_comm` from `KERN_PROC_ALL`; never fall back to the child's path.
+4. Else (no path and no name) → `.system` ("System").
 5. Synthetic coalition rows: app of the coalition leader via rules 1–4; no leader → `.system`.
 6. AGX clients whose creator pid is gone → `.system`.
 
