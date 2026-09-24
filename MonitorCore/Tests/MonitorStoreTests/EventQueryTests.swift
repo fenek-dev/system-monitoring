@@ -34,6 +34,19 @@ import Testing
         #expect(got.map(\.label) == ["open", "straddles-start", "inside"])
     }
 
+    @Test func windowIsHalfOpenAtBothEdges() async throws {
+        let store = try store()
+        let window = DateInterval(start: T.t0, duration: 3_600)
+        await store.append(RecordBatch(events: [
+            HistoryEvent(kind: .systemSleep, start: T.t0 - 60, end: T.t0, label: "ends-at-start"),
+            HistoryEvent(kind: .systemSleep, start: T.t0 - 60, end: T.t0 + 0.001, label: "ends-just-after-start"),
+            HistoryEvent(kind: .systemSleep, start: T.t0 + 3_600, end: nil, label: "starts-at-end"),
+            HistoryEvent(kind: .systemSleep, start: T.t0 + 3_599.999, end: nil, label: "starts-just-before-end"),
+        ]))
+        try await store.flush()
+        #expect(try await store.events(in: window).map(\.label) == ["ends-just-after-start", "starts-just-before-end"])
+    }
+
     @Test func unknownStoredKindIsSkipped() async throws {
         let store = try store()
         await store.append(RecordBatch(events: [HistoryEvent(kind: .appEpisode, start: T.t0, label: "ok")]))

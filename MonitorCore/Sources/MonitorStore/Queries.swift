@@ -222,14 +222,15 @@ enum Queries {
 
     // MARK: Events, coverage
 
-    /// Events overlapping [from, to) (open events extend to now), by start. Rows with an unknown kind
+    /// Events whose [start, end) overlaps [from, to) (open events extend to now), by start. An event ending
+    /// exactly at `from` or starting exactly at `to` is outside. Rows with an unknown kind
     /// (written by a newer version) are skipped.
     static func events(_ db: Database, window: Window) throws -> [HistoryEvent] {
         let rows = try Row.fetchCursor(db, sql: """
             SELECT e.id, e.kind, e.start, e."end", e.level, e.metric, e.peak, e.label,
                    app.key_kind, app.key_id, app.name, app.bundle_path
             FROM event AS e LEFT JOIN app ON app.id = e.app_id
-            WHERE e.start < ? AND (e."end" IS NULL OR e."end" >= ?)
+            WHERE e.start < ? AND (e."end" IS NULL OR e."end" > ?)
             ORDER BY e.start, e.id
             """, arguments: [window.to, window.from])
         var result: [HistoryEvent] = []

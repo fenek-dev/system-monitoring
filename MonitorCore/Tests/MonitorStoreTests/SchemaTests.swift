@@ -1,5 +1,6 @@
 import Foundation
 import MonitorModel
+import os
 import Testing
 @testable import MonitorStore
 
@@ -62,6 +63,19 @@ import Testing
             #expect(try await store.intValue("PRAGMA user_version") == Schema.version)
         }
         #expect(Set(counts).count == 1)
+    }
+
+    /// Regression (flaky reopen tests): opening while another store holds the write lock on the same file
+    /// used to fail with SQLITE_BUSY from `PRAGMA auto_vacuum` in prepareDatabase.
+    @Test func openWaitsForAnotherConnectionsWriteLock() async throws {
+        let url = T.tempDB()
+        let first = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        let locked = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await first.holdWriteLock(seconds: 0.3) { locked.withLock { $0 = true } } }
+        while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+        let second = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        #expect(try await second.intValue("PRAGMA user_version") == Schema.version)
+        try await holder.value
     }
 
     @Test func filePragmas() async throws {

@@ -32,12 +32,18 @@ enum StoreDatabase {
     private static func configuration() -> Configuration {
         var config = Configuration()
         config.label = "dev.telltale.history"
+        // Another connection to the same file (a previous store still finishing a flush or maintenance pass,
+        // a second app instance) must make us wait, not fail the open with SQLITE_BUSY.
+        config.busyMode = .timeout(5)
         config.prepareDatabase { db in
             // Writer connection only: DatabasePool gives its reader connections a copy of this configuration
             // with `readonly = true` (GRDB `DatabasePool.readerConfiguration`); the in-memory queue is the writer.
-            // prepareDatabase runs before GRDB switches the pool to WAL, and auto_vacuum only takes effect on a
-            // fresh file before the first table exists (a no-op afterwards).
-            if !db.configuration.readonly { try db.execute(sql: "PRAGMA auto_vacuum = INCREMENTAL") }
+            // prepareDatabase runs before GRDB switches the pool to WAL. auto_vacuum only takes effect on an
+            // empty file, so it is set only then (page_count 0): setting it on an existing file would take a
+            // write lock for nothing.
+            if !db.configuration.readonly, try Int.fetchOne(db, sql: "PRAGMA page_count") == 0 {
+                try db.execute(sql: "PRAGMA auto_vacuum = INCREMENTAL")
+            }
             try db.execute(sql: "PRAGMA synchronous = NORMAL; PRAGMA cache_size = -2000")
         }
         return config

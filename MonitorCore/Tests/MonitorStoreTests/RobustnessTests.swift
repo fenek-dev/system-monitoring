@@ -42,6 +42,17 @@ import Testing
         #expect(await store.maintenanceRuns == runs)
     }
 
+    @Test func appendAfterShutdownIsDroppedNotBuffered() async throws {
+        let store = try HistoryStore(location: .inMemory, config: T.config(TestClock()))
+        await store.append(RecordBatch(record: fullRecord(T.t0)))
+        try await store.shutdown()
+        await store.append(RecordBatch(record: fullRecord(T.t0 + 5), events: [HistoryEvent(start: T.t0)]))
+        #expect(await store.pendingRecordCount == 0)
+        try await store.flush()
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 1)
+        #expect(try await store.intValue("SELECT COUNT(*) FROM event") == 0)
+    }
+
     @Test func flushOf120BufferedRecordsIsFast() async throws {
         let store = try HistoryStore(location: .file(T.tempDB()), config: T.config(TestClock(), flushMaxRecords: 1_000))
         for i in 0..<120 { await store.append(RecordBatch(record: fullRecord(T.t0 + Double(i)))) }

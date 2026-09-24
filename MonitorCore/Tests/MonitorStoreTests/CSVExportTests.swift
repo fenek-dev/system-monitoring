@@ -67,6 +67,19 @@ import Testing
         #expect(lines[2].hasPrefix("2026-09-21T14:01:00Z,"))
     }
 
+    @Test func failedExportKeepsTheExistingFileAndLeavesNoTemp() async throws {
+        let store = try await hourStore()
+        let dir = T.tempDir()
+        let url = dir.appendingPathComponent("export.csv")
+        try "previous export\n".write(to: url, atomically: true, encoding: .utf8)
+        try await store.execute("DROP TABLE system_raw")                   // the query fails after the temp exists
+        await #expect(throws: (any Error).self) {
+            _ = try await store.exportCSV(range: .hour, end: T.t0 + 3_600, to: url)
+        }
+        #expect(try String(contentsOf: url, encoding: .utf8) == "previous export\n")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["export.csv"])
+    }
+
     @Test func unwritableDestinationThrows() async throws {
         let store = try await hourStore()
         let url = URL(fileURLWithPath: "/nonexistent-telltale-dir/export.csv")

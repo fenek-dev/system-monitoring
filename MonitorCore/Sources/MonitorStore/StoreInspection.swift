@@ -30,6 +30,16 @@ extension HistoryStore {
         try await writer.write { db in try Retention.run(db, cutoffs) }
     }
 
+    /// Holds the write lock (a real write in an open transaction) for `seconds`; calls `locked` once held.
+    func holdWriteLock(seconds: TimeInterval, locked: @escaping @Sendable () -> Void) async throws {
+        try await writer.write { db in
+            try db.execute(sql: "INSERT INTO app(key_kind, key_id, name) VALUES ('other', 'lock-holder', '')")
+            locked()
+            Thread.sleep(forTimeInterval: seconds)
+            try db.execute(sql: "DELETE FROM app WHERE key_id = 'lock-holder'")
+        }
+    }
+
     func execute(_ sql: String) async throws {
         try await writer.write { db in try db.execute(sql: sql) }
     }

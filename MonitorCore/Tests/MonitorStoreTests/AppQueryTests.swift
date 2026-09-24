@@ -82,6 +82,26 @@ import Testing
         #expect(memory.first?.average == 1e9)
     }
 
+    @Test func longTopAppsIntervalsReadMinuteRollupsPlusRawTail() async throws {
+        let store = try await seeded()
+        let twoHours = DateInterval(start: T.t0 - 3_600, duration: 7_200)
+        // Nothing rolled up yet: the raw tail answers everything.
+        let fromTail = try await store.topApps(.cpu, in: twoHours, limit: 2)
+        #expect(fromTail.map(\.identity.key) == [a.key, b.key])
+        #expect(fromTail[1].peak == 20)
+        // First 30 min rolled up: those rows come from app_1m (B's peak is now a 1 m average), the rest from raw.
+        try await store.maintain(now: T.t0 + 1_800)
+        try await store.execute("DELETE FROM app_raw WHERE ts < \((T.t0 + 1_800).unixMs)")   // prove 1 m is read
+        let mixed = try await store.topApps(.cpu, in: twoHours, limit: 2)
+        #expect(mixed.map(\.identity.key) == [a.key, b.key])
+        #expect(mixed[0].average == 50)
+        #expect(abs(mixed[1].average - 10) < 1e-9)
+        #expect(abs((mixed[0].total ?? 0) - 50 * 3_600) < 1e-6)
+        #expect(mixed[1].peak == 20)                                         // raw-tail rows still hold 20
+        // A 1 h interval stays on raw.
+        #expect(try await store.topApps(.cpu, in: DateInterval(start: T.t0 + 1_800, duration: 1_800), limit: 2)[1].peak == 20)
+    }
+
     @Test func systemTotalAndPeak() async throws {
         let store = try await seeded()
         #expect(try await store.total(.netRx, in: hour) == 1_000 * 3_600)

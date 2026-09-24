@@ -101,7 +101,13 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
 
     /// Buffers; on `flushMaxRecords` or `flushInterval` it hands the buffer to the ordered write chain and returns
     /// without waiting for the write. Write failures drop the batch and log a fault (ARCHITECTURE §6).
+    /// After `shutdown()` the store accepts nothing: the batch is dropped with a fault log (never buffered,
+    /// since no later flush would write it).
     public func append(_ batch: RecordBatch) async {
+        guard !isShutDown else {
+            StoreDatabase.log.fault("append after shutdown: dropped \(batch.record == nil ? 0 : 1) record, \(batch.events.count) events")
+            return
+        }
         if let record = batch.record { pendingRecords.append(record) }
         pendingEvents.append(contentsOf: batch.events)
         let now = config.now()
@@ -253,7 +259,10 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     /// Apps (not `.other`) ranked by average over `interval` (absent samples = 0). `peak` is the highest stored
     /// value (bucket average on rollup levels); `total` = ∫ value dt in value·seconds, nil for memory.
     public func topApps(_ metric: AppMetric, in interval: DateInterval, limit: Int) async throws -> [AppAggregate] {
-        let level = level(forIntervalStart: interval.start)
+        // Intervals over an hour read 1 m rollups (+ the raw tail past the newest rolled bucket) instead of raw:
+        // ~60× fewer rows. Edges snap to whole minutes; `peak` becomes the highest 1 m average.
+        let byAge = level(forIntervalStart: interval.start)
+        let level = interval.duration > Self.topAppsRawLimit ? Level.coarser(byAge, .minute) : byAge
         let window = Window(from: interval.start.unixMs, to: interval.end.unixMs)
         let totals = try await writer.read { db in
             try Queries.appTotals(db, metric: metric.rawValue, level: level, window: window)
@@ -264,6 +273,9 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
             .map { AppAggregate(identity: $0.identity, average: $0.average, peak: $0.peak,
                                 total: metric == .memory ? nil : $0.integral) }
     }
+
+    /// Longest `topApps` interval answered from raw rows.
+    static let topAppsRawLimit: TimeInterval = 3_600
 
     /// ∫ value dt over `interval` (value·seconds, e.g. bytes for B/s, joules for W); nil without data.
     public func total(_ metric: HistoryMetric, in interval: DateInterval) async throws -> Double? {
