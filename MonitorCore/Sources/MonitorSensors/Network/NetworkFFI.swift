@@ -36,14 +36,13 @@ enum NetworkFFI {
         return bytes
     }
 
-    /// Replaces the (32-bit-truncated) IFLIST2 byte counters of `raw` with IFMIB 64-bit ones where available.
-    static func overlay64BitCounters(_ raw: inout [RawInterface]) {
-        for i in raw.indices {
-            guard let b = ifmibBytes(index: raw[i].index), let c = b.withUnsafeBytes({ InterfaceParse.ifmib($0) }) else { continue }
-            raw[i].rxBytes = c.rx
-            raw[i].txBytes = c.tx
-            raw[i].baudRate = c.baudRate
+    /// IFMIB 64-bit counters for each row's index (missing on failure).
+    static func ifmibCounters(_ rows: [RawInterface]) -> [UInt16: IFCounters] {
+        var out: [UInt16: IFCounters] = [:]
+        for r in rows {
+            if let b = ifmibBytes(index: r.index), let c = b.withUnsafeBytes({ InterfaceParse.ifmib($0) }) { out[r.index] = c }
         }
+        return out
     }
 
     /// `NET_RT_FLAGS` + `RTF_GATEWAY`, IPv4 only.
@@ -67,6 +66,22 @@ enum NetworkFFI {
         let routes = (try? defaultRoutes()) ?? []
         let index = primary.map { if_nametoindex($0) }.flatMap { $0 == 0 ? nil : UInt16(truncatingIfNeeded: $0) }
         return RouteParse.pick(routes, primaryIndex: index)?.gateway ?? scRouter
+    }
+
+    /// Latency target: router of the physical primary interface (`RouteParse.physicalRouter`).
+    static func physicalRouter(_ store: SCDynamicStore?) -> RouterChoice {
+        let g = globalIPv4(store)
+        let routes = (try? defaultRoutes()) ?? []
+        var names: [UInt16: String] = [:]
+        for r in routes where names[r.interfaceIndex] == nil {
+            var buf = [CChar](repeating: 0, count: Int(IF_NAMESIZE) + 1)
+            let n = buf.withUnsafeMutableBufferPointer { b -> String? in
+                guard let base = b.baseAddress, if_indextoname(UInt32(r.interfaceIndex), base) != nil else { return nil }
+                return String(cString: base)
+            }
+            if let n { names[r.interfaceIndex] = n }
+        }
+        return RouteParse.physicalRouter(routes, names: names, primary: g.primary, scRouter: g.router)
     }
 
     /// Hardware interfaces SystemConfiguration knows (bsd name → type, localized name).

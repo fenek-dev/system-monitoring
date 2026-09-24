@@ -6,8 +6,9 @@ import os
 ///
 /// `name(for:)` only reads the cache under a lock: a hit returns the name, a miss returns nil and queues an async
 /// `getnameinfo` (at most `maxConcurrent` in flight, `maxPending` queued; extra requests are dropped and retried on a
-/// later call). Results — including "no name" — are cached LRU (512) with a 10-minute TTL. Lookups only happen
-/// while something asks, i.e. while connections are shown (never in background).
+/// later call). Names and "no PTR record" (EAI_NONAME) are cached LRU (512) for 10 minutes; transient failures
+/// (EAI_AGAIN, offline, …) only for 30 s. Lookups only happen while something asks, i.e. while connections are
+/// shown (never in background).
 public final class ReverseDNS: Sendable {
     struct State: Sendable {
         var cache: ReverseDNSCache
@@ -16,17 +17,20 @@ public final class ReverseDNS: Sendable {
 
     private let queue = DispatchQueue(label: "dev.telltale.rdns", qos: .utility, attributes: .concurrent)
     private let lock: OSAllocatedUnfairLock<State>
-    private let resolve: @Sendable (String) -> String?
+    private let resolve: @Sendable (String) -> ReverseDNSResult
     private let now: @Sendable () -> UInt64
+    private let failureTTLNs: UInt64
 
     public convenience init() {
         self.init(resolve: ReverseDNSLookup.hostName, now: W6cClock.uptimeNs)
     }
 
-    init(capacity: Int = 512, ttlNs: UInt64 = 600_000_000_000, maxConcurrent: Int = 4, maxPending: Int = 128,
-         resolve: @escaping @Sendable (String) -> String?, now: @escaping @Sendable () -> UInt64) {
+    init(capacity: Int = 512, ttlNs: UInt64 = 600_000_000_000, failureTTLNs: UInt64 = 30_000_000_000,
+         maxConcurrent: Int = 4, maxPending: Int = 128,
+         resolve: @escaping @Sendable (String) -> ReverseDNSResult, now: @escaping @Sendable () -> UInt64) {
         self.resolve = resolve
         self.now = now
+        self.failureTTLNs = failureTTLNs
         lock = OSAllocatedUnfairLock(initialState: State(
             cache: ReverseDNSCache(capacity: capacity, ttlNs: ttlNs),
             jobs: ReverseDNSJobs(maxConcurrent: maxConcurrent, maxPending: maxPending)
@@ -66,10 +70,15 @@ public final class ReverseDNS: Sendable {
         }
         for address in started {
             queue.async { [self] in
-                let name = resolve(address)
+                let result = resolve(address)
                 let t = now()
+                let failureTTL = failureTTLNs
                 lock.withLock { s in
-                    s.cache.store(address, name: name, nowNs: t)
+                    switch result {
+                    case .name(let n): s.cache.store(address, name: n, nowNs: t)
+                    case .noName: s.cache.store(address, name: nil, nowNs: t)
+                    case .failed: s.cache.store(address, name: nil, nowNs: t, ttlNs: failureTTL)
+                    }
                     s.jobs.finish(address)
                 }
                 pump()
@@ -115,9 +124,10 @@ struct ReverseDNSCache: Sendable {
         return .hit(e.name)
     }
 
-    mutating func store(_ address: String, name: String?, nowNs: UInt64) {
+    /// `ttlNs` overrides the cache's TTL for this entry (short-lived negative results).
+    mutating func store(_ address: String, name: String?, nowNs: UInt64, ttlNs ttl: UInt64? = nil) {
         useCounter += 1
-        let (exp, overflow) = nowNs.addingReportingOverflow(ttlNs)
+        let (exp, overflow) = nowNs.addingReportingOverflow(ttl ?? ttlNs)
         entries[address] = Entry(name: name, expiresNs: overflow ? .max : exp, lastUse: useCounter)
         while entries.count > capacity, let lru = entries.min(by: { $0.value.lastUse < $1.value.lastUse })?.key {
             entries[lru] = nil
@@ -184,9 +194,9 @@ enum ReverseDNSLookup {
         return nil
     }
 
-    /// Blocking PTR lookup (runs on the ReverseDNS queue only). nil when there is no name.
-    @Sendable static func hostName(_ address: String) -> String? {
-        guard let sa = sockaddrBytes(address), sa.count <= MemoryLayout<sockaddr_storage>.size else { return nil }
+    /// Blocking PTR lookup (runs on the ReverseDNS queue only).
+    @Sendable static func hostName(_ address: String) -> ReverseDNSResult {
+        guard let sa = sockaddrBytes(address), sa.count <= MemoryLayout<sockaddr_storage>.size else { return .noName }
         var storage = sockaddr_storage()
         withUnsafeMutableBytes(of: &storage) { dst in
             for (i, b) in sa.enumerated() { dst[i] = b }
@@ -199,8 +209,20 @@ enum ReverseDNSLookup {
                 }
             }
         }
-        guard rc == 0 else { return nil }
-        let name = host.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
-        return name.isEmpty || name == address ? nil : name
+        return result(rc: rc, host: host.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }, address: address)
     }
+
+    /// Classifies a `getnameinfo` outcome: only EAI_NONAME is a definitive "no name".
+    static func result(rc: Int32, host: String, address: String) -> ReverseDNSResult {
+        guard rc == 0 else { return rc == EAI_NONAME ? .noName : .failed }
+        return host.isEmpty || host == address ? .noName : .name(host)
+    }
+}
+
+enum ReverseDNSResult: Sendable, Equatable {
+    case name(String)
+    /// Definitive: no PTR record (cached 10 min).
+    case noName
+    /// Transient (EAI_AGAIN, offline, timeout): cached briefly.
+    case failed
 }
