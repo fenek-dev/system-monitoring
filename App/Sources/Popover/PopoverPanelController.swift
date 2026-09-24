@@ -16,6 +16,7 @@ final class PopoverPanel: NSPanel {
 final class PopoverPanelController: NSObject {
     private let env: AppEnvironment
     private let anchor: @MainActor () -> NSRect?
+    private let anchorScreen: @MainActor () -> NSScreen?
     private let onVisibilityChange: @MainActor (Bool) -> Void
     private let shortcuts: @MainActor (NSEvent) -> Bool
 
@@ -29,10 +30,12 @@ final class PopoverPanelController: NSObject {
     /// `shortcuts` handles ⌘Q/⌘,/⌘D while the panel is key (the app is not active, so the main menu does not
     /// see them); return true when consumed.
     init(env: AppEnvironment, anchor: @escaping @MainActor () -> NSRect?,
+         anchorScreen: @escaping @MainActor () -> NSScreen?,
          onVisibilityChange: @escaping @MainActor (Bool) -> Void,
          shortcuts: @escaping @MainActor (NSEvent) -> Bool) {
         self.env = env
         self.anchor = anchor
+        self.anchorScreen = anchorScreen
         self.onVisibilityChange = onVisibilityChange
         self.shortcuts = shortcuts
     }
@@ -142,9 +145,7 @@ final class PopoverPanelController: NSObject {
     /// AppKit may resize the panel to the hosting controller's preferred size after we placed it (origin kept):
     /// pull it back inside the visible frame (8 pt) without re-running layout.
     private func reclamp() {
-        guard let panel, !placing else { return }
-        let visible = (anchorAndScreen().1 ?? panel.screen ?? NSScreen.main)?.visibleFrame
-        guard let visible else { return }
+        guard let panel, !placing, let visible = anchorAndScreen().1?.visibleFrame else { return }
         let c = PopoverPlacement.clamp(panel.frame, visibleFrame: visible)
         if c != panel.frame {
             placing = true
@@ -154,12 +155,10 @@ final class PopoverPanelController: NSObject {
         panel.invalidateShadow()
     }
 
-    /// The status button's rect and the screen its window is on (nil rect when the item is hidden).
+    /// The status button's rect (nil when the item is hidden) and the screen its window is on
+    /// (`button.window.screen`; `NSScreen.main` only before the status item window exists).
     private func anchorAndScreen() -> (NSRect?, NSScreen?) {
-        let a = anchor()
-        let byPoint = a.flatMap { a in NSScreen.screens.first { $0.frame.contains(NSPoint(x: a.midX, y: a.midY)) } }
-        let screen = byPoint ?? NSScreen.main
-        return (byPoint == nil ? nil : a, screen)
+        (anchor(), anchorScreen() ?? NSScreen.main)
     }
 
     private var placing = false

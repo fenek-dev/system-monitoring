@@ -67,13 +67,10 @@ public enum ScreenCatalog {
                             appCommands: .noop, isSnapshot: true, now: MockDataProvider.referenceDate)
     }
 
-    /// Fresh default settings on a scratch suite of its own (never the user's defaults; parallel tests never
-    /// share one). Nothing is written unless a test mutates settings.
+    /// Fresh default settings held in memory only (`InMemoryDefaults`): no plist, nothing shared between
+    /// concurrent test processes or worktrees, nothing left behind.
     @MainActor public static func snapshotSettings() -> SettingsStore {
-        let name = "dev.telltale.Telltale.snapshot.\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: name) ?? .standard
-        d.removePersistentDomain(forName: name)
-        return SettingsStore(defaults: d)
+        SettingsStore(defaults: InMemoryDefaults())
     }
 
     @MainActor static func dashboard(_ page: DashboardPage, scenario: MockScenario) -> AnyView {

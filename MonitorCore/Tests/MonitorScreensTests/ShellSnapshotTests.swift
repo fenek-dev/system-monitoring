@@ -11,10 +11,12 @@ import Testing
 /// `TELLTALE_RECORD=1 scripts/test.sh ShellSnapshotTests` after the visual check against Main/StatusIcon.
 @Suite("Shell snapshots (ShellSnapshotTests)", .enabled { await ScreenFixture.snapshotsAvailable }) @MainActor
 struct ShellSnapshotTests {
-    @Test(arguments: [MockScenario.calm, .paused])
-    func sidebar(_ s: MockScenario) {
-        assertSnapshot(Sidebar().frame(height: ScreenSize.sidebar.height).screenEnvironment(s),
-                       size: ScreenSize.sidebar, named: "shell-sidebar-\(s.rawValue)")
+    /// Calm only: DESIGN §3.15 "Paused" changes charts, the popover status, the Overview subtitle and the pause
+    /// glyphs, not the sidebar (it keeps the last values), so a paused sidebar golden would duplicate this one.
+    /// Paused is covered by `shell-header-overview-paused`.
+    @Test func sidebar() {
+        assertSnapshot(Sidebar().frame(height: ScreenSize.sidebar.height).screenEnvironment(.calm),
+                       size: ScreenSize.sidebar, named: "shell-sidebar-calm")
     }
 
     @Test(arguments: [DashboardPage.overview, .processes, .history])

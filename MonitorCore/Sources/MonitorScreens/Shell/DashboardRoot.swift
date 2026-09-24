@@ -9,10 +9,13 @@ import SwiftUI
 public struct DashboardRoot: View {
     @Environment(NavigationModel.self) private var nav
     @State private var headerConfig = PageHeaderConfig()
-    /// Window-level confirm dialog (DESIGN §2.26), offered to pages as `\.presentConfirmDialog`.
-    @State private var dialogs = ConfirmDialogHost()
+    /// Window-level confirm dialog (DESIGN §2.26), offered to pages as `\.presentConfirmDialog`. The window
+    /// controller passes its own host so it can cancel a pending dialog when the window closes.
+    @State private var dialogs: ConfirmDialogHost
 
-    public init() {}
+    public init(dialogs: ConfirmDialogHost = ConfirmDialogHost()) {
+        _dialogs = State(initialValue: dialogs)
+    }
 
     public var body: some View {
         HStack(spacing: 0) {
@@ -34,7 +37,10 @@ public struct DashboardRoot: View {
         .frame(minWidth: ShellStyle.dashboardMinSize.width, minHeight: ShellStyle.dashboardMinSize.height)
         .background(ShellStyle.bgWindow)
         .ignoresSafeArea()
-        .onChange(of: nav.page) { headerConfig = PageHeaderConfig() }
+        .onChange(of: nav.page) {
+            headerConfig = PageHeaderConfig()
+            dialogs.cancel()                                     // a dialog belongs to the page that asked
+        }
         .onDisappear { dialogs.cancelAll() }                     // window closed: pending confirm → false
     }
 

@@ -20,10 +20,14 @@ import Testing
     }
 }
 
-@Suite("Shell termination") @MainActor
+@Suite("Shell termination", .serialized) @MainActor
 struct ShellTerminationTests {
     /// Generous: parallel screen suites can hold the main actor for seconds (render-heavy catalog tests).
-    private func waitForReply(_ log: () -> [String], timeout: Duration = .seconds(30)) async {
+    /// Main-actor scheduling allowance on top of a timeout (other suites share the main actor; the render-heavy
+    /// catalog test yields between entries).
+    private let slack: Duration = .seconds(3)
+
+    private func waitForReply(_ log: () -> [String], timeout: Duration = .seconds(10)) async {
         let end = ContinuousClock.now + timeout
         while !log().contains("reply"), ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(5)) }
     }
@@ -57,14 +61,14 @@ struct ShellTerminationTests {
         #expect(rt.events == ["shutdown.begin", "shutdown.cancelled", "reply"]
             || rt.events == ["shutdown.begin", "reply", "shutdown.cancelled"])
         #expect(t.phase == .done(timedOut: true))
-        #expect(elapsed >= .milliseconds(80) && elapsed < .seconds(30))   // bounded by the timeout, not 1 h
+        #expect(elapsed >= .milliseconds(80) && elapsed < .milliseconds(80) + slack)   // the timeout, not 1 h
     }
 
     @Test func timerIsCancelledWhenShutdownWins() async {
         let start = ContinuousClock.now
         let ok = await TerminationController.run({}, timeout: .seconds(3600))
         #expect(ok)
-        #expect(ContinuousClock.now - start < .seconds(30))                // not the 1 h timer
+        #expect(ContinuousClock.now - start < slack)                     // not the 1 h timer
     }
 
     @Test func secondRequestIsAbsorbed() async {

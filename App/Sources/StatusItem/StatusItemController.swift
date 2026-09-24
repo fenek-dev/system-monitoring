@@ -47,6 +47,9 @@ final class StatusItemController: NSObject {
 
     /// Screen rect of the button (popover anchor); nil when the item is hidden (e.g. behind the notch on a full
     /// menu bar: the window exists but is occluded), so the popover falls back to a centered placement.
+    /// The screen the status item lives on (popover placement), also when the item itself is occluded.
+    var buttonScreen: NSScreen? { item.button?.window?.screen }
+
     var buttonScreenFrame: NSRect? {
         guard let b = item.button, let w = b.window, w.occlusionState.contains(.visible) else { return nil }
         return w.convertToScreen(b.convert(b.bounds, to: nil))

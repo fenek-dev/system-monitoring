@@ -106,6 +106,13 @@ struct ShellVisibilityTests {
         let grown = CGRect(x: f.minX, y: f.minY, width: 400, height: 600)
         let c = PopoverPlacement.clamp(grown, visibleFrame: visible)
         #expect(c.maxX == CGFloat(1432) && c.maxY == CGFloat(867))
+        // tall content grown by AppKit: height capped (visible − 40), top still 8 below the menu bar
+        let tall = PopoverPlacement.clamp(CGRect(x: f.minX, y: -900, width: 372, height: 2000), visibleFrame: visible)
+        #expect(tall.height == CGFloat(835) && tall.maxY == CGFloat(867) && tall.minY == CGFloat(32))
+        // tiny visible frame: 100-pt floor, bottom clamped to the visible minY
+        let tinyVisible = CGRect(x: 0, y: 40, width: 1440, height: 90)
+        let tiny = PopoverPlacement.clamp(CGRect(x: 100, y: 0, width: 360, height: 478), visibleFrame: tinyVisible)
+        #expect(tiny.height == CGFloat(100) && tiny.minY == CGFloat(40))
         // wider than the screen → pinned left
         let huge = PopoverPlacement.frame(anchor: CGRect(x: 100, y: 875, width: 20, height: 25),
                                           content: CGSize(width: 2000, height: 478), visibleFrame: visible)

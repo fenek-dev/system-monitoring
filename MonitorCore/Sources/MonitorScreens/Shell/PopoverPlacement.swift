@@ -7,8 +7,11 @@ import CoreGraphics
 public enum PopoverPlacement {
     public static let margin: CGFloat = 8
 
+    /// Height cap: visible height − 40 (never below 100).
+    public static func maxHeight(_ visibleFrame: CGRect) -> CGFloat { max(visibleFrame.height - 40, 100) }
+
     public static func frame(anchor: CGRect, content: CGSize, visibleFrame: CGRect) -> CGRect {
-        let h = min(content.height, max(visibleFrame.height - 40, 100))
+        let h = min(content.height, maxHeight(visibleFrame))
         let w = content.width
         let top = visibleFrame.maxY - margin                             // menu bar bottom = visibleFrame top
         var x = anchor.midX - w / 2
@@ -17,12 +20,16 @@ public enum PopoverPlacement {
         return CGRect(x: x.rounded(.down), y: (top - h).rounded(), width: w, height: h)
     }
 
-    /// Re-clamps an existing frame (after AppKit resized the panel to its content) without moving the top edge.
+    /// Re-clamps an existing frame (after AppKit resized the panel to its content): height capped like `frame`,
+    /// horizontally inside the margins, the top edge pinned 8 below the menu bar (the popover hangs from it), and
+    /// never below the visible bottom. y is derived from the top.
     public static func clamp(_ frame: CGRect, visibleFrame: CGRect) -> CGRect {
         var f = frame
+        f.size.height = min(f.height, maxHeight(visibleFrame))
         f.origin.x = min(f.origin.x, visibleFrame.maxX - margin - f.width)
         f.origin.x = max(f.origin.x, visibleFrame.minX + margin)
-        if f.maxY > visibleFrame.maxY - margin { f.origin.y = visibleFrame.maxY - margin - f.height }
+        let top = visibleFrame.maxY - margin
+        f.origin.y = max(top - f.height, visibleFrame.minY)
         return f
     }
 }
