@@ -16,6 +16,9 @@ final class AppEnvironment {
     /// Crash-canary `UserDefaults` suite (nil = `.standard`).
     let canarySuite: String?
     let navigation = NavigationModel()
+    /// The store opens in the background: true until `runtime.historyReady()` resolves it (observed by every
+    /// context, so a window built before then still gets the "History unavailable" banner).
+    let historyStatus = HistoryStatus()
     /// Set by `AppDelegate` once the controllers exist.
     var commands: AppCommands = .noop
     var processActions: ProcessActions = .noop
@@ -44,6 +47,13 @@ final class AppEnvironment {
         runtime = TelltaleRuntime.make(mode: mode, dataDirectory: dataDirectory, disabledSensors: disabled,
                                        crashSensor: crash, canarySuite: canarySuite)
         settings.reenableCrashedSensors = { TelltaleRuntime.reenableCrashedSensors(canarySuite: canarySuite) }
+        historyStatus.persistent = runtime.historyPersistent
+        Task { [runtime = self.runtime, historyStatus] in
+            await historyStatus.resolve {
+                await runtime.historyReady()                  // suspends; the open runs off the MainActor
+                return runtime.historyPersistent
+            }
+        }
         Self.log.info("""
             launch mode=\(String(describing: mode), privacy: .public) data=\(self.dataDirectory.path, privacy: .public) \
             disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ","), privacy: .public) \
@@ -57,7 +67,7 @@ final class AppEnvironment {
     func context() -> ShellContext {
         ShellContext(live: runtime.live, navigation: navigation, settings: settings, history: runtime.history,
                      processActions: processActions, appCommands: commands,
-                     historyPersistent: runtime.historyPersistent)
+                     historyStatus: historyStatus)
     }
 
     static func defaultDataDirectory() -> URL {

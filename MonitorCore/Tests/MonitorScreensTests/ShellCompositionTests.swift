@@ -257,5 +257,38 @@ struct ShellEnvironmentTests {
         var mem = ctx
         mem.historyPersistent = false                           // store fell back to memory
         #expect(read(mem) == false)
+        #expect(ctx.historyPersistent)                          // the copy got its own status
+    }
+
+    /// The store opens in the background: a window built before the open resolved still gets the banner.
+    @Test func historyStatusResolvedLaterUpdatesABuiltWindow() async {
+        let status = HistoryStatus()
+        var ctx = ScreenFixture.context(.calm)
+        ctx.historyStatus = status
+        let box = EnvProbeBox()
+        let host = NSHostingView(rootView: HistoryPersistentProbe(box: box).telltaleEnvironment(ctx))
+        host.frame = CGRect(x: 0, y: 0, width: 10, height: 10)
+        host.layoutSubtreeIfNeeded()
+        #expect(box.historyPersistent == true)                  // built before the open finished
+
+        let (opened, open) = AsyncStream.makeStream(of: Bool.self)
+        let resolving = Task {
+            await status.resolve {
+                for await persistent in opened { return persistent }
+                return true
+            }
+        }
+        await Task.yield()
+        #expect(status.persistent)                              // still waiting: MainActor not blocked
+        open.yield(false)                                       // store fell back to memory
+        await resolving.value
+        #expect(!status.persistent)
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while box.historyPersistent != false, ContinuousClock.now < deadline {
+            host.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(box.historyPersistent == false)
     }
 }
