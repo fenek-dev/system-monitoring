@@ -69,7 +69,12 @@ CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Di
 | Temps (raw list, Thermals page only) | `IOHIDEventSystemClient` sensors (private) | – |
 | Thermal state | `ProcessInfo.thermalState` | – |
 | Fans | SMC (`AppleSMC` user client) | – |
-| Battery | IOKit `AppleSmartBattery` / IOPowerSources | – |
+| Battery | IOKit `AppleSmartBattery` / IOPowerSources (health, cycles, temp, time); SMC `PSTR`/`PDTR` (live W) | – |
+| Disk IOPS / throughput | IORegistry `IOBlockStorageDriver` `Statistics` | – |
+| SSD health | NVMe SMART IOKit plugin (`NVMeSMARTLibExternal.h`), no root | – |
+| Preventing sleep | `IOPMCopyAssertionsByProcess` | yes |
+| Router latency / loss | unprivileged ICMP `SOCK_DGRAM` | – |
+| Wi-Fi (band, channel, RSSI, rate; no SSID) | CoreWLAN | – |
 | Storage | `URLResourceValues` volume capacity | – |
 
 ## Attribution
