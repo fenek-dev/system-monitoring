@@ -6,7 +6,7 @@ import Testing
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh HIDSmokeTests`.
 @Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
 struct HIDSmokeTests {
-    @Test func rawListVsSmartctlAndBatteryAndSMC() throws {
+    @Test func rawListVsSmartctlAndBatteryAndSMC() async throws {
         if W6bFixture.capture, case let .success(samples) = HIDTemperatureBox.readAll() {
             try W6bFixture.write(samples, "hid_samples.json")
         }
@@ -16,7 +16,7 @@ struct HIDSmokeTests {
         let t0 = w6bUptimeNs()
         #expect(throws: SensorError.transient("warming up")) { try sensor.sample(SampleContext(demand: .rawTemperatures)) }
         let firstMs = Double(w6bUptimeNs() - t0) / 1e6
-        #expect(sensor.waitForRead(after: 0))
+        #expect(await sensor.waitForRead(after: 0))
         let readMs = Double(w6bUptimeNs() - t0) / 1e6
         let t1 = w6bUptimeNs()
         let first = try sensor.sample(SampleContext(demand: .rawTemperatures))
@@ -57,7 +57,7 @@ struct HIDSmokeTests {
         }
     }
 
-    @Test func bench() throws {
+    @Test func bench() async throws {
         var ns: [UInt64] = []
         for _ in 0..<10 {
             let t = w6bUptimeNs()
@@ -67,7 +67,7 @@ struct HIDSmokeTests {
         let sensor = HIDTemperatureSensor()
         try sensor.prepare()
         _ = try? sensor.sample(SampleContext())                  // warming up
-        #expect(sensor.waitForRead(after: 0))
+        #expect(await sensor.waitForRead(after: 0))
         var call: [UInt64] = []
         for _ in 0..<30 {
             let t = w6bUptimeNs()

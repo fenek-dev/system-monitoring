@@ -1,3 +1,4 @@
+import AppKit
 import MonitorModel
 import MonitorSnapshotTesting
 import SwiftUI
@@ -80,6 +81,24 @@ import Testing
         // No confirm handler → Force Quit disabled (it must always confirm).
         #expect(!TTRowActionsMenu.model(target: mine, canControl: true, hasForceQuitHandler: false, ownPID: 1,
                                         ownBundleID: nil).forceQuitEnabled)
+    }
+
+    @MainActor @Test func rowActionsButtonIsA24ptHitTargetWithTheNativeMenu() {
+        let target = ProcessTarget.process(pid: 412, name: "WindowServer", path: nil, uid: 88)
+        let host = NSHostingView(rootView: TTRowActionsButton(target: target, name: "WindowServer"))
+        #expect(host.fittingSize == CGSize(width: 24, height: 24))
+        let menu = TTRowActionsMenu.nsMenu(target: target, actions: ProcessActions(canControl: { _ in false }),
+                                           commands: .noop, requestForceQuit: { _ in }, onResult: nil)
+        #expect(menu.items.first?.title.hasPrefix("Owned by ") == true)
+        let rest = Array(menu.items.dropFirst())
+        #expect(rest.map(\.title) == ["Quit", "Force Quit…", "", "Reveal in Finder", "Open in Activity Monitor"])
+        #expect(rest.map(\.isEnabled) == [false, false, false, false, true]) // separator reports disabled
+        let mine = TTRowActionsMenu.nsMenu(target: .process(pid: 2210, name: "FCP", path: "/Applications/FCP.app", uid: 501),
+                                           actions: ProcessActions(canControl: { _ in true }), commands: .noop,
+                                           requestForceQuit: { _ in }, onResult: nil)
+        #expect(mine.items.map(\.title) == ["Quit", "Force Quit…", "", "Reveal in Finder", "Open in Activity Monitor"])
+        let enabled = mine.items.filter { !$0.isSeparatorItem }.map(\.isEnabled)
+        #expect(enabled == [true, true, true, true])
     }
 
     @Test func nextSelectionMovesWithArrows() {

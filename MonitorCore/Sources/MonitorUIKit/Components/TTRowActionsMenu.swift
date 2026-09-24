@@ -95,10 +95,20 @@ public struct TTRowActionsMenu: View {
 
 /// DESIGN §2.14 `rowAction` button (24, radius 5, `ellipsis` 16) opening `TTRowActionsMenu`.
 /// Tooltip/label "Actions for {name}".
+/// A plain 24×24 SwiftUI button (the whole square is the hit target, §0) that pops up the same actions as a native
+/// `NSMenu` below itself (`NSMenu.popUp(positioning:at:in:)`), with the same items and enablement as
+/// `TTRowActionsMenu`.
 public struct TTRowActionsButton: View {
     let target: ProcessTarget
     let name: String
     @State private var hovering = false
+    @State private var anchor = MenuAnchor()
+    @Environment(\.processActions) private var actions
+    @Environment(\.appCommands) private var commands
+    @Environment(\.requestForceQuit) private var requestForceQuit
+    @Environment(\.onProcessActionResult) private var onResult
+
+    public static let side: CGFloat = 24
 
     public init(target: ProcessTarget, name: String) {
         self.target = target
@@ -106,22 +116,87 @@ public struct TTRowActionsButton: View {
     }
 
     public var body: some View {
-        // macOS Menu labels keep only Image/Text and ignore tints on template images: the ellipsis is a rasterized
-        // image pre-colored `textSecondary`.
-        Menu {
-            TTRowActionsMenu(target: target)
-        } label: {
-            Image(nsImage: TTIconImage.colored(.ellipsis, hex: TTHex.textSecondary, size: 16))
+        Button(action: popUp) {
+            TTIcon(.ellipsis, size: 16, color: TTColor.textSecondary)
+                .frame(width: Self.side, height: Self.side)
+                .background(RoundedRectangle(cornerRadius: TTRadius.r5, style: .continuous)
+                    .fill(hovering ? TTColor.fillIconButton : .clear))
+                .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        // The Menu itself is the 24×24 hit target (§0: hit target = visual size); the image stays centered.
-        .frame(width: 24, height: 24)
-        .background(RoundedRectangle(cornerRadius: TTRadius.r5, style: .continuous)
-            .fill(hovering ? TTColor.fillIconButton : .clear))
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .frame(width: Self.side, height: Self.side)
+        .background(MenuAnchorView(anchor: anchor))
         .onHover { hovering = $0 }
         .help("Actions for \(name)")
         .accessibilityLabel("Actions for \(name)")
+    }
+
+    private func popUp() {
+        guard let view = anchor.view else { return }
+        let menu = TTRowActionsMenu.nsMenu(target: target, actions: actions, commands: commands,
+                                           requestForceQuit: requestForceQuit, onResult: onResult)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.isFlipped ? view.bounds.maxY + 2 : -2), in: view)
+    }
+}
+
+/// Holds the AppKit view the menu pops up from.
+@MainActor final class MenuAnchor {
+    weak var view: NSView?
+}
+
+private struct MenuAnchorView: NSViewRepresentable {
+    let anchor: MenuAnchor
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        anchor.view = v
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) { anchor.view = nsView }
+}
+
+extension TTRowActionsMenu {
+    /// Native menu with the same items/enablement as the SwiftUI `body` (tested via `model`).
+    static func nsMenu(target: ProcessTarget, actions: ProcessActions, commands: AppCommands,
+                       requestForceQuit: (@MainActor @Sendable (ProcessTarget) -> Void)?,
+                       onResult: (@MainActor @Sendable (ProcessTarget, ActionResult) -> Void)?) -> NSMenu {
+        let m = model(target: target, canControl: actions.canControl(target), hasForceQuitHandler: requestForceQuit != nil)
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if let header = m.ownerHeader { menu.addItem(NSMenuItem.sectionHeader(title: header)) }
+        menu.addItem(ClosureMenuItem("Quit", enabled: m.quitEnabled) {
+            if m.quitsTelltale {
+                commands.quitTelltale()
+            } else {
+                Task { @MainActor in onResult?(target, await actions.quit(target)) }
+            }
+        })
+        if m.forceQuitVisible {
+            menu.addItem(ClosureMenuItem("Force Quit…", enabled: m.forceQuitEnabled) { requestForceQuit?(target) })
+        }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem("Reveal in Finder", enabled: m.revealEnabled) { actions.revealInFinder(target) })
+        menu.addItem(ClosureMenuItem("Open in Activity Monitor", enabled: true) { actions.openInActivityMonitor(target) })
+        return menu
+    }
+}
+
+/// `NSMenuItem` that runs a closure (it is its own target).
+final class ClosureMenuItem: NSMenuItem {
+    private let handler: @MainActor @Sendable () -> Void
+
+    init(_ title: String, enabled: Bool, handler: @escaping @MainActor @Sendable () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+        isEnabled = enabled
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("not coded") }
+
+    /// Menu actions are delivered on the main thread.
+    @objc private func run() {
+        let h = handler
+        MainActor.assumeIsolated { h() }
     }
 }

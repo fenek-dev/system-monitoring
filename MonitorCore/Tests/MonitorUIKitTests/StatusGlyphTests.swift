@@ -36,7 +36,8 @@ import Testing
         #expect(near(first!, CGPoint(x: 9.693, y: 3.353)))
         // The arc is traced clockwise: its bounds stay in the upper-right quadrant.
         #expect(p.boundingRect.minX >= 9.6 && p.boundingRect.maxY <= 9)
-        #expect(StatusGlyphGeometry.dotRadius(.calm) * s - 1.244 < 0.001)
+        #expect(abs(StatusGlyphGeometry.dotRadius(.calm) * s - 1.244) < 0.001)
+        #expect(abs(StatusGlyphGeometry.dotRadius(.elevated) * s - 1.422) < 0.001)
         #expect(abs(StatusGlyphGeometry.dotRadius(.critical) * s - 1.867) < 0.001)
     }
 
@@ -66,6 +67,19 @@ import Testing
         let dim = StatusGlyphRenderer.image(for: paused)
         #expect(dim.isTemplate && dim !== calm)
         #expect(StatusGlyphRenderer.pulseFrames(for: AlertState(level: .critical, arcs: GalleryGlyph.arcs(.thermals, .critical))).count == 18)
+    }
+
+    @Test func pulseMidFrameIsThePeak() {
+        let values = StatusGlyphRenderer.pulseValues
+        #expect(values.count == 18)
+        #expect(values[0] == 0)
+        let peak = StatusGlyphGeometry.pulse(values[9])
+        #expect(abs(peak.arcAlpha - 0.45) < 1e-9)
+        #expect(abs(peak.dotRadius - 2.9) < 1e-9)
+        let rest = StatusGlyphGeometry.pulse(0)
+        #expect(rest.arcAlpha == 1 && abs(rest.dotRadius - 2.1) < 1e-9)
+        // Monotone up to the peak, then down.
+        #expect(zip(values[0...9], values[1...9]).allSatisfy { $0 < $1 })
     }
 
     /// Rasterize the 18-pt image at 2x and check the thermals arc is amber, the others label-colored.

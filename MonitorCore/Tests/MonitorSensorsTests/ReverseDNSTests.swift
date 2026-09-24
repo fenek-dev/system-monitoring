@@ -70,20 +70,21 @@ import Testing
         }
     }
 
-    static func waitUntil(_ cond: () -> Bool) {
-        for _ in 0..<200 where !cond() { usleep(5_000) }
+    /// Polls with `Task.sleep`, never `usleep`: a sleeping cooperative-pool thread starves other suites' GCD work.
+    static func waitUntil(_ cond: () -> Bool) async {
+        for _ in 0..<200 where !cond() { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
-    @Test func nameNeverBlocksAndRespectsConcurrency() {
+    @Test func nameNeverBlocksAndRespectsConcurrency() async {
         let gate = Gate()
         let dns = ReverseDNS(maxConcurrent: 4, resolve: { gate.resolve($0) }, now: { 0 })
         let t0 = W6cClock.uptimeNs()
         for i in 0..<10 { #expect(dns.name(for: "10.0.0.\(i)") == nil) }
         #expect(W6cClock.uptimeNs() - t0 < 250_000_000) // resolvers are blocked; name() is not (functional, not perf)
-        Self.waitUntil { dns.inFlightCount == 4 }
+        await Self.waitUntil { dns.inFlightCount == 4 }
         #expect(dns.inFlightCount == 4)
         for _ in 0..<10 { gate.release.signal() }
-        Self.waitUntil { dns.cacheCount == 10 }
+        await Self.waitUntil { dns.cacheCount == 10 }
         #expect(gate.stats.withLock { $0.peak } <= 4)
         #expect(gate.stats.withLock { $0.calls } == 10)
         #expect(dns.name(for: "10.0.0.3") == "host-10.0.0.3")
@@ -102,7 +103,7 @@ import Testing
     }
 
     /// Transient failures expire after 30 s; "no name" is kept the full 10 minutes.
-    @Test func transientFailuresUseShortTTL() {
+    @Test func transientFailuresUseShortTTL() async {
         let clock = OSAllocatedUnfairLock(initialState: UInt64(0))
         let calls = OSAllocatedUnfairLock(initialState: [String: Int]())
         let dns = ReverseDNS(resolve: { a in
@@ -111,27 +112,27 @@ import Testing
         }, now: { clock.withLock { $0 } })
         _ = dns.name(for: "10.0.0.1")
         _ = dns.name(for: "10.0.0.2")
-        Self.waitUntil { dns.cacheCount == 2 }
+        await Self.waitUntil { dns.cacheCount == 2 }
         clock.withLock { $0 = 31_000_000_000 }
         _ = dns.name(for: "10.0.0.1") // failure expired → looked up again
         _ = dns.name(for: "10.0.0.2") // no-name still cached
-        Self.waitUntil { calls.withLock { $0["10.0.0.1"] } == 2 }
+        await Self.waitUntil { calls.withLock { $0["10.0.0.1"] } == 2 }
         #expect(calls.withLock { $0 } == ["10.0.0.1": 2, "10.0.0.2": 1])
     }
 
-    @Test func expiredEntriesAreLookedUpAgain() {
+    @Test func expiredEntriesAreLookedUpAgain() async {
         let clock = OSAllocatedUnfairLock(initialState: UInt64(0))
         let calls = OSAllocatedUnfairLock(initialState: 0)
         let dns = ReverseDNS(ttlNs: 1_000, resolve: { a in calls.withLock { $0 += 1 }; return .name("n-\(a)") },
                              now: { clock.withLock { $0 } })
         _ = dns.name(for: "1.2.3.4")
-        Self.waitUntil { dns.name(for: "1.2.3.4") != nil }
+        await Self.waitUntil { dns.name(for: "1.2.3.4") != nil }
         #expect(calls.withLock { $0 } == 1)
         _ = dns.name(for: "1.2.3.4") // cached
         #expect(calls.withLock { $0 } == 1)
         clock.withLock { $0 = 5_000 }
         #expect(dns.name(for: "1.2.3.4") == nil) // expired → re-queued
-        Self.waitUntil { calls.withLock { $0 } == 2 }
+        await Self.waitUntil { calls.withLock { $0 } == 2 }
         #expect(calls.withLock { $0 } == 2)
     }
 }

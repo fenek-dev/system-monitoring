@@ -24,11 +24,10 @@ enum ScreenFixture {
         ScreenCatalog.context(for: scenario, page: page, ticks: ticks)
     }
 
-    /// Fresh settings on a unique scratch suite (tests that mutate settings).
-    static func settings(_ name: String = UUID().uuidString) -> (SettingsStore, UserDefaults) {
-        let suite = "dev.telltale.tests.\(name)"
-        let d = UserDefaults(suiteName: suite)!
-        d.removePersistentDomain(forName: suite)
+    /// Fresh settings on in-memory defaults (tests that mutate settings; no plist, no cross-process races).
+    /// A second `SettingsStore(defaults: d)` over the returned defaults models a relaunch.
+    static func settings() -> (SettingsStore, UserDefaults) {
+        let d = InMemoryDefaults()
         return (SettingsStore(defaults: d), d)
     }
 

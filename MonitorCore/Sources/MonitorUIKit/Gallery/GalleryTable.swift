@@ -20,7 +20,6 @@ import SwiftUI
                         TTAppTile(identity: AppIdentity(key: AppKey(kind: .app, id: "dev.telltale.Telltale"), displayName: "Telltale",
                                                         bundlePath: "/nonexistent/Telltale.app"), name: "Telltale", size: 26)
                     }
-                    .environment(\.ttAppIconsInSnapshots, true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(TTColor.bgPopover)
                 )

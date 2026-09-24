@@ -4,6 +4,7 @@
 # Usage: scripts/ci.sh <Suite> [<Suite>…]
 set -uo pipefail
 cd "$(dirname "$0")/.."
+export TT_SNAPSHOT_STRICT=1 # missing snapshot goldens fail instead of being recorded
 
 fail() { echo "ci.sh: FAILED — $1"; exit 1; }
 
@@ -32,6 +33,14 @@ hits=$(grep -rn 'map(Double\.init)' MonitorCore/Sources --include='*.swift' || t
 if [[ -n "$hits" ]]; then
     echo "$hits" | head -20
     fail "map(Double.init) is ambiguous (bitPattern); use .map { Double(\$0) }"
+fi
+
+echo "== @unchecked grep"
+# Only MonitorMocks may use @unchecked (Sendable escape hatch); elsewhere use OSAllocatedUnfairLock/actors.
+hits=$(grep -rn '@unchecked' MonitorCore/Sources MonitorCore/Tests App --include='*.swift' | grep -v '/MonitorMocks/' || true)
+if [[ -n "$hits" ]]; then
+    echo "$hits" | head -20
+    fail "@unchecked outside MonitorMocks"
 fi
 
 echo "ci.sh: OK"

@@ -36,6 +36,7 @@ import os
         popover = PopoverPanelController(
             env: env,
             anchor: { [weak self] in self?.statusItem.buttonScreenFrame },
+            anchorScreen: { [weak self] in self?.statusItem.buttonScreen },
             onVisibilityChange: { [weak self] open in
                 self?.statusItem.setHighlighted(open)
                 self?.visibility.tracker.update { $0.popoverOpen = open }
