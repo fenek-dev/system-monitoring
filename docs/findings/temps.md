@@ -247,3 +247,75 @@ swift build --scratch-path .build-temps
 swift run --scratch-path .build-temps spike-temps --delta   # baseline / after-load snapshots
 swift run --scratch-path .build-temps spike-temps --curated # final curated read + HID cross-check
 ```
+
+## Production verification (W6b)
+
+MacBookPro18,4 (M1 Max), macOS 26.5 (25F71), production sensors in `MonitorCore/Sources/MonitorSensors/{SoC,Thermal,Power}`.
+Shared machine: other agents' builds ran throughout (load averages 11–33), so every delta below is noisy.
+
+### E-core mapping (TC4x/TC5x) — still low confidence, kept by elimination
+
+Experiment (`SMCSmokeTests/eCoreCorrelation`, `TELLTALE_HW_TESTS=1 TELLTALE_W6B_ECORE=1`): every TC*/Tp* key and IOReport
+ECPU/PCPU watts + residency sampled every 2 s over base (20 s) → 4× `taskpolicy -c background yes` (40 s) → cool (40 s)
+→ 8× `yes` (40 s) → cool (20 s).
+
+- The E load worked: ECPU residency 79 % → 100 % while PCPU stayed ~35–43 %. But ECPU power only moved **0.19 → 0.45 W**
+  (EACC_CPU). A quarter of a watt produces no SMC-visible temperature change on this machine; concurrent P-cluster
+  load from other agents (several W) dominated every key (all keys had dE ≈ −5 °C because the neighbours' load dropped
+  during that window).
+- Correlation with ECPU watts over the whole run: every key ≤ +0.34, and those highest ones (Tp0a/b/c) also correlate
+  +0.94 with PCPU watts (shared load, not E-specific). **No key tracks ECPU.**
+- Relative to the P load, TC4x/TC5x respond least (dP +3.2 / +2.9 °C vs TC2x/3x +4.3–4.5, TC1x/TCDx +10.3) and have
+  the lowest correlation with PCPU watts (+0.20 / +0.11 vs +0.38–0.92) and read ~3–8 °C cooler than TC1x–3x in every
+  sample (e.g. idle 62.5 vs 65.7 °C; load 72.6 vs 81.0 °C). Consistent with sensors on the cool, low-power E cluster,
+  but that is still elimination, not a positive ID.
+- **Decision:** catalog unchanged (TC1x–3x → cpuPerformance, TC4x–5x → cpuEfficiency). Confidence stays **low**.
+  A positive ID needs an isolated machine (no other load) or a longer E-only soak; E-cores simply don't make heat.
+- Side notes: `TCDx` tracks TC1x exactly; `TCHx` is near-flat; `Tp0*` keys come in identical pairs (Tp00=Tp01,
+  Tp04=Tp05, …) and all follow P-cluster power (corr +0.85–0.94) — board/package probes, not per-core.
+
+### SSD source: HID `NAND CH0 temp` (SMC `Td0*` rejected)
+
+`smartctl -a disk0` (NVMe composite temperature, no sudo) vs both sources at the same moment, 3 runs:
+HID NAND 39.0 / 39.0 / 38.0 °C, smartctl 39 / 39 / 38 °C (**exact match**); SMC `Td0*` average 65.4–69.4 °C
+(+26–30 °C, and it rises with GPU load — a SoC-side sensor, not the NAND). SMC keys that happened to read within
+1.5 °C of smartctl (`TDEL/TDER/TDTC/TDTP/TD21/TDeL`, `TaLW/TaRT`) are unidentified and not stable candidates.
+**SSD comes from HID only** (raw list, `.rawTemperatures`); the SMC catalog has no `.ssd` keys, so
+`ThermalSnapshot.groups` has no SSD group in background.
+
+### Battery temperature
+
+HID `gas gauge battery` 35.2–35.3 °C = SMC `TB0T/TB1T/TB2T` 35.4–35.5 °C = ioreg `VirtualTemperature` 35.4–35.9 °C;
+ioreg `Temperature` reads ~4.5 °C lower (30.9 °C). `BatterySensor` reports `Temperature` (per the brief); the SMC
+catalog's battery group (TB?T) carries the higher reading. Worth one DESIGN/product decision if both are shown.
+
+### GPU MHz — resolved on M1 Max
+
+AGXAccelerator has no `gpu-perf-states` property on this OS. The pmgr node has `gpu-num-perf-states = 6` and
+`perf-states*` (= `voltage-states9`) = [0, 388.8, 486, 648, 777.6, 972, 1296] MHz. IOReport `GPUPH` exposes OFF +
+P1…P15 but **only P1…P6 ever carry residency** (idle: P1–P5; saturated Metal compute: 100 % P6). Mapping P_n →
+table[n] (idle 389 MHz, full load 1296 MHz = the M1 Max GPU max clock). Validated states: **P1 (388.8), P2–P5 seen at
+idle/partial load, P6 (1296) under saturation**; the intermediate MHz values are not independently validated (no
+powermetrics). Residency in P7+ → MHz nil (table no longer fits). Table in `SoC/Resources/pstates.json`.
+
+### Media engines — AVE+MSR yes, VDEC no, ProRes no
+
+IOReport `SoC Stats / Cluster Power States / AVEMSR` (states INACT/ACT) is the only media residency channel:
+ACT 100 % during a VideoToolbox H.264 4K encode, ~54 % during a VideoToolbox H.264 decode (MSR scaling), 0 % at idle.
+No AVD (decoder) residency or energy channel exists (only a PMP floor vote that never moved), and a
+`prores_videotoolbox` encode moved nothing. Exposed as one `MediaEngineReading("Video encoder/scaler")`.
+
+### Costs (release, `scripts/probe.sh --bench --sensor <id> --ticks 30`)
+
+| sensor | prepare | sample p50 / p95 | notes |
+|---|---|---|---|
+| soc (IOReport) | 3.1 ms | 1.83 / 2.05 ms | channel discovery 0.45–0.5 s runs off-queue; `.transient("warming up")` until ready |
+| gpuClients | 0.06 ms | 1.66 / 2.55 ms | ~70 clients |
+| smc | 11.9 ms | 5.5 / 8.1 ms | 32 T-keys + 2 fans + PSTR/PDTR, 1 round trip/key (cached size); raw list (217 keys) ~45–51 ms |
+| temperatures (HID) | 3.4 ms | < 0.2 ms | read 68–94 ms (p95 245 ms under load) off-queue |
+| battery | 0.04 ms | 1.3 / 10.3 ms | |
+| thermalState | 0 | < 0.01 ms | |
+
+The ARCHITECTURE "< 1 ms" SMC estimate is ~5–8 ms in practice (≈ 0.17 ms per SMC round trip). SMC background
+cadence set to **10 s** (≈ 2.8 ms amortized per 5 s tick). The curated spike read (27–38 ms) paid 2 round trips per key
+for 80 keys.

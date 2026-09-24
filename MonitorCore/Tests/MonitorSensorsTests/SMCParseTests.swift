@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import MonitorModel
 @testable import MonitorSensors
 
 /// SMCDecoder with the byte patterns from docs/findings/smc.md (M1 Max, macOS 26.5).
@@ -60,6 +61,15 @@ struct SMCParseTests {
         #expect(SMCDecoder.fourCC(0x666C_7420) == "flt ")
         #expect(SMCDecoder.fourCC(0x7569_3136) == "ui16")
         #expect(SMCDecoder.fourCC(0) == "")
+    }
+
+    /// ICR-6: `catalogMatched` round-trips and defaults to false for readings recorded before the field existed.
+    @Test func readingCatalogMatchedCodable() throws {
+        let old = #"{"fans":[],"temperatures":[],"systemWatts":20}"#
+        let r = try JSONDecoder().decode(SMCReading.self, from: Data(old.utf8))
+        #expect(r.catalogMatched == false && r.systemWatts == 20 && r.adapterWatts == nil)
+        let again = try JSONDecoder().decode(SMCReading.self, from: JSONEncoder().encode(SMCReading(catalogMatched: true)))
+        #expect(again.catalogMatched)
     }
 
     @Test func plausibleTemperatures() {

@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>adapter</key>
+	<dict>
+		<key>AdapterVoltage</key>
+		<integer>20000</integer>
+		<key>Current</key>
+		<integer>5000</integer>
+		<key>IsWireless</key>
+		<false/>
+		<key>Watts</key>
+		<integer>100</integer>
+	</dict>
+	<key>providing</key>
+	<string>AC Power</string>
+	<key>registry</key>
+	<dict>
+		<key>AdapterDetails</key>
+		<dict>
+			<key>AdapterVoltage</key>
+			<integer>20000</integer>
+			<key>Current</key>
+			<integer>5000</integer>
+			<key>IsWireless</key>
+			<false/>
+			<key>Watts</key>
+			<integer>100</integer>
+		</dict>
+		<key>Amperage</key>
+		<integer>287</integer>
+		<key>AppleRawCurrentCapacity</key>
+		<integer>4343</integer>
+		<key>AppleRawMaxCapacity</key>
+		<integer>4395</integer>
+		<key>AvgTimeToEmpty</key>
+		<integer>65535</integer>
+		<key>AvgTimeToFull</key>
+		<integer>13</integer>
+		<key>BatteryData</key>
+		<dict>
+			<key>CellVoltage</key>
+			<array>
+				<integer>4218</integer>
+				<integer>4217</integer>
+				<integer>4217</integer>
+			</array>
+		</dict>
+		<key>BatteryInstalled</key>
+		<true/>
+		<key>CurrentCapacity</key>
+		<integer>100</integer>
+		<key>CycleCount</key>
+		<integer>1856</integer>
+		<key>DesignCapacity</key>
+		<integer>6075</integer>
+		<key>ExternalConnected</key>
+		<true/>
+		<key>FullyCharged</key>
+		<false/>
+		<key>InstantAmperage</key>
+		<integer>287</integer>
+		<key>IsCharging</key>
+		<true/>
+		<key>MaxCapacity</key>
+		<integer>100</integer>
+		<key>NominalChargeCapacity</key>
+		<integer>4545</integer>
+		<key>PermanentFailureStatus</key>
+		<integer>0</integer>
+		<key>Temperature</key>
+		<integer>3090</integer>
+		<key>TimeRemaining</key>
+		<integer>13</integer>
+		<key>VirtualTemperature</key>
+		<integer>3579</integer>
+		<key>Voltage</key>
+		<integer>12651</integer>
+	</dict>
+	<key>source</key>
+	<dict>
+		<key>BatteryHealth</key>
+		<string>Poor</string>
+		<key>BatteryHealthCondition</key>
+		<string>Check Battery</string>
+		<key>Current Capacity</key>
+		<integer>100</integer>
+		<key>Is Charging</key>
+		<true/>
+		<key>Is Present</key>
+		<true/>
+		<key>Max Capacity</key>
+		<integer>100</integer>
+		<key>Power Source State</key>
+		<string>AC Power</string>
+		<key>Time to Empty</key>
+		<integer>0</integer>
+		<key>Time to Full Charge</key>
+		<integer>14</integer>
+		<key>Type</key>
+		<string>InternalBattery</string>
+	</dict>
+</dict>
+</plist>
