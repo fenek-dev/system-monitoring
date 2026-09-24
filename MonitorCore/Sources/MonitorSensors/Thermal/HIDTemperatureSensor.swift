@@ -41,11 +41,12 @@ public final class HIDTemperatureSensor: Sensor {
     public func invalidate() { box = nil }
 
     /// Tests / probes only: waits until a read newer than `after` completed (never used by `sample()`).
-    func waitForRead(after ns: UInt64, timeout: Duration = .seconds(5)) -> Bool {
+    /// Async (`Task.sleep`): a blocking poll would park a cooperative-pool thread.
+    func waitForRead(after ns: UInt64, timeout: Duration = .seconds(5)) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if let last = box?.state.last, last.capturedNs > ns { return true }
-            Thread.sleep(forTimeInterval: 0.01)
+            try? await Task.sleep(for: .milliseconds(10))
         }
         return false
     }
