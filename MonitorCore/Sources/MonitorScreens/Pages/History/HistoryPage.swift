@@ -410,15 +410,16 @@ private struct HistoryAxis: View {
     var body: some View {
         if let labels = HistoryText.axisLabels(window, calendar: calendar) {
             GeometryReader { geo in
+                let width = geo.size.width                                  // read out: the guide closure is @Sendable
                 ForEach(labels.indices, id: \.self) { i in
                     let label = labels[i]
                     Text(label.text).font(TTFont.micro).foregroundStyle(TTColor.textTertiary).lineLimit(1).fixedSize()
                         .monospacedDigit()
                         .alignmentGuide(.leading) { d in
                             // First label leads at 0, last trails at the edge, others centre on their moment.
-                            let x = CGFloat(label.fraction) * geo.size.width
+                            let x = CGFloat(label.fraction) * width
                             if label.fraction <= 0 { return 0 }
-                            if label.fraction >= 1 { return d.width - geo.size.width }
+                            if label.fraction >= 1 { return d.width - width }
                             return d.width / 2 - x
                         }
                 }

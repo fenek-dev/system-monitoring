@@ -225,7 +225,8 @@ struct AppNameCell: View {
 }
 
 /// Right-aligned metric cell (`MetricValue`, table font inherited).
-func metricCell(_ text: String?, reason: String? = nil, estimated: Bool = false, secondary: Bool = false) -> AnyView {
+@MainActor func metricCell(_ text: String?, reason: String? = nil, estimated: Bool = false,
+                           secondary: Bool = false) -> AnyView {
     AnyView(
         MetricValue(text, unavailableReason: reason, estimated: estimated, font: TTFont.body12)
             .foregroundStyle(secondary ? TTColor.textSecondary : TTColor.textPrimary)

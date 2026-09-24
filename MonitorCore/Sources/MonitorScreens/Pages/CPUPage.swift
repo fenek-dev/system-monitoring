@@ -165,7 +165,7 @@ struct CPUConsumersCard: View {
 
     init(selection: ProcessID?) { _selection = State(initialValue: selection) }
 
-    static let cap = 50
+    nonisolated static let cap = 50
 
     /// Top 50 by % CPU, descending, nil last, stable — sorted before the cap (the table does not re-sort).
     nonisolated static func rank(_ processes: [ProcessSample]) -> [ProcessSample] {
