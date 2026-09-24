@@ -1,3 +1,4 @@
+import AppKit
 import MonitorModel
 import SwiftUI
 
@@ -136,6 +137,42 @@ public struct TTIconShape: Shape {
         let s = min(rect.width, rect.height) / 16
         let path = TTIconPaths.all[name] ?? Path()
         return path.applying(CGAffineTransform(a: s, b: 0, c: 0, d: s, tx: rect.minX, ty: rect.minY))
+    }
+}
+
+/// Rasterized template `NSImage`s of the icons, for places that only accept images (macOS `Menu` labels keep only
+/// Image/Text). Drawn at @2x, black on clear, `isTemplate` so the menu tints them; cached per (name, size).
+@MainActor public enum TTIconImage {
+    private static var cache: [String: NSImage] = [:]
+
+    public static func template(_ name: TTIconName, size: CGFloat = 16, gridStroke: CGFloat = TTStroke.icon) -> NSImage {
+        make(name, size: size, gridStroke: gridStroke, hex: nil)
+    }
+
+    /// Pre-colored (non-template) image: menu buttons draw it as is, independent of their tint handling.
+    public static func colored(_ name: TTIconName, hex: UInt32, size: CGFloat = 16, gridStroke: CGFloat = TTStroke.icon) -> NSImage {
+        make(name, size: size, gridStroke: gridStroke, hex: hex)
+    }
+
+    private static func make(_ name: TTIconName, size: CGFloat, gridStroke: CGFloat, hex: UInt32?) -> NSImage {
+        let key = "\(name.rawValue)@\(size)/\(gridStroke)/\(hex.map { String($0) } ?? "t")"
+        if let hit = cache[key] { return hit }
+        let path = TTIconShape(name).path(in: CGRect(x: 0, y: 0, width: size, height: size))
+        let lineWidth = gridStroke * size / 16
+        let color = hex.map { NSColor(hex: $0) } ?? .black
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.addPath(path.cgPath)
+            ctx.setStrokeColor(color.cgColor)
+            ctx.setLineWidth(lineWidth)
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            ctx.strokePath()
+            return true
+        }
+        image.isTemplate = hex == nil
+        cache[key] = image
+        return image
     }
 }
 
