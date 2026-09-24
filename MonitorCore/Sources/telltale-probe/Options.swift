@@ -21,6 +21,7 @@ struct ProbeOptions: Sendable {
     var quiet = false
     var json = false
     var trimIdle = false
+    var benchReplay = false
 
     static let usage = """
     telltale-probe — exercise Telltale sensors, the engine and the store without the app.
@@ -30,7 +31,8 @@ struct ProbeOptions: Sendable {
       --bench [--sensor <id>]        per-sensor sample() cost p50/p95/max + total, then full engine ticks
       --record <file> [--trim-idle]  engine ticks → [RawTick] JSON (fixture format); --trim-idle drops processes and
                                      coalitions whose counters never change (deltas unchanged; see FixtureTrim)
-      --replay <file>                a recording → FrameAssembler → frame summaries
+      --replay <file> [--bench]      a recording → FrameAssembler → frame summaries; --bench: assembly cost
+                                     (--ticks N passes)
       --frames                       engine ticks → frame summaries (system + top apps)
       --maintain-now [--data-dir d]  flush + rollup + retention + vacuum on d/history.sqlite
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
@@ -103,7 +105,10 @@ struct ProbeOptions: Sendable {
             i += 1
         }
         if let env = env["TELLTALE_DISABLE_SENSORS"], !env.isEmpty { o.disabled.formUnion(try parseSensors(env)) }
-        if bench {
+        if bench, case .replay = command {
+            o.command = command!
+            o.benchReplay = true
+        } else if bench {
             o.command = .bench
             o.benchSensor = sensorArg
         } else if let command {

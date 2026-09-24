@@ -154,9 +154,9 @@ struct ProcessAssembler {
     /// newborn rate (counter / interval); nil after a counter reset.
     private static func diskRate(_ calc: inout RateCalculator<ProcessID>, _ id: ProcessID, _ counter: UInt64,
                                  _ capturedNs: UInt64, newbornSec: Double?) -> Double? {
-        let tracked = calc.isTracking(id)
-        if let r = calc.rate(for: id, counter: counter, capturedNs: capturedNs) { return r }
-        return tracked ? nil : newbornSec.map { Double(counter) / $0 }
+        let (d, firstSight) = calc.deltaNoting(for: id, counter: counter, capturedNs: capturedNs)
+        if let d { return d.seconds > 0 ? Double(d.delta) / d.seconds : nil }
+        return firstSight ? newbornSec.map { Double(counter) / $0 } : nil
     }
 
     mutating func assemble(_ input: ProcessInputs, resolver: any AppResolving) -> ProcessAssembly {
@@ -218,22 +218,22 @@ struct ProcessAssembler {
             // prevLive survives reset(): a first sight after wake is not a session newborn.
             let sessionNewborn = !prevLive.contains(r.id) && r.id.startTimeUs >= sessionStartUs
             if let ns = r.cpuTimeNs {
-                let tracked = cpu.isTracking(r.id)
-                if let d = cpu.delta(for: r.id, counter: ns, capturedNs: capturedNs) {
+                let (delta, firstSight) = cpu.deltaNoting(for: r.id, counter: ns, capturedNs: capturedNs)
+                if let d = delta {
                     if d.seconds > 0 {
                         s.cpuPercent = Double(d.delta) / d.seconds / 1e7
                         if clock.advanced { out.deltas[r.id, default: ProcessDelta()].cpuNs = d.delta }
                     }
-                } else if !tracked {
+                } else if firstSight {
                     if let sec = newbornSec { s.cpuPercent = Double(ns) / sec / 1e7 }
                     if sessionNewborn { out.deltas[r.id, default: ProcessDelta()].cpuNs = ns }
                 }
             }
             if let nj = r.energyNJ {
-                let tracked = energy.isTracking(r.id)
-                if let w = energy.rate(for: r.id, counter: nj, capturedNs: capturedNs) {
-                    s.energyWatts = w / 1e9
-                } else if !tracked, let sec = newbornSec {
+                let (d, firstSight) = energy.deltaNoting(for: r.id, counter: nj, capturedNs: capturedNs)
+                if let d {
+                    if d.seconds > 0 { s.energyWatts = Double(d.delta) / d.seconds / 1e9 }
+                } else if firstSight, let sec = newbornSec {
                     s.energyWatts = Double(nj) / sec / 1e9
                 }
             }
@@ -365,8 +365,8 @@ struct ProcessAssembler {
                 out.samples[i].netRxTotal = Self.saturatingAdd(out.samples[i].netRxTotal ?? 0, bytes.rx)
                 out.samples[i].netTxTotal = Self.saturatingAdd(out.samples[i].netTxTotal ?? 0, bytes.tx)
             }
-            let tracked = netRx.isTracking(key)
-            let rx = netRx.delta(for: key, counter: bytes.rx, capturedNs: capturedNs)
+            let (rx, rxFirstSight) = netRx.deltaNoting(for: key, counter: bytes.rx, capturedNs: capturedNs)
+            let tracked = !rxFirstSight
             let tx = netTx.delta(for: key, counter: bytes.tx, capturedNs: capturedNs)
             // Session newborn (ruling: session = Telltale start): first sight since then of a process started after
             // it → all its bytes are this session's.

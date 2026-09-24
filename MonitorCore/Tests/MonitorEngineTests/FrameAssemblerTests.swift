@@ -308,6 +308,12 @@ import Testing
                 coalitions[cid].memberPIDs.append(pid)
                 if coalitions[cid].leaderPID == nil { coalitions[cid].leaderPID = pid }
             }
+            // All-visible coalitions (250…769): the coalition meter ≈ Σ members (+1 % noise), as on a real Mac — else
+            // ~500 of them would carry an ICR-13 "Exited processes" residual and the bench would measure those rows.
+            for cid in 250..<770 {
+                let members = coalitions[cid].memberPIDs.map { UInt64($0 - 1) }            // pid = i + 1
+                coalitions[cid].cpuTimeNs = members.reduce(0) { $0 + n * $1 * 100_000 } * 101 / 100
+            }
             let clients = (0..<60).map { k in
                 GPUClientCounter(clientID: UInt64(k), pid: Int32(331 + k * 9), creatorName: "p\(331 + k * 9)",
                                  gpuTimeNs: n * UInt64(k) * 1_000_000)
