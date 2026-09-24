@@ -3,24 +3,17 @@ import MonitorUIKit
 import SwiftUI
 
 /// `Equatable` host of W3's `TTPopoverRow` (DESIGN §2.22): compares the row data only, so a tick that leaves a
-/// row's data unchanged does not rebuild it. Expansion lines come from `topApps` (TTPopoverRow ranks them);
-/// double-click / app-line clicks go through `appCommands` inside TTPopoverRow.
+/// row's data unchanged does not rebuild it. The click (dashboard page) and the hover events for the top-apps
+/// flyout (`\.popoverRowHover`, set by `PopoverRoot`) are TTPopoverRow's.
 struct PopoverRowView: View, Equatable {
     let row: PopoverModel.Row
-    let expanded: Bool
-    let topApps: [AppSample]
-    let toggle: () -> Void
 
-    nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.row == b.row && a.expanded == b.expanded && a.topApps == b.topApps
-    }
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row }
 
     var body: some View {
         TTPopoverRow(category: row.category, subtitle: row.subtitle, value: row.value,
                      unavailableReason: row.unavailableReason, points: row.points, yDomain: row.domain,
-                     compact: row.compact,
-                     expanded: Binding(get: { expanded }, set: { if $0 != expanded { toggle() } }),
-                     topApps: topApps, level: row.stress, showsCollecting: !row.sensorDown)
+                     compact: row.compact, level: row.stress, showsCollecting: !row.sensorDown)
     }
 }
 

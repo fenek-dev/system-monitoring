@@ -7,18 +7,20 @@ import SwiftUI
 /// Top to bottom: header, alert banners, full rows, divider, compact rows, divider, top consumer, divider, footer.
 /// Rows follow `PopoverLayout` (order, hidden); a divider is dropped when either side is empty.
 ///
-/// Invalidation: this body reads only the layout and the expansion state. Each row, the banners and the top
-/// consumer are separate views that observe only what they show, and rows are `Equatable`, so e.g. a memory-only
-/// update does not rebuild the Power/Disk rows (sparkline rows follow the shared per-tick series counter).
+/// Invalidation: this body reads only the layout. Each row, the banners and the top consumer are separate views
+/// that observe only what they show, and rows are `Equatable`, so e.g. a memory-only update does not rebuild the
+/// Power/Disk rows (sparkline rows follow the shared per-tick series counter).
+///
+/// `onRowHover` receives each row's hover enter/exit and "Show top apps" with the row's frame in the hosting view
+/// (the App's top-apps flyout, DESIGN §2.22).
 public struct PopoverRoot: View {
     @Environment(\.popoverLayout) private var layout
-    @State private var expanded: Set<MonitorModel.Category>
     @State private var feedback: String?
+    private let onRowHover: (@MainActor @Sendable (PopoverRowHover) -> Void)?
 
-    public init() { _expanded = State(initialValue: []) }
-
-    /// Rows initially expanded (snapshots of the ADDED expansion).
-    public init(expanded: Set<MonitorModel.Category>) { _expanded = State(initialValue: expanded) }
+    public init(onRowHover: (@MainActor @Sendable (PopoverRowHover) -> Void)? = nil) {
+        self.onRowHover = onRowHover
+    }
 
     public var body: some View {
         let sections = PopoverModel.sections(layout)
@@ -44,14 +46,11 @@ public struct PopoverRoot: View {
         }
         // CSS border-box: content starts inside the 1-pt side borders, 7 from the panel edge (vertical measured flush).
         .padding(.horizontal, 1)
+        .environment(\.popoverRowHover, onRowHover)
     }
 
     private func rows(_ categories: [MonitorModel.Category]) -> some View {
-        ForEach(categories, id: \.self) { c in
-            PopoverCategoryRow(category: c, expanded: expanded.contains(c)) {
-                withAnimation(.easeInOut(duration: 0.18)) { expanded = PopoverModel.toggled(expanded, c) }
-            }
-        }
+        ForEach(categories, id: \.self) { c in PopoverCategoryRow(category: c) }
     }
 }
 
@@ -64,16 +63,13 @@ struct PopoverDivider: View {
 /// `PopoverRowView`.
 struct PopoverCategoryRow: View {
     let category: MonitorModel.Category
-    let expanded: Bool
-    let toggle: () -> Void
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
     /// Grow-only Live rate ceiling for the sparkline while the popover is open (DESIGN §5.10, M5).
     @State private var ceilings = LiveCeilings()
 
     var body: some View {
-        PopoverRowView(row: PopoverModel.row(category, live: live, units: units, ceilings: ceilings), expanded: expanded,
-                       topApps: expanded ? PopoverModel.expansionApps(category, live: live) : [], toggle: toggle)
+        PopoverRowView(row: PopoverModel.row(category, live: live, units: units, ceilings: ceilings))
             .equatable()
             .environment(\.ttChartGapBridge, ChartSegments.liveBridgeSlots)   // Live 1-s grid sparklines (N2)
     }

@@ -29,6 +29,29 @@ public extension EnvironmentValues {
     /// Charts bridge nil runs of up to this many slots between two samples (`ChartSegments.liveBridgeSlots` on the
     /// Live 1-s grid; 0 = strict gap rule, stored ranges). Set by the Live range readers and the popover.
     @Entry var ttChartGapBridge: Int = 0
+    /// Set by `PopoverRoot`: receives each popover row's hover enter/exit and "Show top apps" (the App's flyout).
+    @Entry var popoverRowHover: (@MainActor @Sendable (PopoverRowHover) -> Void)? = nil
+}
+
+/// A popover category row's hover event for the top-apps flyout (DESIGN §2.22).
+public struct PopoverRowHover: Sendable, Equatable {
+    public enum Phase: Sendable, Equatable {
+        /// Pointer entered / left the row.
+        case entered, exited
+        /// "Show top apps" accessibility action: open the flyout now.
+        case show
+    }
+
+    public var category: MonitorModel.Category
+    public var phase: Phase
+    /// The row's frame in its hosting view (SwiftUI `.global`: top-left origin, y down).
+    public var frame: CGRect
+
+    public init(category: MonitorModel.Category, phase: Phase, frame: CGRect) {
+        self.category = category
+        self.phase = phase
+        self.frame = frame
+    }
 }
 
 /// Disclosure state handed to a table row's cells (use `TTDisclosureButton` in the name cell).
