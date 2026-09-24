@@ -8,11 +8,15 @@ import UniformTypeIdentifiers
 @MainActor public enum SnapshotRenderer {
     public enum Path: Sendable { case imageRenderer, hosting }
 
+    /// See `TTTextRendering.configure()`.
+    public nonisolated static func configureTextRendering() { TTTextRendering.configure() }
+
     public static let locale = Locale(identifier: "en_US")
     public static let timeZone = TimeZone(identifier: "Europe/London")!
 
     public static func render<V: View>(_ view: V, size: CGSize, scale: CGFloat = 2, path: Path = .hosting) -> CGImage? {
-        switch path {
+        configureTextRendering()
+        return switch path {
         case .imageRenderer: imageRenderer(view, size: size, scale: scale)
         case .hosting: hosting(view, size: size, scale: scale)
         }

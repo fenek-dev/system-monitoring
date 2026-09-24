@@ -67,7 +67,7 @@ public struct TTAppTile: View, Equatable {
                 Image(nsImage: icon).resizable().interpolation(.high)
             } else {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(TTColor.tile(for: tileKey))
+                    .fill(TTColor.tiles[TTColor.tileIndex(key: tileKey, name: name.isEmpty ? identity?.displayName : name)])
                     .overlay(
                         Text(letter).font(letterFont).foregroundStyle(TTColor.textOnAccent)
                     )

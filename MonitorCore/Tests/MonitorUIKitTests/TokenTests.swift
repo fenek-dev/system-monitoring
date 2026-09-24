@@ -26,6 +26,18 @@ import Testing
         #expect(spread.count > 3)
     }
 
+    @Test func artboardSampleAppsKeepTheirTileColors() {
+        #expect(TTColor.tileIndex(key: "com.apple.dt.Xcode", name: "Xcode") == 0)
+        #expect(TTColor.tileIndex(key: "com.apple.FinalCut", name: nil) == 1)
+        #expect(TTColor.tileIndex(key: "Final Cut Pro", name: "Final Cut Pro") == 1)
+        #expect(TTColor.tileIndex(key: "com.apple.Safari", name: "Safari") == 2)
+        #expect(TTColor.tileIndex(key: "WindowServer", name: "WindowServer") == 3)
+        #expect(TTColor.tileIndex(key: "com.docker.docker", name: "Docker Desktop") == 4)
+        #expect(TTColor.tileIndex(key: "com.docker.backend", name: nil) == 4)
+        // Unknown apps hash (FNV-1a mod 8).
+        #expect(TTColor.tileIndex(key: "org.example.App", name: "App") == TTColor.tileIndex(for: "org.example.App"))
+    }
+
     @Test func iconPathsStayInsideTheGrid() {
         for name in TTIconName.allCases {
             let path = TTIconPaths.all[name]!
