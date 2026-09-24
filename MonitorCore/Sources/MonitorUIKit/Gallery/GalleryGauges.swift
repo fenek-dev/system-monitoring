@@ -7,7 +7,27 @@ import SwiftUI
         [
             .init(id: "core-bars", size: CGSize(width: 676, height: 236)) { AnyView(CoreBarsCard()) },
             .init(id: "fan-gauges", size: CGSize(width: 332, height: 230)) { AnyView(FansCard()) },
+            // History "App share" treemap (ADDED): ≈ 760×190.
+            .init(id: "treemap", size: CGSize(width: 760, height: 190)) { AnyView(TreemapSample()) },
         ]
+    }
+}
+
+private struct TreemapSample: View {
+    static func share(_ name: String, _ value: Double, _ total: Double, kind: AppKey.Kind = .app) -> AppShare {
+        AppShare(identity: AppIdentity(key: AppKey(kind: kind, id: kind == .other ? "other" : name), displayName: name),
+                 value: value, fraction: value / total)
+    }
+
+    var body: some View {
+        let t = 812.0 + 96 + 19 + 14 + 11 + 9 + 30
+        TTTreemap([
+            Self.share("Xcode", 812, t), Self.share("Final Cut Pro", 96, t), Self.share("Safari", 19, t),
+            Self.share("WindowServer", 14, t), Self.share("Docker Desktop", 11, t), Self.share("mds_stores", 9, t),
+            Self.share("Other", 30, t, kind: .other),
+        ], metric: .cpu, animated: false, otherCount: 23)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(TTColor.bgCard)
     }
 }
 

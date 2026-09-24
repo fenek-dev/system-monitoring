@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MonitorModel
 import Testing
 @testable import MonitorUIKit
 
@@ -89,6 +90,21 @@ import Testing
         #expect(single == [rect])
         let onlyOther = TreemapLayout.squarify([7], otherIndex: 0, in: rect)
         #expect(onlyOther == [rect])
+    }
+
+    @Test(.enUS) func tileLabelsAndValues() {
+        #expect(TTTreemap.showsName(CGSize(width: 60, height: 28)))
+        #expect(!TTTreemap.showsName(CGSize(width: 59, height: 100)))
+        #expect(!TTTreemap.showsName(CGSize(width: 200, height: 27)))
+        #expect(TTTreemap.showsValue(CGSize(width: 60, height: 40)))
+        #expect(!TTTreemap.showsValue(CGSize(width: 60, height: 39)))
+        #expect(!TTTreemap.showsValue(CGSize(width: 38, height: 64)))
+        let u = UnitPreferences()
+        #expect(TTTreemap.valueText(812, metric: .cpu, units: u) == "812% CPU")
+        #expect(TTTreemap.valueText(41, metric: .gpu, units: u) == "41% GPU")
+        #expect(TTTreemap.valueText(4_101_693_768, metric: .memory, units: u) == "3.82 GB")
+        #expect(TTTreemap.valueText(12_400_000, metric: .netRx, units: u) == "12.4 MB/s")
+        #expect(TTTreemap.valueText(7.15, metric: .energy, units: u) == "7.15 W")
     }
 
     @Test func worstAspectRatio() {
