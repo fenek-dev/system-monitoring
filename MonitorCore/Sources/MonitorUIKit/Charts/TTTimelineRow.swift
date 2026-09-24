@@ -14,6 +14,7 @@ public struct TTTimelineRow: View, Equatable {
     let yDomain: ClosedRange<Double>
     let chartWidth: CGFloat?
     let height: CGFloat
+    let showsCollecting: Bool
 
     public init(label: String, value: String?, points: [SeriesPoint], color: Color, yDomain: ClosedRange<Double>) {
         self.init(label: label, icon: nil, value: value, points: points, color: color, yDomain: yDomain)
@@ -23,8 +24,12 @@ public struct TTTimelineRow: View, Equatable {
     ///   - icon: nil → derived from the label ("CPU", "GPU", "Memory", "Network", "Thermals", "Disk", "Energy"/"Power").
     ///   - chartWidth: 480 on Overview; nil fills the available width (App detail).
     ///   - height: row height (34; App detail rows use 30-tall sparklines in 34-tall rows).
+    ///   - showsCollecting: nil = automatic — "Collecting…" for < 2 samples unless `unavailableReason` is set
+    ///     (unavailable: "—" + tooltip, empty chart; DESIGN §3.15).
     public init(label: String, icon: TTIconName?, value: String?, unavailableReason: String? = nil, points: [SeriesPoint],
-                color: Color, yDomain: ClosedRange<Double>, chartWidth: CGFloat? = 480, height: CGFloat = 34) {
+                color: Color, yDomain: ClosedRange<Double>, chartWidth: CGFloat? = 480, height: CGFloat = 34,
+                showsCollecting: Bool? = nil) {
+        self.showsCollecting = showsCollecting ?? (unavailableReason == nil)
         self.label = label
         self.icon = icon ?? Self.icon(for: label)
         self.value = value
@@ -57,7 +62,7 @@ public struct TTTimelineRow: View, Equatable {
             }
             .frame(width: 84, alignment: .leading)
             TTAreaChart(points, color: color, yDomain: yDomain, fillOpacity: TTChartFill.timeline,
-                        lineWidth: TTStroke.sparkThin)
+                        lineWidth: TTStroke.sparkThin, showsCollecting: showsCollecting)
                 .frame(maxWidth: chartWidth ?? .infinity)
                 .frame(width: chartWidth, height: 30)
             MetricValue(value, unavailableReason: unavailableReason, font: TTFont.body12)

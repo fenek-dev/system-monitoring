@@ -106,17 +106,20 @@ public struct TTRowActionsButton: View {
     }
 
     public var body: some View {
+        // macOS Menu labels keep only Image/Text and ignore tints on template images: the ellipsis is a rasterized
+        // image pre-colored `textSecondary`.
         Menu {
             TTRowActionsMenu(target: target)
         } label: {
-            TTIcon(.ellipsis, size: 16, color: TTColor.textSecondary)
-                .frame(width: 24, height: 24)
-                .background(RoundedRectangle(cornerRadius: TTRadius.r5, style: .continuous)
-                    .fill(hovering ? TTColor.fillIconButton : .clear))
+            Image(nsImage: TTIconImage.colored(.ellipsis, hex: TTHex.textSecondary, size: 16))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .frame(width: 24, height: 24)
+        .background(RoundedRectangle(cornerRadius: TTRadius.r5, style: .continuous)
+            .fill(hovering ? TTColor.fillIconButton : .clear))
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .help("Actions for \(name)")
         .accessibilityLabel("Actions for \(name)")
