@@ -143,8 +143,6 @@ private struct TemperaturesCard: View {
     @State private var stored: [HistoryMetric: [SeriesPoint]] = [:]
 
     static let metrics: [HistoryMetric] = [.cpuPTemp, .gpuTemp, .batteryTemp]
-    /// DESIGN §5.10 Thermals chart domain (°C; labels follow the unit setting).
-    static let domain: ClosedRange<Double> = 40...105
 
     var body: some View {
         let range = nav.range
@@ -166,7 +164,9 @@ private struct TemperaturesCard: View {
                 if let reason = ThermalChartData.unavailableReason(series, health: live.sensorHealth) {
                     SystemChartUnavailable(reason: reason)
                 } else {
-                    TTLineChart(series, yDomain: Self.domain) { TTFormat.temperatureCompact($0, units: units) }
+                    TTLineChart(series, yDomain: ThermalChartData.domain(series)) {
+                        TTFormat.temperatureCompact($0, units: units)
+                    }
                 }
             }
             .frame(height: 150)
@@ -181,6 +181,18 @@ private struct TemperaturesCard: View {
 }
 
 enum ThermalChartData {
+    /// DESIGN §5.10 Thermals chart domain, 40–105 °C (labels follow the unit setting).
+    static let baseDomain: ClosedRange<Double> = 40...105
+
+    /// Ruling: the lower bound drops below 40 so no real sample is clamped to the axis floor:
+    /// `min(40, floor(min visible sample) − 5)` rounded down to a multiple of 10. The upper bound stays 105.
+    static func domain(_ series: [ChartSeries]) -> ClosedRange<Double> {
+        let lowest = series.lazy.flatMap(\.points).compactMap(\.value).filter(\.isFinite).min()
+        guard let lowest else { return baseDomain }
+        let lower = min(baseDomain.lowerBound, ((lowest.rounded(.down) - 5) / 10).rounded(.down) * 10)
+        return lower...baseDomain.upperBound
+    }
+
     /// Missing readings are gaps: nil, non-finite and ≤ 0 °C samples (a sensor that reports nothing) become nil,
     /// so they are never drawn at 0 or clamped to the 40° floor.
     static func sanitized(_ points: [SeriesPoint]) -> [SeriesPoint] {
