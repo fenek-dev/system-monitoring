@@ -44,7 +44,7 @@ Implementation defaults chosen without interview:
   - `StorageModel` — `@MainActor @Observable` in `MonitorLive`: scan state, current tree, categories, selection, FDA status, last scan date.
 - **Concurrency**: all blocking file I/O runs on a dedicated `DispatchQueue` (concurrent for directory fan-out), never on the cooperative pool. Progress reaches `StorageModel` throttled to ~10 Hz. Scan and clean are cancellable between units of work.
 - **Navigation**: new `DashboardPage.storage`. Requires an ICR (ARCHITECTURE §9) and a SPEC ruling adding cleanup to v1 scope. Update exhaustive switches: `Navigation.swift`, `DashboardRoot.swift`, `Sidebar.swift`, `Sampling.swift` (Storage demands volume sampling only).
-- **Signing**: `project.yml` moves to Apple Development identity (team ID via local xcconfig, not committed if personal).
+- **Signing**: `project.yml` gets `configFiles` pointing at committed `Signing.xcconfig`, which does `#include? "Local.xcconfig"`. `Local.xcconfig` (gitignored) sets `DEVELOPMENT_TEAM` + `CODE_SIGN_IDENTITY = Apple Development` + `CODE_SIGN_STYLE = Automatic`. Absent file → current ad-hoc settings, so clean checkouts and CI still build. Commit `Local.xcconfig.example`.
 
 ### Scanner engine
 
@@ -56,7 +56,7 @@ Grid per DESIGN §3.0 (padding 20, gap 12, `grid3`).
 
 - **Header trailing**: scan root chip (`~ ▾`: Home / Choose Folder… / mounted volumes) · `Scanned 2 h ago` · `Scan` / `Rescan` (becomes `Cancel` while scanning).
 - **FDA banner** (only without FDA): "Some folders unreadable. Grant Full Disk Access for complete results." + `Open System Settings`. Dismissible per session.
-- **Stat strip**: Capacity · Used · Free (`ShellFormat.freeSpace`, same field as sidebar) · Purgeable · Reclaimable ≈ (last scan) · Trash.
+- **Stat strip**: Capacity · Used · Free (`ShellFormat.freeSpace`, same field as sidebar) · Purgeable · Reclaimable ≈ (last scan) · Trash. Tiles always present (stable positions). Trash shows `Empty` at 0 B, `—` when unreadable (no FDA); Reclaimable shows `—` before first scan.
 - **Mode switch** (`TTSegmented`): `Space Map` (default) | `Cleanup`.
 
 ### Space Map
@@ -108,7 +108,7 @@ Each path belongs to at most one category. Priority: Developer > User Caches > L
 | User Caches | children of `~/Library/Caches` and `~/Library/Logs`; owner resolved bundle ID → installed app | Safe; `com.apple.*` → Review | remove |
 | Leftovers | reverse-DNS dirs/plists in `~/Library/{Application Support, Caches, Containers, Group Containers, Preferences, Saved Application State, HTTPStorages, WebKit}` with no installed app (LaunchServices + `/Applications` + `~/Applications`); `com.apple.*` never included | Review | trash |
 | Large & Old | files ≥ 500 MB, or ≥ 50 MB and unused ≥ 6 months. "Unused" = Spotlight `kMDItemLastUsedDate` (queried for candidates only), fallback mtime | Review | trash |
-| Dev: DerivedData, package caches (Homebrew, npm, yarn, pnpm, pip, cargo, gradle) | fixed paths | Safe | remove |
+| Dev: DerivedData, package caches (Homebrew, npm, yarn, pnpm, pip, cargo, gradle, CocoaPods), JetBrains caches (`~/Library/Caches/JetBrains`) | fixed paths | Safe | remove |
 | Dev: iOS DeviceSupport (all but newest per platform) | fixed path | Review | remove |
 | Dev: unavailable simulators | `xcrun simctl delete unavailable`, size from their device dirs | Review | simctl |
 | Dev: Xcode Archives older than 180 days | fixed path | Review | trash (not regenerable) |
@@ -165,7 +165,7 @@ Each path belongs to at most one category. Priority: Developer > User Caches > L
 
 1. Artboards (empty, scanning, space map, cleanup, no-FDA)
 2. ICR for `DashboardPage.storage` + SPEC ruling adding cleanup to scope
-3. Signing change (Apple Development)
+3. Signing change: `Signing.xcconfig` + `Local.xcconfig.example`, add `Local.xcconfig` to `.gitignore`
 4. `MonitorStorage`: lister + scanner + scan cache
 5. Classifier
 6. Cleaner + guardrails
@@ -176,6 +176,10 @@ Each path belongs to at most one category. Priority: Developer > User Caches > L
 ## 10. Later (out of v1)
 
 Local Time Machine snapshots · duplicate finder · Mail attachments / iOS backups · low-disk in-app nudge · cleanup history · periodic background scan · whole-volume/system areas (need root).
+
+Developer targets deliberately excluded:
+- Go module cache (`~/go/pkg/mod`): files are read-only, so `removeItem` fails; correct path is `go clean -modcache`. Revisit as a tool-command item like `simctl`.
+- Android SDK / AVDs: large but user-installed tooling, not junk.
 
 ## 11. Risks
 
