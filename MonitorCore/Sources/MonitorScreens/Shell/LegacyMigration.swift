@@ -3,15 +3,18 @@ import Foundation
 /// One-time move from the app's old identity (Telltale, `dev.telltale.Telltale`) to Warden (`dev.warden.Warden`),
 /// run at launch before the single-instance lock, the settings store and the history store open:
 /// 1. the data directory moves to its new name (one `rename`, atomic on the same volume) when the new one doesn't
-///    exist yet; if the move fails, nothing else happens and the next launch retries;
+///    exist yet or holds nothing worth keeping (`newDataIsDisposable`); the old dir's instance lock is held
+///    throughout; if the move fails, nothing else happens and the next launch retries;
 /// 2. each old `UserDefaults` domain (the app domain, and the per-data-dir suite in dev) is merged into its new
 ///    domain when that one is still empty, written in one pass (`setPersistentDomain`);
 /// 3. launch at login: only if the old app's migrated defaults record it (`legacyLoginItem`) and it was on, the
 ///    new app registers. Telltale never persisted it (it read `SMAppService` only), so in practice nothing happens.
 ///    The old registration can't be removed from the new bundle, and the old binary is never run: the user is told
-///    once (`noticePendingKey`, "Warden replaced Telltale…") to remove it and delete Telltale.app;
+///    once (`noticePendingKey`, "Warden replaced Telltale…") to remove it and delete Telltale.app, with an
+///    "Open at Login" choice for Warden;
 /// 4. `doneKey` in `marker` records completion, so later launches do nothing.
-/// While a Telltale instance still holds the old data dir, nothing is touched and the next launch retries.
+/// While a Telltale instance holds the old data dir (`.legacyInUse`), nothing is touched; the App says
+/// `legacyRunningText` and exits before creating anything, and the next launch migrates.
 public struct LegacyMigration {
     /// A defaults domain: what is persisted in it (not the global/registration layers), and a one-pass replace.
     public struct Domain {
@@ -42,8 +45,13 @@ public struct LegacyMigration {
     public static let doneKey = "migration.fromTelltale.done"
     /// Set in `marker` when something was migrated; `takeNotice` reads and clears it (shown once).
     public static let noticePendingKey = "migration.fromTelltale.noticePending"
-    public static let noticeText =
+    public static let noticeTextWithoutLogin =
         "Warden replaced Telltale. Remove Telltale from System Settings › General › Login Items and delete Telltale.app."
+    /// With the "Open at Login" button (installed copy, not yet a login item).
+    public static let noticeText = noticeTextWithoutLogin + " To start Warden when you log in, choose Open at Login."
+    public static let noticeLoginButton = "Open at Login"
+    /// `.legacyInUse`: the App shows this and exits before creating anything of its own.
+    public static let legacyRunningText = "Telltale is running. Quit Telltale, then open Warden."
     public static let legacyBundleID = "dev.telltale.Telltale"
 
     public var legacyDataDirectory: URL?
@@ -51,21 +59,29 @@ public struct LegacyMigration {
     /// The first pair is the app's main domain (its old contents feed `legacyLoginItem`).
     public var defaults: [(from: Domain, to: Domain)]
     public var marker: UserDefaults
-    public var legacyInstanceRunning: () -> Bool
+    /// Takes the old data dir's instance lock (`.acquired(token)`, the token is held until the migration returns,
+    /// so no Telltale can start on the old dir mid-move) or reports a running Telltale (`.heldByTelltale`).
+    public var lockLegacy: () -> LegacyLock
+    /// True when an existing new data dir holds nothing worth keeping (a lock file, an empty store left by a launch
+    /// that couldn't migrate): it is removed and the old dir moved in. Default: only `.instance.lock` and
+    /// zero-length files.
+    public var newDataIsDisposable: (URL) -> Bool
     /// Launch-at-login as recorded in the old main domain; nil = not recorded (do nothing).
     public var legacyLoginItem: ([String: Any]) -> Bool?
     public var loginItemEnabled: () -> Bool
     public var enableLoginItem: () throws -> Void
 
     public init(legacyDataDirectory: URL?, dataDirectory: URL?, defaults: [(from: Domain, to: Domain)],
-                marker: UserDefaults, legacyInstanceRunning: @escaping () -> Bool,
+                marker: UserDefaults, lockLegacy: @escaping () -> LegacyLock = { .acquired(nil) },
+                newDataIsDisposable: @escaping (URL) -> Bool = LegacyMigration.onlyLockOrEmptyFiles,
                 legacyLoginItem: @escaping ([String: Any]) -> Bool? = { _ in nil },
                 loginItemEnabled: @escaping () -> Bool = { true }, enableLoginItem: @escaping () throws -> Void = {}) {
         self.legacyDataDirectory = legacyDataDirectory
         self.dataDirectory = dataDirectory
         self.defaults = defaults
         self.marker = marker
-        self.legacyInstanceRunning = legacyInstanceRunning
+        self.lockLegacy = lockLegacy
+        self.newDataIsDisposable = newDataIsDisposable
         self.legacyLoginItem = legacyLoginItem
         self.loginItemEnabled = loginItemEnabled
         self.enableLoginItem = enableLoginItem
@@ -77,10 +93,15 @@ public struct LegacyMigration {
             out.alreadyDone = true
             return out
         }
-        if legacyInstanceRunning() {
-            out.data = .legacyInUse
+        let token: AnyObject?
+        switch lockLegacy() {
+        case .heldByTelltale:
+            out.data = .legacyInUse                                  // the App tells the user and exits
             return out
+        case .acquired(let t):
+            token = t
         }
+        defer { withExtendedLifetime(token) {} }                    // lock held through the move and the copy
         if let old = legacyDataDirectory, let new = dataDirectory {
             let data = moveData(from: old, to: new, fm)
             out.data = data
@@ -115,8 +136,11 @@ public struct LegacyMigration {
     private func moveData(from old: URL, to new: URL, _ fm: FileManager) -> DataOutcome {
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: old.path, isDirectory: &isDir), isDir.boolValue else { return .noLegacyData }
-        guard !fm.fileExists(atPath: new.path) else { return .newAlreadyExists }
         do {
+            if fm.fileExists(atPath: new.path) {
+                guard newDataIsDisposable(new) else { return .newAlreadyExists }
+                try fm.removeItem(at: new)
+            }
             try fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fm.moveItem(at: old, to: new)
             return .moved
@@ -124,4 +148,25 @@ public struct LegacyMigration {
             return .failed(error.localizedDescription)
         }
     }
+
+    /// Default `newDataIsDisposable`: a directory holding only `.instance.lock` and zero-length files.
+    public static func onlyLockOrEmptyFiles(_ dir: URL) -> Bool {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey])
+        else { return false }
+        return items.allSatisfy { url in
+            if url.lastPathComponent == ".instance.lock" { return true }
+            guard let v = try? url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey]), v.isDirectory != true
+            else { return false }
+            return (v.fileSize ?? 1) == 0
+        }
+    }
+}
+
+/// `LegacyMigration.lockLegacy` result.
+public enum LegacyLock {
+    /// The old dir's lock is ours (token: the lock object, nil when there is no old dir); keep it until done.
+    case acquired(AnyObject?)
+    /// A running Telltale holds it.
+    case heldByTelltale
 }
