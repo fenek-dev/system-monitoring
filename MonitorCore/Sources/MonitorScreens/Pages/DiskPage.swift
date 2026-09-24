@@ -63,6 +63,16 @@ enum DiskCopy {
             .compactMap { $0 }.joined(separator: " · ")
     }
 
+    /// Ruling (CP2): free space = available capacity (`volumeAvailableCapacity` = statfs available / APFS container
+    /// free, as `diskutil` reports it); purgeable is never added to it and is shown separately.
+    static func freeBytes(_ v: VolumeInfo) -> UInt64 { v.availableBytes }
+
+    /// Free-space sub-line: "on Macintosh HD", plus "· 18 GB purgeable" when the system can free more.
+    static func freeDetail(_ v: VolumeInfo) -> String {
+        guard let p = v.purgeableBytes, p >= 1_000_000_000 else { return "on \(v.name)" }
+        return "on \(v.name) · \(TTFormat.storage(p, style: .capacity)) purgeable"
+    }
+
     /// Used (incl. purgeable) = total − available; "612 GB of 994 GB".
     static func usedBytes(_ v: VolumeInfo) -> UInt64 { v.totalBytes > v.availableBytes ? v.totalBytes - v.availableBytes : 0 }
 
@@ -147,8 +157,9 @@ private struct DiskStatStrip: View {
             .init(id: "write", label: "Write", value: d.writeBps.map { TTFormat.diskRate($0) },
                   detail: d.writeIOPS.map { "\(TTFormat.iops($0)) IOPS" },
                   unavailableReason: unavailableReason(.diskWrite, health: h)),
-            .init(id: "free", label: "Free space", value: boot.map { TTFormat.storage($0.availableBytes, style: .capacity) },
-                  detail: boot.map { "on \($0.name)" },
+            .init(id: "free", label: "Free space",
+                  value: boot.map { TTFormat.storage(DiskCopy.freeBytes($0), style: .capacity) },
+                  detail: boot.map(DiskCopy.freeDetail),
                   unavailableReason: live.status(of: .volumes).reason ?? "Boot volume not found"),
             .init(id: "wear", label: "SSD wear", value: DiskCopy.wear(d.smart?.percentageUsed),
                   detail: d.smart?.dataWrittenBytes.map { "\(TTFormat.storage($0, style: .lifetime)) written" },
@@ -327,26 +338,87 @@ struct DiskRow: Identifiable, Equatable {
     var identity: AppIdentity?
     var read: Double?
     var write: Double?
-    var readTotal: UInt64?
-    var writeTotal: UInt64?
+    /// Bytes since Telltale started (see `DiskSessionBaselines`).
+    var readSession: UInt64?
+    var writeSession: UInt64?
+    /// The process predates Telltale and was first seen later, so earlier session I/O is not included.
+    var sessionPartial: Bool
     var target: ProcessTarget
 
     var rate: Double { (read ?? 0) + (write ?? 0) }
 }
 
 enum DiskRows {
-    /// Processes with disk I/O this tick (restricted pids are counted in their coalition rows).
-    static func rows(_ processes: [ProcessSample], identity: (AppKey) -> AppIdentity?) -> [DiskRow] {
-        SystemPageSort.descending(unsorted(processes, identity: identity)) { $0.rate }
+    /// Processes with disk I/O this tick (restricted pids are counted in their coalition rows), by read + write.
+    static func rows(_ processes: [ProcessSample], identity: (AppKey) -> AppIdentity?,
+                     session: (ProcessSample) -> DiskSessionBaselines.Session) -> [DiskRow] {
+        let active = processes.filter { ($0.diskReadBps ?? 0) + ($0.diskWriteBps ?? 0) > 0 }
+        return SystemPageSort.descending(active.map { p in
+            let s = session(p)
+            return DiskRow(id: "pid:\(p.id.pid):\(p.id.startTimeUs)", name: p.name, identity: identity(p.app),
+                           read: p.diskReadBps, write: p.diskWriteBps, readSession: s.read, writeSession: s.write,
+                           sessionPartial: s.partial,
+                           target: .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid))
+        }) { $0.rate }
     }
 
-    private static func unsorted(_ processes: [ProcessSample], identity: (AppKey) -> AppIdentity?) -> [DiskRow] {
-        processes.compactMap { p in
-            guard (p.diskReadBps ?? 0) + (p.diskWriteBps ?? 0) > 0 else { return nil }
-            return DiskRow(id: "pid:\(p.id.pid):\(p.id.startTimeUs)", name: p.name, identity: identity(p.app),
-                           read: p.diskReadBps, write: p.diskWriteBps, readTotal: p.diskReadTotal,
-                           writeTotal: p.diskWriteTotal,
-                           target: .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid))
+    /// Session total cell: storage headline style (§5.3, "18.4 GB", "578 MB"); 0 → "—" (idle, no tooltip).
+    static func sessionText(_ bytes: UInt64?) -> String? {
+        guard let bytes else { return nil }
+        return bytes == 0 ? TTFormat.unavailable : TTFormat.storage(bytes, style: .headline)
+    }
+}
+
+/// "Read/Written (session)" = bytes since Telltale started. `ProcessSample.diskReadTotal/diskWriteTotal` are the
+/// process's lifetime `ri_diskio_bytes*` counters, so a process that started after Telltale counts in full, and
+/// one that predates Telltale is measured from the first time it is seen here (flagged `partial`).
+/// TODO(ICR 009): replace with engine-side `ProcessSample.diskReadSession/diskWriteSession` (baselined at engine
+/// start) once accepted; see docs/icr/009-W5b-disk-session-totals.md.
+@MainActor final class DiskSessionBaselines {
+    struct Session: Equatable {
+        var read: UInt64?
+        var write: UInt64?
+        var partial: Bool
+    }
+
+    static let shared = DiskSessionBaselines(launchUs: DiskSessionBaselines.ownStartUs)
+
+    /// Telltale's own `p_starttime` in µs (the unit of `ProcessID.startTimeUs`).
+    static let ownStartUs: UInt64? = {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let tv = info.kp_proc.p_starttime
+        return UInt64(max(0, tv.tv_sec)) * 1_000_000 + UInt64(max(0, tv.tv_usec))
+    }()
+
+    private let launchUs: UInt64?
+    private var baselines: [ProcessID: (read: UInt64, write: UInt64)] = [:]
+
+    init(launchUs: UInt64?) { self.launchUs = launchUs }
+
+    func session(_ p: ProcessSample) -> Session {
+        if let launchUs, p.id.startTimeUs >= launchUs {
+            return Session(read: p.diskReadTotal, write: p.diskWriteTotal, partial: false)
+        }
+        guard p.diskReadTotal != nil || p.diskWriteTotal != nil else { return Session(read: nil, write: nil, partial: false) }
+        let base = baselines[p.id] ?? (p.diskReadTotal ?? 0, p.diskWriteTotal ?? 0)
+        if baselines[p.id] == nil { baselines[p.id] = base }
+        func delta(_ now: UInt64?, _ b: UInt64) -> UInt64? { now.map { $0 >= b ? $0 - b : $0 } }   // pid reuse → restart
+        return Session(read: delta(p.diskReadTotal, base.read), write: delta(p.diskWriteTotal, base.write), partial: true)
+    }
+
+    /// Records a baseline for every process seen for the first time (so later I/O counts from here), and drops
+    /// baselines of processes that exited.
+    func observe(_ processes: [ProcessSample]) {
+        for p in processes where baselines[p.id] == nil && (p.diskReadTotal != nil || p.diskWriteTotal != nil) {
+            if let launchUs, p.id.startTimeUs >= launchUs { continue }
+            baselines[p.id] = (p.diskReadTotal ?? 0, p.diskWriteTotal ?? 0)
+        }
+        if baselines.count > processes.count {
+            let live = Set(processes.map(\.id))
+            baselines = baselines.filter { live.contains($0.key) }
         }
     }
 }
@@ -354,10 +426,15 @@ enum DiskRows {
 private struct DiskActivityCard: View {
     let feedback: ProcessActionFeedback
     @Environment(LiveModel.self) private var live
+    @Environment(\.isSnapshot) private var isSnapshot
     @State private var selection: String?
+    /// Snapshots get a fresh store (deterministic regardless of test order) with launch at 0: mock processes'
+    /// disk totals are already session totals (Wm), so they count in full.
+    @State private var snapshotBaselines = DiskSessionBaselines(launchUs: 0)
 
     var body: some View {
-        let rows = DiskRows.rows(live.processes) { live.app($0)?.identity }
+        let baselines = isSnapshot ? snapshotBaselines : DiskSessionBaselines.shared
+        let rows = DiskRows.rows(live.processes, identity: { live.app($0)?.identity }, session: baselines.session)
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Disk activity by process") { ProcessActionToast(feedback: feedback) }
             SystemFittedRows(rowHeight: TTTableStyle.disk.rowHeight) { limit in
@@ -368,6 +445,9 @@ private struct DiskActivityCard: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .onChange(of: live.lastUpdate, initial: true) {
+            if !isSnapshot { DiskSessionBaselines.shared.observe(live.processes) }
+        }
     }
 
     /// DESIGN §3.11 template `minmax(0,2fr) 100 100 110 120 28`; fixed-sorted by read + write.
@@ -382,15 +462,21 @@ private struct DiskActivityCard: View {
             AnyView(MetricValue(TTFormat.diskRateCell(row.write), font: TTFont.body12))
         },
         .init(id: "readSession", title: "Read (session)", width: .fixed(110), alignment: .trailing) { row in
-            AnyView(MetricValue(row.readTotal.map { TTFormat.storage($0, style: .detail) },
-                                unavailableReason: "Not reported for this process", font: TTFont.body12))
+            AnyView(sessionCell(row.readSession, partial: row.sessionPartial))
         },
         .init(id: "writeSession", title: "Written (session)", width: .fixed(120), alignment: .trailing) { row in
-            AnyView(MetricValue(row.writeTotal.map { TTFormat.storage($0, style: .detail) },
-                                unavailableReason: "Not reported for this process", font: TTFont.body12))
+            AnyView(sessionCell(row.writeSession, partial: row.sessionPartial))
         },
         .init(id: "actions", title: "", width: .fixed(28), alignment: .trailing) { row in
             AnyView(TTRowActionsButton(target: row.target, name: row.name))
         },
     ]
+
+    static let partialHelp = "Counted since Telltale first saw this process; earlier I/O this session isn't included"
+
+    @ViewBuilder private static func sessionCell(_ bytes: UInt64?, partial: Bool) -> some View {
+        let text = DiskRows.sessionText(bytes)
+        MetricValue(text, unavailableReason: bytes == nil ? "Not reported for this process" : nil, font: TTFont.body12)
+            .helpIfPresent(partial && text != TTFormat.unavailable ? partialHelp : nil)
+    }
 }

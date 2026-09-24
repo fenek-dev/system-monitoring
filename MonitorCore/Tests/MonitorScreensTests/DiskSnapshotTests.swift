@@ -117,11 +117,48 @@ struct DiskPageLogicTests {
         #expect(feedback.toast == "Archive ejected.")
     }
 
+    /// CP2: session totals are deltas since Telltale started, not lifetime counters.
+    @Test func sessionTotals() {
+        let launch: UInt64 = 1_000_000
+        let store = DiskSessionBaselines(launchUs: launch)
+        // Started before Telltale: baseline at first sight, then deltas (partial).
+        var old = ProcessSample(id: ProcessID(pid: 1, startTimeUs: 10), name: "kernel_task",
+                                diskReadTotal: 171_400_000_000, diskWriteTotal: 5_000_000_000)
+        #expect(store.session(old) == .init(read: 0, write: 0, partial: true))
+        old.diskReadTotal = 171_400_000_000 + 2_500_000
+        old.diskWriteTotal = 5_000_000_000 + 1_200_000_000
+        #expect(store.session(old) == .init(read: 2_500_000, write: 1_200_000_000, partial: true))
+        // Started after Telltale: its lifetime counters are session totals.
+        let new = ProcessSample(id: ProcessID(pid: 2, startTimeUs: launch + 5), name: "mds_stores",
+                                diskReadTotal: 18_400_000_000, diskWriteTotal: 600_000_000)
+        #expect(store.session(new) == .init(read: 18_400_000_000, write: 600_000_000, partial: false))
+        // observe() baselines idle processes too and drops exited ones.
+        let idle = ProcessSample(id: ProcessID(pid: 3, startTimeUs: 20), name: "idle", diskReadTotal: 7, diskWriteTotal: 9)
+        store.observe([idle])
+        #expect(store.session(idle) == .init(read: 0, write: 0, partial: true))
+        // Formatting: storage headline (§5.3), 0 → "—".
+        #expect(DiskRows.sessionText(18_400_000_000) == "18.4 GB")
+        #expect(DiskRows.sessionText(578_000_000) == "578 MB")
+        #expect(DiskRows.sessionText(0) == "—")
+        #expect(DiskRows.sessionText(nil) == nil)
+        #expect(DiskSessionBaselines.ownStartUs != nil)
+    }
+
+    /// CP2 ruling: free = available capacity (container free); purgeable shown separately.
+    @Test func freeSpaceExcludesPurgeable() {
+        #expect(DiskCopy.freeBytes(boot) == 382_000_000_000)
+        #expect(DiskCopy.freeDetail(boot) == "on Macintosh HD · 18 GB purgeable")
+        let tb = VolumeInfo(id: "/", name: "Macintosh HD", totalBytes: 2_000_000_000_000, availableBytes: 1_090_000_000_000,
+                            availableImportantBytes: 1_090_000_000_000)
+        #expect(TTFormat.storage(DiskCopy.freeBytes(tb), style: .capacity) == "1.09 TB")
+        #expect(DiskCopy.freeDetail(tb) == "on Macintosh HD")
+    }
+
     @Test func rowsOnlyActiveProcesses() {
         let a = ProcessSample(id: ProcessID(pid: 10, startTimeUs: 1), name: "mds_stores", uid: 0,
                               diskReadBps: 96e6, diskWriteBps: 1.2e6)
         let b = ProcessSample(id: ProcessID(pid: 11, startTimeUs: 1), name: "idle", uid: 501)
-        let rows = DiskRows.rows([a, b]) { _ in nil }
+        let rows = DiskRows.rows([a, b], identity: { _ in nil }, session: DiskSessionBaselines(launchUs: 0).session)
         #expect(rows.map(\.name) == ["mds_stores"])
         #expect(rows[0].rate == 97.2e6)
         #expect(rows[0].target == .process(pid: 10, name: "mds_stores", path: nil, uid: 0))

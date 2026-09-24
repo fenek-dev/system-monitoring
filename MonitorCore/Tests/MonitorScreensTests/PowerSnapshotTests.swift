@@ -40,6 +40,27 @@ struct PowerSnapshotTests {
                        size: ScreenSize.pageContent, named: "power-selected-calm")
     }
 
+    /// CP2: a MacBook whose battery sensor is unavailable keeps the battery layout with "—" + the reason
+    /// (never "No battery").
+    @Test func laptopBatterySensorUnavailable() {
+        let provider = MockDataProvider(scenario: .calm)
+        var device = provider.device
+        device.hasBattery = true
+        let live = LiveModel(device: device)
+        for tick in 0...60 {
+            var f = provider.frame(at: tick)
+            f.device = device
+            f.power.battery = nil
+            f.sensorHealth[.battery] = .unavailable("AppleSmartBattery not found")
+            live.apply(f)
+        }
+        live.isPresenting = true
+        let ctx = ShellContext(live: live, settings: ScreenCatalog.snapshotSettings(), history: provider.history(),
+                               isSnapshot: true, now: MockDataProvider.referenceDate)
+        assertSnapshot(PowerPage().telltaleEnvironment(ctx), size: ScreenSize.pageContent,
+                       named: "power-battery-unavailable")
+    }
+
     /// Desktop Mac: no battery → "No battery" card, drain "—", header without Wh.
     @Test func desktopNoBattery() {
         let provider = MockDataProvider(scenario: .calm)
@@ -78,11 +99,23 @@ struct PowerPageLogicTests {
     }
 
     @Test func subtitle() {
-        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(), lowPowerMode: false))
+        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(), lowPowerMode: false), hasBattery: true)
             == "On battery · 72.4 Wh · Low Power Mode off")
-        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(onAC: true), adapterWatts: 96, lowPowerMode: true))
+        #expect(PowerCopy.subtitle(PowerSnapshot(battery: battery(onAC: true), adapterWatts: 96, lowPowerMode: true),
+                                   hasBattery: true)
             == "On power adapter · 96 W · 72.4 Wh · Low Power Mode on")
-        #expect(PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false)) == "On power adapter · Low Power Mode off")
+        #expect(PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false), hasBattery: false)
+            == "On power adapter · Low Power Mode off")
+        // Laptop with the battery sensor down: no power-source claim.
+        #expect(PowerCopy.subtitle(PowerSnapshot(lowPowerMode: false), hasBattery: true) == "Low Power Mode off")
+    }
+
+    /// CP2: "No battery" only when the Mac has none; otherwise the battery sensor's reason.
+    @Test func batteryReason() {
+        #expect(PowerCopy.batteryReason(hasBattery: false, status: .ok) == "This Mac has no battery")
+        #expect(PowerCopy.batteryReason(hasBattery: true, status: .unavailable("AppleSmartBattery not found"))
+            == "AppleSmartBattery not found")
+        #expect(PowerCopy.batteryReason(hasBattery: true, status: .ok) == "Not reported by the battery")
     }
 
     @Test func drain() {

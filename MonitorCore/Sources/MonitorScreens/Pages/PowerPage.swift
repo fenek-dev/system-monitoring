@@ -42,7 +42,7 @@ private struct PowerHeaderSubtitle: View {
     @Environment(LiveModel.self) private var live
 
     var body: some View {
-        Color.clear.pageHeader(subtitle: PowerCopy.subtitle(live.power))
+        Color.clear.pageHeader(subtitle: PowerCopy.subtitle(live.power, hasBattery: live.device.hasBattery))
     }
 }
 
@@ -50,13 +50,17 @@ private struct PowerHeaderSubtitle: View {
 
 enum PowerCopy {
     /// "On battery · 72.4 Wh · Low Power Mode off" / "On power adapter · 96 W · …" (DESIGN §3.10 header).
-    static func subtitle(_ p: PowerSnapshot) -> String {
+    /// A laptop whose battery reading is missing (sensor unavailable) doesn't claim a power source unless the adapter
+    /// wattage says so.
+    static func subtitle(_ p: PowerSnapshot, hasBattery: Bool) -> String {
         var parts: [String] = []
-        let onAC = p.battery?.onAC ?? true
-        if onAC {
-            parts.append(p.adapterWatts.map { "On power adapter · \(TTFormat.number($0, digits: 0)) W" } ?? "On power adapter")
-        } else {
-            parts.append("On battery")
+        let adapter = p.adapterWatts.map { "On power adapter · \(TTFormat.number($0, digits: 0)) W" }
+        if let b = p.battery {
+            parts.append(b.onAC ? (adapter ?? "On power adapter") : "On battery")
+        } else if !hasBattery {
+            parts.append(adapter ?? "On power adapter")
+        } else if let adapter {
+            parts.append(adapter)
         }
         if let wh = p.battery?.designCapacityWh { parts.append("\(TTFormat.number(wh, digits: 1)) Wh") }
         parts.append(p.lowPowerMode ? "Low Power Mode on" : "Low Power Mode off")
@@ -89,6 +93,12 @@ enum PowerCopy {
         return parts.isEmpty ? "Connected" : parts.joined(separator: " ")
     }
 
+    /// Why battery values are "—": no battery (desktop), else the battery sensor's reason.
+    static func batteryReason(hasBattery: Bool, status: SensorStatus) -> String {
+        guard hasBattery else { return "This Mac has no battery" }
+        return status.reason ?? "Not reported by the battery"
+    }
+
     /// Glyph fill: `battery`, `statusElevated` at ≤ 20 %, `statusCritical` at ≤ 10 % (ADDED).
     static func fillColor(percent: Double) -> Color {
         if percent <= 10 { return TTColor.statusCritical }
@@ -117,8 +127,8 @@ private struct PowerStatStrip: View {
             .init(id: "dram", label: "DRAM", value: p.dramWatts.map { TTFormat.watts($0) },
                   unavailableReason: unavailableReason(.dramWatts, health: h)),
             .init(id: "drain", label: "Battery drain", value: p.battery.flatMap(PowerCopy.drain), detail: "system total",
-                  unavailableReason: p.battery == nil ? "This Mac has no battery"
-                      : (unavailableReason(.batteryPercent, health: h) ?? "Not reported by the battery")),
+                  unavailableReason: PowerCopy.batteryReason(hasBattery: live.device.hasBattery,
+                                                             status: live.status(of: .battery))),
         ])
     }
 }
@@ -197,29 +207,37 @@ private struct BatteryCard: View {
                 Spacer(minLength: 0)
             }
             .frame(minHeight: 20)
-            if let b = p.battery {
+            // "No battery" only on Macs without one; a laptop whose battery sensor is down keeps the layout with
+            // "—" + the sensor's reason.
+            if p.battery != nil || live.device.hasBattery {
+                let b = p.battery
+                let missing = b == nil ? PowerCopy.batteryReason(hasBattery: true, status: live.status(of: .battery)) : nil
+                let notReported = missing ?? Self.notReported
                 HStack(spacing: TTSpace.x14) {
-                    BatteryGlyph(percent: b.percent)
+                    BatteryGlyph(percent: b?.percent)
                     VStack(alignment: .leading, spacing: 0) {
-                        MetricValue(b.percent.map { TTFormat.percent($0 / 100) },
-                                    unavailableReason: unavailableReason(.batteryPercent, health: live.sensorHealth),
+                        MetricValue(b?.percent.map { TTFormat.percent($0 / 100) },
+                                    unavailableReason: missing ?? unavailableReason(.batteryPercent, health: live.sensorHealth),
                                     font: TTFont.title1)
                             .foregroundStyle(TTColor.textPrimary)
-                        Text(PowerCopy.batteryPhrase(b)).font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
-                            .lineLimit(1)
+                        Text(b.map(PowerCopy.batteryPhrase) ?? "Battery status unavailable")
+                            .font(TTFont.caption).foregroundStyle(TTColor.textSecondary).lineLimit(1)
+                            .helpIfPresent(missing)
                     }
                 }
                 // Spacer inside (not a card child) so the stretch adds no extra 8-pt card gap.
                 VStack(spacing: 0) {
                     TTKeyValueList(rows: [
-                        .init("Health", b.healthFraction.map { "\(TTFormat.percent($0)) maximum capacity" },
-                              unavailableReason: Self.notReported),
-                        .init("Condition", b.condition, unavailableReason: Self.notReported),
-                        .init("Cycle count", b.cycleCount.map { TTFormat.count($0) }, unavailableReason: Self.notReported),
-                        .init("Capacity", Self.capacity(b), unavailableReason: Self.notReported),
-                        .init("Temperature", b.temperatureC.map { TTFormat.temperature($0, units: units) },
-                              unavailableReason: Self.notReported),
-                        .init("Power adapter", PowerCopy.adapter(p)),
+                        .init("Health", b?.healthFraction.map { "\(TTFormat.percent($0)) maximum capacity" },
+                              unavailableReason: notReported),
+                        .init("Condition", b?.condition, unavailableReason: notReported),
+                        .init("Cycle count", b?.cycleCount.map { TTFormat.count($0) }, unavailableReason: notReported),
+                        .init("Capacity", b.flatMap(Self.capacity), unavailableReason: notReported),
+                        .init("Temperature", b?.temperatureC.map { TTFormat.temperature($0, units: units) },
+                              unavailableReason: notReported),
+                        .init("Power adapter", b == nil ? p.adapterWatts.map { "\(TTFormat.number($0, digits: 0)) W" }
+                                                        : PowerCopy.adapter(p),
+                              unavailableReason: notReported),
                     ])
                     Spacer(minLength: 0)
                 }
