@@ -68,6 +68,22 @@ enum NetworkFFI {
         return RouteParse.pick(routes, primaryIndex: index)?.gateway ?? scRouter
     }
 
+    /// Latency target: router of the physical primary interface (`RouteParse.physicalRouter`).
+    static func physicalRouter(_ store: SCDynamicStore?) -> RouterChoice {
+        let g = globalIPv4(store)
+        let routes = (try? defaultRoutes()) ?? []
+        var names: [UInt16: String] = [:]
+        for r in routes where names[r.interfaceIndex] == nil {
+            var buf = [CChar](repeating: 0, count: Int(IF_NAMESIZE) + 1)
+            let n = buf.withUnsafeMutableBufferPointer { b -> String? in
+                guard let base = b.baseAddress, if_indextoname(UInt32(r.interfaceIndex), base) != nil else { return nil }
+                return String(cString: base)
+            }
+            if let n { names[r.interfaceIndex] = n }
+        }
+        return RouteParse.physicalRouter(routes, names: names, primary: g.primary, scRouter: g.router)
+    }
+
     /// Hardware interfaces SystemConfiguration knows (bsd name → type, localized name).
     static func descriptors() -> [String: InterfaceDescriptor] {
         guard let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else { return [:] }

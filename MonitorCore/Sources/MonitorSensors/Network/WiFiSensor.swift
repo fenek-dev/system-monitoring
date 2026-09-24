@@ -1,5 +1,7 @@
 import CoreWLAN
+import Dispatch
 import MonitorModel
+import os
 
 /// Raw CoreWLAN values (enum raw values, so the mapping is testable without CoreWLAN objects).
 struct WiFiFields: Sendable, Equatable, Codable {
@@ -69,28 +71,101 @@ enum WiFiParse {
 
 /// Wi-Fi link via CoreWLAN: RSSI, noise, channel, band, width, PHY mode, tx rate. No SSID: it needs Location
 /// permission (CoreWLAN and SCDynamicStore both redact it; docs/findings/extras.md §5).
+///
+/// Only sampled while `.wifi` is demanded (the Network page). Each CWInterface getter is an XPC round trip to
+/// airportd (~6 ms per read in total), so reads run on the box queue: `sample()` returns the last completed read
+/// with its capturedNs and starts the next one; an airportd stall never blocks a tick.
 public final class WiFiSensor: Sensor {
     public typealias Reading = WiFiInfo
     public let id: SensorID = .wifi
-    public let cadence: SensorCadence = .every(.seconds(2), background: .seconds(30))
+    public let cadence: SensorCadence = .every(.seconds(2), background: .seconds(30), requires: .wifi)
 
-    private var iface: CWInterface?
+    let box = WiFiBox()
 
     public init() {}
 
-    /// First CoreWLAN call costs ~40 ms (XPC connection); later ones ~ms.
     public func prepare() throws(SensorError) {
-        guard iface == nil else { return }
-        guard let i = CWWiFiClient.shared().interface() else { throw .unavailable("No Wi-Fi interface") }
-        iface = i
+        guard !box.isPrepared else { return }
+        guard !(CWWiFiClient.interfaceNames() ?? []).isEmpty else { throw .unavailable("No Wi-Fi interface") }
+        box.setPrepared(true)
+        box.startRead()
     }
 
     public func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: WiFiInfo, capturedNs: UInt64) {
-        (WiFiParse.reading(try fields()), W6cClock.uptimeNs())
+        guard box.isPrepared else { throw .unavailable("Wi-Fi not prepared") }
+        if let last = box.last() {
+            box.startRead()
+            return try last.get()
+        }
+        // First sample: the read started in prepare(); give it ≤ 200 ms.
+        box.startRead()
+        _ = box.firstRead.wait(timeout: .now() + .milliseconds(200))
+        guard let last = box.last() else { throw .transient("Wi-Fi: first read pending") }
+        return try last.get()
     }
 
-    func fields() throws(SensorError) -> WiFiFields {
-        guard let i = iface else { throw .unavailable("Wi-Fi not prepared") }
+    public func invalidate() {
+        box.setPrepared(false)
+    }
+}
+
+/// Off-queue CoreWLAN reads (ARCHITECTURE §4 box pattern; the CWInterface never leaves the queue's closure).
+final class WiFiBox: Sendable {
+    struct State: Sendable {
+        var prepared = false
+        var inFlight = false
+        var last: Result<(reading: WiFiInfo, capturedNs: UInt64), SensorError>?
+        var lastReadCostNs: UInt64 = 0
+        var firstSignalled = false
+    }
+
+    let queue = DispatchQueue(label: "dev.telltale.wifi", qos: .utility)
+    let lock = OSAllocatedUnfairLock(initialState: State())
+    let firstRead = DispatchSemaphore(value: 0)
+
+    var isPrepared: Bool { lock.withLock { $0.prepared } }
+    var lastReadCostNs: UInt64 { lock.withLock { $0.lastReadCostNs } }
+
+    func setPrepared(_ p: Bool) {
+        lock.withLock { s in
+            s.prepared = p
+            if !p { s.last = nil }
+        }
+    }
+
+    func last() -> Result<(reading: WiFiInfo, capturedNs: UInt64), SensorError>? {
+        lock.withLock { $0.last }
+    }
+
+    func startRead() {
+        let go = lock.withLock { s -> Bool in
+            guard s.prepared, !s.inFlight else { return false }
+            s.inFlight = true
+            return true
+        }
+        guard go else { return }
+        queue.async { [self] in
+            let t0 = W6cClock.uptimeNs()
+            let result: Result<WiFiFields, SensorError>
+            if let i = CWWiFiClient.shared().interface() {
+                result = .success(WiFiBox.fields(i))
+            } else {
+                result = .failure(.unavailable("No Wi-Fi interface"))
+            }
+            let now = W6cClock.uptimeNs()
+            let signal = lock.withLock { s -> Bool in
+                s.inFlight = false
+                guard s.prepared else { return false }
+                s.last = result.map { (WiFiParse.reading($0), now) }
+                s.lastReadCostNs = now >= t0 ? now - t0 : 0
+                defer { s.firstSignalled = true }
+                return !s.firstSignalled
+            }
+            if signal { firstRead.signal() }
+        }
+    }
+
+    static func fields(_ i: CWInterface) -> WiFiFields {
         let ch = i.wlanChannel()
         return WiFiFields(
             interface: i.interfaceName ?? "",
@@ -103,9 +178,5 @@ public final class WiFiSensor: Sensor {
             width: ch?.channelWidth.rawValue ?? 0,
             phy: i.activePHYMode().rawValue
         )
-    }
-
-    public func invalidate() {
-        iface = nil
     }
 }

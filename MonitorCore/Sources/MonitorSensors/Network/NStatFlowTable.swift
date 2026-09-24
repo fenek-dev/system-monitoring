@@ -44,10 +44,17 @@ struct NStatFlowTable: Sendable {
         return startTimes[u] == nil
     }
 
-    /// Closed-bytes keys with no live flow: the processes `prune` will ask about.
+    /// Closed-bytes keys with no live flow: the processes `prune` will ask about (never the loose ones).
     func pruneCandidates() -> [ProcessID] {
         let live = Set(sources.values.compactMap(\.process))
-        return closed.keys.filter { !live.contains($0) }
+        return closed.keys.filter { !live.contains($0) && !Self.isLoose($0) }
+    }
+
+    /// `(pid, 0)` (start time unknown: the process was gone at resolution) and the pid-reused sentinel can't be
+    /// checked for liveness — a pid match would be a different process — so they count as exited: kept 10 min after
+    /// their last fold / last live flow, like any exited process.
+    static func isLoose(_ p: ProcessID) -> Bool {
+        p.startTimeUs == 0 || p.startTimeUs == W6cProcess.exitedStartTimeUs
     }
 
     /// Interface indexes referenced by live endpoints.
@@ -77,6 +84,7 @@ struct NStatFlowTable: Sendable {
         guard src.rx > 0 || src.tx > 0 else { return }
         if let p = src.process {
             closed[p] = Self.adding(closed[p] ?? ByteCounts(), src.rx, src.tx)
+            deadSince[p] = nil // fresh bytes: the retention clock restarts
         } else {
             unattributed = Self.adding(unattributed, src.rx, src.tx)
         }
@@ -112,7 +120,7 @@ struct NStatFlowTable: Sendable {
             if let u = s.uniquePID { liveUniques.insert(u) }
         }
         for key in Array(closed.keys) {
-            if live.contains(key) || isAlive(key) {
+            if live.contains(key) || (!Self.isLoose(key) && isAlive(key)) {
                 deadSince[key] = nil
                 continue
             }

@@ -6,9 +6,10 @@ import SystemConfiguration
 
 /// Router latency / loss via unprivileged ICMP (`SOCK_DGRAM`, `IPPROTO_ICMP`; no root).
 ///
-/// Each `sample()` (every 10 s) resolves the router (default route on the primary interface) and starts a burst of
-/// 3 echoes, 200 ms apart on a fixed schedule, on the box queue (≈1.4 s incl. 1 s grace). `sample()` never waits:
-/// it returns the last completed burst's stats over a 5-minute window.
+/// Each `sample()` (every 10 s) resolves the router of the **physical** primary interface (never a VPN gateway;
+/// only tunnel routes → `.unavailable("VPN route")`) and starts a burst of 3 echoes, 200 ms apart on a fixed
+/// schedule, on the box queue (≈1.4 s incl. 1 s grace). `sample()` never waits: it returns the last completed
+/// burst's stats over a 5-minute window.
 public final class LatencyProbe: Sensor {
     public typealias Reading = LatencyReading
     public let id: SensorID = .latency
@@ -16,16 +17,29 @@ public final class LatencyProbe: Sensor {
 
     let box = LatencyBox()
     private var store: SCDynamicStore?
+    /// Injectable for tests; default reads the routing table + SystemConfiguration.
+    private let resolveRouter: ((SCDynamicStore?) -> RouterChoice)
 
-    public init() {}
+    public convenience init() {
+        self.init(resolveRouter: NetworkFFI.physicalRouter)
+    }
+
+    init(resolveRouter: @escaping (SCDynamicStore?) -> RouterChoice) {
+        self.resolveRouter = resolveRouter
+    }
 
     public func prepare() throws(SensorError) {
         if store == nil { store = NetworkFFI.makeStore("dev.telltale.latency") }
     }
 
     public func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: LatencyReading, capturedNs: UInt64) {
-        let g = NetworkFFI.globalIPv4(store)
-        guard let router = NetworkFFI.router(primary: g.primary, scRouter: g.router) else {
+        let router: String
+        switch resolveRouter(store) {
+        case .router(let r): router = r
+        case .vpnOnly:
+            box.setTarget(nil)
+            throw .unavailable("VPN route")
+        case .noRoute:
             box.setTarget(nil)
             throw .transient("No default route")
         }

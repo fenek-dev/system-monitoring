@@ -82,6 +82,78 @@ import Testing
     }
 }
 
+@Suite struct LatencyRouterPickTests {
+    static let en0 = DefaultRoute(gateway: "192.168.1.1", interfaceIndex: 14)
+    static let en7 = DefaultRoute(gateway: "10.0.0.1", interfaceIndex: 22)
+    static let utun = DefaultRoute(gateway: "10.8.0.1", interfaceIndex: 30)
+    static let names: [UInt16: String] = [14: "en0", 22: "en7", 30: "utun4"]
+
+    @Test func physicalPrimaryUsesItsOwnRoute() {
+        let all = [Self.utun, Self.en7, Self.en0]
+        #expect(RouteParse.physicalRouter(all, names: Self.names, primary: "en0", scRouter: nil) == .router("192.168.1.1"))
+        #expect(RouteParse.physicalRouter(all, names: Self.names, primary: "en7", scRouter: nil) == .router("10.0.0.1"))
+        // Primary's route missing from the dump → SystemConfiguration's router.
+        #expect(RouteParse.physicalRouter([Self.utun], names: Self.names, primary: "en0", scRouter: "192.168.1.254")
+            == .router("192.168.1.254"))
+    }
+
+    @Test func vpnPrimaryPingsThePhysicalRouter() {
+        // Full-tunnel VPN: primary is utun, en0 keeps a scoped default route → ping en0's router, not 10.8.0.1.
+        #expect(RouteParse.physicalRouter([Self.utun, Self.en0], names: Self.names, primary: "utun4", scRouter: "10.8.0.1")
+            == .router("192.168.1.1"))
+        #expect(RouteParse.physicalRouter([Self.utun, Self.en0], names: Self.names, primary: nil, scRouter: nil)
+            == .router("192.168.1.1"))
+    }
+
+    @Test func onlyTunnelRoutesOrNothing() {
+        #expect(RouteParse.physicalRouter([Self.utun], names: Self.names, primary: "utun4", scRouter: "10.8.0.1") == .vpnOnly)
+        #expect(RouteParse.physicalRouter([Self.utun], names: Self.names, primary: nil, scRouter: nil) == .vpnOnly)
+        #expect(RouteParse.physicalRouter([], names: [:], primary: "utun4", scRouter: nil) == .vpnOnly)
+        #expect(RouteParse.physicalRouter([], names: [:], primary: nil, scRouter: nil) == .noRoute)
+        #expect(RouteParse.physicalRouter([], names: [:], primary: "en0", scRouter: nil) == .noRoute)
+        // Unnamed index (interface vanished) is not physical.
+        #expect(RouteParse.physicalRouter([DefaultRoute(gateway: "1.1.1.1", interfaceIndex: 99)], names: Self.names,
+                                          primary: nil, scRouter: nil) == .vpnOnly)
+    }
+}
+
+/// Hermetic: ICMP to 127.0.0.1 (no network needed) and injected route states.
+@Suite(.serialized) struct LatencyLoopbackTests {
+    @Test func burstAgainstLoopback() throws {
+        let r = LatencyBox.burst(target: "127.0.0.1", identifier: 0x7777, firstSequence: 65_534) // wraps past 65535
+        let probes = try r.get()
+        #expect(probes.count == LatencyBox.probesPerBurst)
+        #expect(probes.allSatisfy { ($0.rttMs ?? -1) >= 0 && ($0.rttMs ?? 99) < 50 })
+        #expect(zip(probes, probes.dropFirst()).allSatisfy { $1.sentNs - $0.sentNs >= 150_000_000 }) // ~200 ms schedule
+    }
+
+    @Test func badAddressFails() {
+        #expect(throws: SensorError.self) { try LatencyBox.burst(target: "not-an-ip", identifier: 1, firstSequence: 0).get() }
+    }
+
+    @Test func probeRouteStates() throws {
+        var choice = RouterChoice.noRoute
+        let probe = LatencyProbe(resolveRouter: { _ in choice })
+        try probe.prepare()
+        #expect(throws: SensorError.transient("No default route")) { try probe.sample(SampleContext()) }
+        choice = .vpnOnly
+        #expect(throws: SensorError.unavailable("VPN route")) { try probe.sample(SampleContext()) }
+        choice = .router("127.0.0.1")
+        let t0 = W6cClock.uptimeNs()
+        let first = try probe.sample(SampleContext())
+        #expect(W6cClock.uptimeNs() - t0 < 250_000_000) // doesn't wait for the burst
+        #expect(first.reading == LatencyReading(target: "127.0.0.1"))
+        for _ in 0..<60 where probe.box.isInFlight { usleep(50_000) }
+        let r = try probe.sample(SampleContext()).reading
+        #expect(r.target == "127.0.0.1" && r.lastRTTms != nil && r.lossFraction5m == 0)
+        // Router change resets the window.
+        for _ in 0..<60 where probe.box.isInFlight { usleep(50_000) }
+        choice = .router("127.0.0.2")
+        #expect(try probe.sample(SampleContext()).reading == LatencyReading(target: "127.0.0.2"))
+        for _ in 0..<60 where probe.box.isInFlight { usleep(50_000) }
+    }
+}
+
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh LatencySmokeTests`.
 @Suite(.enabled(if: W6cFixture.hardwareTests), .serialized)
 struct LatencySmokeTests {
@@ -104,7 +176,7 @@ struct LatencySmokeTests {
         print("W6c latency: \(r) sample() \(String(format: "%.2f", sampleMs)) ms; ping avg \(pingAvg) ms")
         let avg = try #require(r.avgMs)
         #expect(r.lastRTTms != nil)
-        #expect(avg > 0 && avg <= 5 * pingAvg + 20)
+        #expect(abs(avg - pingAvg) <= max(0.3 * pingAvg, 2))
         #expect((r.lossFraction5m ?? 1) <= 0.34)
         probe.invalidate()
     }

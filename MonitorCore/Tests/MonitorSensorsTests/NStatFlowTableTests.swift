@@ -215,6 +215,34 @@ import Testing
         #expect(t.deadSinceCount == 0)
     }
 
+    /// `(pid, 0)` entries: liveness by pid would match a reused pid forever, so they expire 10 min after their last
+    /// fold regardless of `isAlive`; a new fold restarts the clock.
+    @Test func loosePidZeroEntriesExpire() {
+        var t = NStatFlowTable()
+        func fold(_ id: UInt64, pid: Int32 = 777) {
+            t.add(id)
+            t.update(id, with: Self.s(pid: pid, upid: nil, rx: 5, tx: 5)) { _, _ in nil }
+            t.remove(id)
+        }
+        fold(1)
+        let loose = ProcessID(pid: 777, startTimeUs: 0)
+        let sentinel = ProcessID(pid: 778, startTimeUs: W6cProcess.exitedStartTimeUs)
+        t.add(2)
+        t.update(2, with: Self.s(pid: 778, upid: 9, rx: 1, tx: 1)) { _, _ in W6cProcess.exitedStartTimeUs }
+        t.remove(2)
+        #expect(t.pruneCandidates().isEmpty) // no liveness syscalls for loose keys
+        t.prune(nowNs: 0) { _ in true } // "alive" by pid: ignored
+        t.prune(nowNs: 9 * Self.minute) { _ in true }
+        fold(3) // new bytes at 9 min → clock restarts for (777, 0)
+        t.prune(nowNs: 10 * Self.minute) { _ in true }
+        var r = t.reading(endpoints: false) { _ in nil }
+        #expect(r.closedBytes[loose] == ByteCounts(rx: 10, tx: 10))
+        #expect(r.closedBytes[sentinel] == nil) // 10 min since first seen
+        t.prune(nowNs: 20 * Self.minute) { _ in true }
+        r = t.reading(endpoints: false) { _ in nil }
+        #expect(r.closedBytes.isEmpty)
+    }
+
     @Test func processWithLiveFlowIsNeverPrunedAndRevivalResetsClock() {
         var t = NStatFlowTable()
         let st = Starts()
