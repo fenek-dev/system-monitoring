@@ -7,6 +7,13 @@ import SwiftUI
         [
             .init(id: "processes-list", size: CGSize(width: 1020, height: 330)) { AnyView(ProcessesList()) },
             .init(id: "search-field", size: CGSize(width: 240, height: 40)) { AnyView(SearchSample()) },
+            .init(id: "row-action", size: CGSize(width: 60, height: 34)) {
+                AnyView(
+                    TTRowActionsButton(target: .process(pid: 2210, name: "Final Cut Pro", path: nil, uid: 501), name: "Final Cut Pro")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(TTColor.bgCard)
+                )
+            },
         ]
     }
 }

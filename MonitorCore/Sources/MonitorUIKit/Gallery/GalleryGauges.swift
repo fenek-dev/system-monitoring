@@ -7,7 +7,48 @@ import SwiftUI
         [
             .init(id: "core-bars", size: CGSize(width: 676, height: 236)) { AnyView(CoreBarsCard()) },
             .init(id: "fan-gauges", size: CGSize(width: 332, height: 230)) { AnyView(FansCard()) },
+            // History "App share" treemap (ADDED): ≈ 760×190.
+            .init(id: "treemap", size: CGSize(width: 760, height: 190)) { AnyView(TreemapSample()) },
+            // DESIGN §3.15: collecting (first launch) vs unavailable (sensor missing).
+            .init(id: "tile-states", size: CGSize(width: 676, height: 290)) { AnyView(TileStatesSample()) },
         ]
+    }
+}
+
+private struct TileStatesSample: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: TTSpace.gridGap) {
+            HStack(spacing: TTSpace.gridGap) {
+                TTMetricTile(category: .gpu, value: nil, unit: "%", detail: "1,180 MHz", points: [], unavailableReason: nil)
+                TTMetricTile(category: .thermals, value: nil, unit: "°C", detail: "SoC avg", points: [],
+                             unavailableReason: "Sensor not available on this Mac")
+            }
+            TTCard(spacing: TTSpace.x4) {
+                TTTimelineRow(label: "GPU", icon: nil, value: nil, points: [], color: TTColor.gpu, yDomain: 0...1)
+                TTTimelineRow(label: "Thermals", icon: nil, value: nil, unavailableReason: "Sensor not available on this Mac",
+                              points: [], color: TTColor.thermal, yDomain: 0...100)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(TTColor.bgWindow)
+    }
+}
+
+private struct TreemapSample: View {
+    static func share(_ name: String, _ value: Double, _ total: Double, kind: AppKey.Kind = .app) -> AppShare {
+        AppShare(identity: AppIdentity(key: AppKey(kind: kind, id: kind == .other ? "other" : name), displayName: name),
+                 value: value, fraction: value / total)
+    }
+
+    var body: some View {
+        let t = 812.0 + 96 + 19 + 14 + 11 + 9 + 30
+        TTTreemap([
+            Self.share("Xcode", 812, t), Self.share("Final Cut Pro", 96, t), Self.share("Safari", 19, t),
+            Self.share("WindowServer", 14, t), Self.share("Docker Desktop", 11, t), Self.share("mds_stores", 9, t),
+            Self.share("Other", 30, t, kind: .other),
+        ], metric: .cpu, animated: false, otherCount: 23)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(TTColor.bgCard)
     }
 }
 
