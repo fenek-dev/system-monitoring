@@ -53,6 +53,8 @@ struct OverlaySnapshotTests {
     @Test func memoryCritical() { snap(ScreenFixture.context(.memoryCritical), "memoryCritical") }
     @Test func unavailable() { snap(OverlayFixture.gpuUnavailableContext(), "unavailable") }
     @Test func collecting() { snap(ScreenFixture.context(.collecting), "collecting") }
+    /// Sampling paused: the whole overlay dims to 50 %.
+    @Test func paused() { snap(ScreenFixture.context(.paused), "paused") }
 
     /// Ruling (width jitter): the overlay keeps one size whatever the values: calm, collecting ("—"),
     /// GPU unavailable ("— — —") and worst-case values (100 %, 999.9 GB) all fit the same frame.

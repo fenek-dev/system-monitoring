@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import MonitorLive
+import MonitorMocks
 import MonitorModel
 @testable import MonitorScreens
 import MonitorUIKit
@@ -137,6 +138,31 @@ struct OverlayLogicTests {
         let m = OverlayView.metrics(live: ScreenFixture.live(.collecting))
         #expect(m.map(\.stats) == ["—", "—", "—"])
         #expect(m[2].value != "—")   // memory is a level: shown from the first sample
+    }
+
+    @MainActor @Test func accessibilityLabels() {
+        let enUS = Locale(identifier: "en_US")
+        let calm = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: ScreenFixture.live(.calm)) }
+        #expect(calm.map(\.accessibilityLabel) == [
+            "CPU 37%, last minute low 29, high 48, average 35",
+            "GPU 16%, last minute low 6, high 28, average 18",
+            "Memory 15.1 GB, last minute low 14.9 GB, high 15.4 GB, average 15.2 GB",
+        ])
+        let gpuDown = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: OverlayFixture.gpuUnavailableLive()) }
+        #expect(gpuDown[1].accessibilityLabel == "GPU unavailable")
+        #expect(gpuDown[0].accessibilityLabel == calm[0].accessibilityLabel)
+        let collecting = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: ScreenFixture.live(.collecting)) }
+        #expect(collecting.map(\.accessibilityLabel) == ["CPU collecting", "GPU collecting", "Memory 15.3 GB"])
+    }
+
+    @MainActor @Test func dimsWhilePaused() {
+        #expect(OverlayView.contentOpacity(live: ScreenFixture.live(.paused)) == 0.5)
+        #expect(OverlayView.contentOpacity(live: ScreenFixture.live(.calm)) == 1)
+        let live = ScreenFixture.live(.calm)
+        live.setPaused(true, at: MockDataProvider.referenceDate)
+        #expect(OverlayView.contentOpacity(live: live) == 0.5)
+        live.setPaused(false, at: MockDataProvider.referenceDate)
+        #expect(OverlayView.contentOpacity(live: live) == 1)
     }
 
     @MainActor @Test func statsRowFormats() {
