@@ -21,19 +21,20 @@ public struct LoginItemControl {
 }
 
 /// About rows (DESIGN §3.14).
-public struct AboutInfo: Sendable, Equatable {
+public struct AboutInfo: Sendable {
     public var version: String
     public var build: String
-    /// e.g. "12.4 MB"; nil → "—".
-    public var historySize: String?
+    /// e.g. "12.4 MB"; nil → "—". Loaded off the main actor when the view appears (file-system access can
+    /// block, e.g. on a TCC prompt for a data dir under ~/Documents).
+    public var historySize: @Sendable () async -> String?
 
-    public init(version: String, build: String, historySize: String?) {
+    public init(version: String, build: String, historySize: @escaping @Sendable () async -> String?) {
         self.version = version
         self.build = build
         self.historySize = historySize
     }
 
-    public static let preview = AboutInfo(version: "0.1.0", build: "1", historySize: "12.4 MB")
+    public static let preview = AboutInfo(version: "0.1.0", build: "1", historySize: { "12.4 MB" })
 }
 
 /// Settings window content (DESIGN §3.14): General, Units, Popover, Sensors (ADDED: re-enable), About.
@@ -46,6 +47,7 @@ public struct SettingsView: View {
     @State private var loginStatus: LoginItemControl.Status = .disabled
     @State private var loginError: String?
     @State private var sensorsReenabled = false
+    @State private var historySize: String?
 
     public init(loginItem: LoginItemControl, about: AboutInfo) {
         self.loginItem = loginItem
@@ -67,6 +69,7 @@ public struct SettingsView: View {
         .frame(width: ShellStyle.settingsWidth, alignment: .top)
         .background(ShellStyle.bgWindow)
         .onAppear { loginStatus = loginItem.status() }
+        .task { historySize = await about.historySize() }
     }
 
     // MARK: Header
@@ -230,7 +233,7 @@ public struct SettingsView: View {
             Spacer()
         }
         row {
-            Text("History: \(about.historySize ?? "—") on disk · kept 30 days")
+            Text("History: \(historySize ?? "—") on disk · kept 30 days")
                 .font(ShellStyle.caption).foregroundStyle(ShellStyle.textSecondary).monospacedDigit()
             Spacer()
         }
