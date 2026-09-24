@@ -217,15 +217,20 @@ enum RootMemoryFFI {
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
+        // S-M3: the pid is signalled only while ps has not terminated, re-checked under the lock the termination
+        // handler also takes — so a kill can't race Foundation reaping ps and hit a reused pid.
+        let exited = OSAllocatedUnfairLock(initialState: false)
+        p.terminationHandler = { _ in exited.withLock { $0 = true } }
         do { try p.run() } catch { throw SensorError.unavailable("\(psPath): \(error.localizedDescription)") }
         let pid = p.processIdentifier
-        let exited = OSAllocatedUnfairLock(initialState: false)
-        cancel.onCancel {
-            guard !exited.withLock({ $0 }) else { return }
-            kill(pid, SIGTERM)
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(500)) {
-                if !exited.withLock({ $0 }) { kill(pid, SIGKILL) }
+        let signal: @Sendable (Int32) -> Void = { sig in
+            exited.withLock { done in
+                if !done && p.isRunning { kill(pid, sig) }
             }
+        }
+        cancel.onCancel {
+            signal(SIGTERM)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(500)) { signal(SIGKILL) }
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()

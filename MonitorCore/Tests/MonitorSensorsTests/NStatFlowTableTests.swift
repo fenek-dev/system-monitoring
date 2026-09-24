@@ -281,4 +281,21 @@ import Testing
         let r = t.reading(endpoints: false) { _ in nil }
         #expect(r.flows.isEmpty && r.closedBytes.isEmpty && r.unattributedBytes == ByteCounts())
     }
+
+    /// S-M4: re-prepare starts clean — a late first-query signal (after the first sample's 200 ms wait) is drained
+    /// and the old manager's reading is gone, so the new manager's first sample waits for its own query.
+    @Test func startOverDrainsLateFirstQuerySignal() throws {
+        let box = NStatBox()
+        let gen = try #require(box.beginQuery(nowNs: 1, parts: 1))
+        box.queue.sync { box.partCompleted(gen) }                    // first query done → signal
+        #expect(box.lastCompleted() != nil)
+        box.firstQuery.signal()                                      // plus a stray one
+        box.startOver()
+        #expect(box.firstQuery.wait(timeout: .now()) == .timedOut)
+        #expect(box.lastCompleted() == nil)
+        // The next manager's first completion signals again.
+        let next = try #require(box.beginQuery(nowNs: 2, parts: 1))
+        box.queue.sync { box.partCompleted(next) }
+        #expect(box.firstQuery.wait(timeout: .now()) == .success)
+    }
 }

@@ -93,6 +93,18 @@ struct NStatSmokeTests {
         #expect(try Self.fresh(s).reading.flows.count > 5)
     }
 
+    /// S-M4: invalidate resets synchronously; re-prepare works.
+    @Test func invalidateResetsSynchronously() throws {
+        let s = NStatSensor()
+        try s.prepare()
+        _ = try Self.fresh(s)
+        s.invalidate()
+        #expect(s.box.lastCompleted() == nil)
+        try s.prepare()
+        #expect(try Self.fresh(s).reading.flows.count > 5)
+        s.invalidate()
+    }
+
     @Test func matchesNettopRateForLocalServer() throws {
         let server = try W6cFixture.startHTTPServer()
         defer { server.stop() }

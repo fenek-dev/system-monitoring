@@ -26,6 +26,7 @@ public final class NStatSensor: Sensor {
         guard manager == nil else { return }
         guard tt_nstat_available() else { throw .unavailable("NetworkStatistics.framework is unavailable") }
         let box = self.box
+        box.startOver()
         guard let m = NStatManagerCreate(kCFAllocatorDefault, box.queue, { src, _ in
             guard let src else { return }
             box.attach(src)
@@ -58,7 +59,7 @@ public final class NStatSensor: Sensor {
         box.retire() // late completions of this manager's queries are ignored from here on
         NStatManagerDestroy(m)
         let box = self.box
-        box.queue.async { box.reset() }
+        box.queue.sync { box.reset() }
     }
 
     /// Counts query; plus a descriptions query while any source is unidentified (a counts callback for a
@@ -225,6 +226,14 @@ final class NStatBox: Sendable {
             return !s.firstSignalled
         }
         if signal { firstQuery.signal() }
+    }
+
+    /// S-M4: a clean slate before a new manager's first query (sampler side). The previous manager's state is
+    /// cleared synchronously (no queued reset can land on the new query), and a late first-query signal is drained
+    /// so the new manager's first sample really waits for its own query.
+    func startOver() {
+        queue.sync { reset() }
+        while firstQuery.wait(timeout: .now()) == .success {}
     }
 
     func reset() {
