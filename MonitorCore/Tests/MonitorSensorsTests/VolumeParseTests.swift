@@ -51,14 +51,29 @@ import MonitorModel
         #expect(info.id == "/Volumes/Mystery")
         #expect(info.name == "/Volumes/Mystery")
         #expect(info.bsdName == nil)
-        // Unknown internal/ejectable defaults to the conservative "internal, non-ejectable" reading
-        // rather than mislabeling an ordinary volume as removable external media.
-        #expect(info.isInternal)
+        // Unknown isInternal defaults to false: an unresolved volume must never be mislabeled as the
+        // trusted "internal" case (review fix). Ejectable still defaults to the conservative "not
+        // removable" reading.
+        #expect(!info.isInternal)
         #expect(!info.isEjectable)
         #expect(info.totalBytes == 0)
         #expect(info.availableBytes == 0)
         #expect(info.availableImportantBytes == nil)
         #expect(info.purgeableBytes == nil)
+    }
+
+    @Test func nonLocalVolumeHasNoBSDNameOrBusLabelAndIsNotInternal() {
+        // What VolumeSensor produces for a network share (SMB/NFS): it deliberately skips the statfs
+        // and IOKit bus-label lookups for a non-local volume (a hung server could block both syscalls
+        // well past the sensor's 250 ms budget), so bsdName/busLabel are always nil here.
+        let raw = RawVolumeInfo(mountPath: "/Volumes/NetworkShare", name: "NetworkShare", bsdName: nil,
+                                 fsType: "smbfs", busLabel: nil, isInternal: false, isEjectable: false,
+                                 isEncrypted: false, totalBytes: 1_000_000, availableBytes: 500_000,
+                                 availableImportantBytes: nil)
+        let info = VolumeParser.map(raw)
+        #expect(info.bsdName == nil)
+        #expect(info.busLabel == nil)
+        #expect(!info.isInternal)
     }
 
     @Test func rawVolumeInfoDecodesFromJSONIgnoringUnknownKeys() throws {

@@ -41,7 +41,7 @@ enum SMCDecoder {
         switch type {
         case "flt ":
             v = unsigned(bytes, 4, .little).map { Double(Float(bitPattern: UInt32(truncatingIfNeeded: $0))) }
-        // `{ Double($0) }`, never `.map(Double.init)`: on UInt64 that resolves to Double(bitPattern:).
+        // `{ Double($0) }`, never a bare Double-init map: on UInt64 that resolves to Double(bitPattern:).
         case "ui8 ", "flag": v = unsigned(bytes, 1, order).map { Double($0) }
         case "ui16": v = unsigned(bytes, 2, order).map { Double($0) }
         case "ui32": v = unsigned(bytes, 4, order).map { Double($0) }

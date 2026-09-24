@@ -5,7 +5,10 @@ import MonitorModel
 
 /// Real-hardware smoke test. Gated behind `TELLTALE_HW_TESTS=1` (plan §0: "no sudo" reference
 /// checks; here vs `df -k /` and `diskutil info /`).
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
+///
+/// `.serialized`: avoids the same class of concurrent-hardware-access flakiness confirmed in
+/// SMARTSmokeTests (Swift Testing runs a suite's tests concurrently by default).
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
 struct VolumeSmokeTests {
     @Test func rootVolumeMatchesDFAndDiskutil() throws {
         let sensor = VolumeSensor()
@@ -22,17 +25,22 @@ struct VolumeSmokeTests {
         let dfLine = try #require(df.split(separator: "\n").dropFirst().first)
         let fields = dfLine.split(separator: " ", omittingEmptySubsequences: true)
         let dfTotalBytes = try #require(UInt64(fields[1])) * 1024
+        let dfAvailableBytes = try #require(UInt64(fields[3])) * 1024
         #expect(Self.withinTolerance(Double(root.totalBytes), Double(dfTotalBytes), fraction: 0.05))
+        #expect(Self.withinTolerance(Double(root.availableBytes), Double(dfAvailableBytes), fraction: 0.05))
 
         // `diskutil info /`: Device Identifier + Protocol + Device Location + Encrypted, cross-checked
         // against the sensor's bsdName/busLabel/isInternal/isEncrypted (findings-style ASSERTED check).
+        // Encryption is compared against the sensor's OWN isEncrypted, not a hardcoded expectation —
+        // this machine's root volume happens to be unencrypted today, but that's incidental to what
+        // the test is actually checking (the sensor agrees with diskutil), not the point of it.
         let diskutil = try Self.run("/usr/sbin/diskutil", ["info", "/"])
         #expect(Self.line(in: diskutil, labeled: "Device Identifier:", contains: root.bsdName ?? "?"))
         if let busLabel = root.busLabel {
             #expect(Self.line(in: diskutil, labeled: "Protocol:", contains: busLabel))
         }
         #expect(Self.line(in: diskutil, labeled: "Device Location:", contains: "Internal"))
-        #expect(Self.line(in: diskutil, labeled: "Encrypted:", contains: "No"))
+        #expect(Self.line(in: diskutil, labeled: "Encrypted:", contains: root.isEncrypted ? "Yes" : "No"))
     }
 
     /// Perf is advisory (plan §0). VolumeSensor isn't in ARCHITECTURE §7's per-tick budget table (its
