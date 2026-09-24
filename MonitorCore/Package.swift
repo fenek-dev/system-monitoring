@@ -53,7 +53,9 @@ let package = Package(
         ),
         .target(name: "MonitorUIKit", dependencies: ["MonitorModel"]),
         // Test-support library (imports Testing): assertSnapshot. Never linked by the app.
-        .target(name: "MonitorSnapshotTesting", dependencies: ["MonitorUIKit"]),
+        .target(name: "MonitorSnapshotTesting", dependencies: ["MonitorUIKit", "SnapshotProcessSetup"]),
+        // ObjC, test-only: image constructor sets AppleFontSmoothing = 0 before any test lays out text.
+        .target(name: "SnapshotProcessSetup", linkerSettings: [.linkedFramework("Foundation")]),
         .target(name: "MonitorMocks", dependencies: ["MonitorModel"]),
         .target(
             name: "MonitorScreens",
