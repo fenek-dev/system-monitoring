@@ -13,3 +13,8 @@ Build: per section (Debug = scripts/build.sh, Release = perf.sh --release); prob
 - Tick periods (LivePipeline log):
   - frame intervals mode=interactive n=60 median=1.00 p95=1.07 max=1.10 s
   - frame intervals mode=interactive n=60 median=1.00 p95=2.06 max=2.95 s
+
+> Agent E note: the dashboard window was occluded several times during this run (13 visibility changes; the
+> log shows ~6 background stretches of 2–25 s between 22:51:57 and 22:54:12), so this is a *lower bound* for the
+> baseline, not a clean comparison with e-overview-after (visible the whole run). Four later baseline reruns at
+> 1e0bf84 never got the window on screen (0 visibility changes, 0.9–1.1 % = background) and were discarded.
