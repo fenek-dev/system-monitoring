@@ -28,6 +28,20 @@ actor RecordingAppSeriesProvider: HistoryProvider {
     }
 }
 
+/// Records sample/reveal calls; never spawns `sample`.
+final class StubSampler: ProcessSampling {
+    private let state = OSAllocatedUnfairLock(initialState: (calls: [Int32](), revealed: [URL]()))
+    let result: ProcessSampleResult
+    init(result: ProcessSampleResult) { self.result = result }
+    var calls: [Int32] { state.withLock { $0.calls } }
+    var revealed: [URL] { state.withLock { $0.revealed } }
+    func sample(pid: Int32, name: String) async -> ProcessSampleResult {
+        state.withLock { $0.calls.append(pid) }
+        return result
+    }
+    func reveal(_ url: URL) { state.withLock { $0.revealed.append(url) } }
+}
+
 @Suite("AppInspector — actions")
 @MainActor
 struct AppInspectorActionTests {
@@ -58,6 +72,40 @@ struct AppInspectorActionTests {
         await c.forceQuit(xcode)
         #expect(log.entries == ["forceQuit Xcode -> done"])
         #expect(c.toast?.text == "Xcode was force quit.")
+    }
+
+    /// [Sample] goes through the injected sampler: success reveals the report, failure toasts; nothing is spawned.
+    @Test func sampleSuccessRevealsFailureToasts() async {
+        let ok = StubSampler(result: .done(URL(fileURLWithPath: "/tmp/Telltale-Xcode-1842.txt")))
+        let c = ProcessActionCoordinator(actions: actions, sampler: ok)
+        await c.sample(pid: 1842, name: "Xcode")
+        #expect(ok.calls == [1842])
+        #expect(ok.revealed == [URL(fileURLWithPath: "/tmp/Telltale-Xcode-1842.txt")])
+        #expect(c.toast == nil && c.samplingPID == nil)
+        let bad = StubSampler(result: .failed("sample exited with status 1"))
+        c.sampler = bad
+        await c.sample(pid: 1842, name: "Xcode")
+        #expect(bad.revealed.isEmpty)
+        #expect(c.toast?.text == "Couldn’t sample Xcode: sample exited with status 1")
+    }
+
+    @Test func sampleEnablementByOwnerSelfAndSynthetic() {
+        let procs = ProcessTableModel.build(PT.input(mode: .processes))
+        func availability(_ name: String) -> ProcessActionAvailability {
+            ProcessTableModel.availability(for: procs.lines.first { $0.name == name }!, serviceCanControl: true,
+                                           ownPID: 9, ownBundleID: "dev.telltale.Telltale")
+        }
+        #expect(availability("Xcode").canSample)                           // own user, real pid
+        #expect(!availability("mds_stores").canSample)                     // root
+        let synthetic = procs.lines.first { $0.id == .process(.coalitionResidual(9100)) }!
+        #expect(!ProcessTableModel.availability(for: synthetic, serviceCanControl: true).canSample)
+        let xcode = procs.lines.first { $0.name == "Xcode" }!
+        let selfRow = ProcessTableModel.availability(for: xcode, serviceCanControl: true, ownPID: 1842,
+                                                     ownBundleID: nil)
+        #expect(!selfRow.canSample)                                        // never Telltale itself
+        let path = LiveProcessSampler.reportURL(pid: 1842, name: "Final Cut/Pro",
+                                                directory: URL(fileURLWithPath: "/tmp"))
+        #expect(path.path == "/tmp/Telltale-Final-Cut-Pro-1842.txt")
     }
 
     @Test func forceQuitWithoutDialogHostDoesNothing() async {

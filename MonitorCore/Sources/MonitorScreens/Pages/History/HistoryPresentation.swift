@@ -404,7 +404,9 @@ public struct HistoryBand: Equatable, Sendable {
         let useSeries = memoryLevels.contains { $0 != nil }
         var out: [HistoryBand] = events.compactMap { e in
             guard let kind = HistoryBandKind.of(e) else { return nil }
-            if useSeries && (kind == .memory || kind == .memoryCritical) { return nil }
+            // Memory: the level series wins, except for an ongoing episode (open end), which the stored buckets
+            // may not reflect yet.
+            if useSeries && (kind == .memory || kind == .memoryCritical) && e.end != nil { return nil }
             let end = e.end ?? openEnd
             guard end > window.start, e.start < window.end else { return nil }
             let x0 = CGFloat(window.fraction(of: e.start)) * width

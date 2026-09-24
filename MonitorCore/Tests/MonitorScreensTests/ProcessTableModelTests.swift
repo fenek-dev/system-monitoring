@@ -256,7 +256,8 @@ struct ProcessTableActionTests {
         let out = ProcessTableModel.build(PT.input(mode: .processes))
         func row(_ n: String) -> ProcessRow { out.lines.first { $0.name == n }! }
         let xcode = ProcessTableModel.availability(for: row("Xcode"), serviceCanControl: true)
-        #expect(xcode == ProcessActionAvailability(canQuit: true, canForceQuit: true, disabledHelp: nil))
+        #expect(xcode == ProcessActionAvailability(canQuit: true, canForceQuit: true, disabledHelp: nil,
+                                                   canSample: true))
         let mds = ProcessTableModel.availability(for: row("mds_stores"), serviceCanControl: true)
         #expect(mds == ProcessActionAvailability(canQuit: false, canForceQuit: false, disabledHelp: "Owned by root"))
         let ws = ProcessTableModel.availability(for: row("WindowServer"), serviceCanControl: true)

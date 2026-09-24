@@ -330,6 +330,29 @@ struct HistoryWindowTests {
         #expect(HistoryBandKind.memory(level: 1.0) == nil && HistoryBandKind.memory(level: 2.6) == .memoryCritical)
     }
 
+    /// An ongoing episode (no end event) runs to now: Fair band + legend; an open memory episode shows even when the
+    /// level series (normal) hasn't caught up.
+    @Test func ongoingEpisodesRunToNow() {
+        let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        let fair = HistoryEvent(kind: .thermalPressure, start: w.time(at: w.latest - 5), end: nil, level: .elevated,
+                                peak: Double(ThermalPressure.fair.rawValue))
+        let mem = HistoryEvent(kind: .memoryPressure, start: w.time(at: w.latest - 3), end: nil, level: .elevated)
+        let levels = [Double?](repeating: 1, count: w.count)
+        let bands = HistoryBand.layout([fair, mem], memoryLevels: levels, window: w, width: 287, openEnd: w.dataEnd)
+        #expect(bands.map(\.kind) == [.fair, .memory])
+        let nowX = CGFloat(w.fraction(of: w.dataEnd)) * 287
+        #expect(bands.allSatisfy { abs($0.x1 - nowX) < 0.001 })
+    }
+
+    @Test func mockThermalFairHasAnOngoingEpisode() async throws {
+        let provider = MockDataProvider(scenario: .thermalFair).history()
+        let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        let events = try await provider.events(in: DateInterval(start: w.start, end: w.end))
+        #expect(events.contains { $0.kind == .thermalPressure && $0.end == nil })
+        #expect(HistoryBand.layout(events, memoryLevels: [], window: w, width: 287, openEnd: w.dataEnd)
+            .contains { $0.kind == .fair })
+    }
+
     @Test func treemapSharesFoldSmallAppsIntoOtherLast() {
         let raw = [HT.share("a", 50), HT.share("b", 45), HT.share("c", 1), HT.share("d", 1),
                    AppShare(identity: AppIdentity(key: .other, displayName: "Other"), value: 3, fraction: 0)]

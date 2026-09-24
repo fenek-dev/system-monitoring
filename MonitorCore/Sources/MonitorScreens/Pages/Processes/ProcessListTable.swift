@@ -211,11 +211,12 @@ struct ProcessTableRow: View, Equatable {
                 } else {
                     TTAppTile(identity: row.identity, name: row.name, size: 20).padding(.trailing, TTSpace.x8)
                 }
-                // The name yields (middle truncation keeps both ends of "com.apple.audio.Core-Audio-…-XPC");
-                // the kind tag is never clipped: full "App · 7 processes" when it fits, else its short form.
+                // The kind tag is never clipped and keeps its count ("App · 7 processes", DESIGN §3.12): the name
+                // yields first (middle truncation, down to `minNameWidth`); only then does the tag drop to "App".
                 if let kind = row.kindLabel, row.depth == 0 {
                     ViewThatFits(in: .horizontal) {
                         nameAndKind(kind, truncating: false)
+                        nameAndKind(kind, truncating: true)
                         nameAndKind(Self.shortKind(kind), truncating: false)
                         nameAndKind(Self.shortKind(kind), truncating: true)
                     }
@@ -234,7 +235,10 @@ struct ProcessTableRow: View, Equatable {
     private func nameAndKind(_ kind: String, truncating: Bool) -> some View {
         HStack(spacing: TTSpace.x8) {
             if truncating {
+                // Ideal width = the minimum we accept for a truncated name, so ViewThatFits can pick this variant.
                 Text(row.name).lineLimit(1).truncationMode(.middle)
+                    .frame(minWidth: Self.minNameWidth, idealWidth: Self.minNameWidth, maxWidth: .infinity,
+                           alignment: .leading)
             } else {
                 Text(row.name).lineLimit(1).fixedSize()
             }
@@ -242,6 +246,9 @@ struct ProcessTableRow: View, Equatable {
                 .layoutPriority(1)
         }
     }
+
+    /// Narrowest truncated name kept before the kind tag drops its count.
+    static let minNameWidth: CGFloat = 72
 
     /// "App · 7 processes" → "App".
     nonisolated static func shortKind(_ kind: String) -> String {

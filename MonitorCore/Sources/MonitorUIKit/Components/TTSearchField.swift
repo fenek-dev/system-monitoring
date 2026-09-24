@@ -21,7 +21,17 @@ public struct TTSearchField: View {
     public var body: some View {
         HStack(spacing: TTSpace.x6) {
             TTIcon(.search, size: 14, color: TTColor.textSecondary)
-            TextField("", text: $text, prompt: Text(prompt).foregroundStyle(TTColor.textSecondary))
+            // The macOS TextField ignores the prompt's foreground style (it drew near-white), so the placeholder is
+            // an overlay in `textSecondary` #A8A8B0 (DESIGN §2.27), shown while the field is empty.
+            TextField("", text: $text)
+                .overlay(alignment: .leading) {
+                    if text.isEmpty {
+                        Text(prompt).font(TTFont.body12).foregroundStyle(TTColor.textSecondary).lineLimit(1)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .accessibilityLabel(prompt)
                 .textFieldStyle(.plain)
                 .font(TTFont.body12)
                 .foregroundStyle(TTColor.textPrimary)

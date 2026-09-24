@@ -204,12 +204,16 @@ public struct ProcessActionAvailability: Equatable, Sendable {
     public var disabledHelp: String?
     /// Telltale itself (DESIGN §2.25): Quit quits Telltale; Force Quit is hidden and never offered.
     public var isSelf: Bool
+    /// [Sample]: own-user, not Telltale, a real pid (DESIGN §3.12 "disabled for non-owned processes").
+    public var canSample: Bool
 
-    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?, isSelf: Bool = false) {
+    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?, isSelf: Bool = false,
+                canSample: Bool = false) {
         self.canQuit = canQuit
         self.canForceQuit = canForceQuit
         self.disabledHelp = disabledHelp
         self.isSelf = isSelf
+        self.canSample = canSample
     }
 }
 
@@ -438,8 +442,10 @@ public extension ProcessTableModel {
             return ProcessActionAvailability(canQuit: false, canForceQuit: false,
                                              disabledHelp: "Owned by \(row.foreignOwner ?? row.user ?? "root")")
         }
+        // Sampling needs no kill permission, only an own-user real pid (not Telltale — handled above).
+        let canSample = (row.pid ?? -1) > 0
         return ProcessActionAvailability(canQuit: serviceCanControl, canForceQuit: serviceCanControl,
-                                         disabledHelp: serviceCanControl ? nil : "Not permitted")
+                                         disabledHelp: serviceCanControl ? nil : "Not permitted", canSample: canSample)
     }
 
     /// Deterministic order independent of input order: value (nil last), then name, then row id (pid).
