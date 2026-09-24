@@ -17,8 +17,11 @@ public struct StoreConfig: Sendable {
     /// Raw newer than this is never pruned by the size guard.
     public var sizeGuardKeepsRaw: Duration
     /// Waits before retrying a write that failed with SQLITE_BUSY (each attempt also waits the busy timeout).
-    /// After the last one the batch is kept and written ahead of the next flush, never dropped (R-M2).
+    /// After the last one the batch is kept and written ahead of the next flush (R-M2), capped by `carriedRecordSpan`.
     public var busyRetryDelays: [Duration]
+    /// Cap on the kept batch (ruling): records older than this span before the newest kept record are dropped
+    /// (logged, counted), so a database locked for good can't grow it without limit. ~600 records at 1 s.
+    public var carriedRecordSpan: Duration
     public var now: @Sendable () -> Date
 
     public init(
@@ -32,6 +35,7 @@ public struct StoreConfig: Sendable {
         sizeCapBytes: Int64? = 180 << 20,
         sizeGuardKeepsRaw: Duration = .seconds(3_600),
         busyRetryDelays: [Duration] = [.milliseconds(250), .seconds(1)],
+        carriedRecordSpan: Duration = .seconds(600),
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.flushInterval = flushInterval
@@ -44,6 +48,7 @@ public struct StoreConfig: Sendable {
         self.sizeCapBytes = sizeCapBytes
         self.sizeGuardKeepsRaw = sizeGuardKeepsRaw
         self.busyRetryDelays = busyRetryDelays
+        self.carriedRecordSpan = carriedRecordSpan
         self.now = now
     }
 
@@ -200,8 +205,17 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
                     try? await Task.sleep(for: delay)
                     continue
                 }
-                carried = (records, events)
-                StoreDatabase.log.error("database busy: kept \(records.count) records, \(events.count) events for the next flush")
+                let kept = Self.capCarried(records, events, span: config.carriedRecordSpan)
+                carried = (kept.records, kept.events)
+                StoreDatabase.log.error("database busy: kept \(kept.records.count) records, \(kept.events.count) events for the next flush")
+                let dropped = records.count - kept.records.count
+                if dropped > 0 {
+                    droppedCarriedRecords += dropped
+                    StoreDatabase.log.fault("""
+                        database still busy: dropped the \(dropped) oldest kept records (cap \
+                        \(Int(self.config.carriedRecordSpan.timeInterval)) s, \(self.droppedCarriedRecords) dropped so far)
+                        """)
+                }
                 throw error
             } catch {
                 StoreDatabase.log.fault("dropped \(records.count) records, \(events.count) events: \(error.localizedDescription, privacy: .public)")
@@ -219,6 +233,23 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
     private var carried: (records: [HistoryRecord], events: [HistoryEvent]) = ([], [])
     /// Carried records (tests).
     var carriedRecordCount: Int { carried.records.count }
+    /// Kept records dropped by the `carriedRecordSpan` cap (tests; each drop is also logged as a fault).
+    private(set) var droppedCarriedRecords = 0
+
+    /// The batch kept after a busy failure, capped (ruling): records within `span` of the newest kept one (the
+    /// oldest go first); events keep only the latest update per id — the write is INSERT OR REPLACE by id, so the
+    /// earlier ones are redundant.
+    static func capCarried(_ records: [HistoryRecord], _ events: [HistoryEvent], span: Duration)
+        -> (records: [HistoryRecord], events: [HistoryEvent]) {
+        var kept = records
+        if let newest = records.map(\.time).max() {
+            let floor = newest.addingTimeInterval(-span.timeInterval)
+            kept.removeAll { $0.time < floor }
+        }
+        var seen = Set<UUID>()
+        let latestEvents = events.reversed().filter { seen.insert($0.id).inserted }.reversed()
+        return (kept, Array(latestEvents))
+    }
 
     /// Batches dropped after a failed write, or lost at shutdown (tests; each one is also logged as a fault).
     private(set) var droppedBatches = 0

@@ -211,6 +211,39 @@ import Testing
         #expect(await store.droppedBatches == 0)
     }
 
+    /// Kept-batch cap (ruling): a database that stays locked can't grow the kept batch without limit. Past
+    /// `carriedRecordSpan` (injected: 10 s) before the newest kept record, the oldest are dropped and counted;
+    /// events keep only their latest update per id.
+    @Test func keptBatchIsCappedToTheNewestSpan() async throws {
+        let url = T.tempDB()
+        let other = try HistoryStore(location: .file(url), config: T.config(TestClock()))
+        var config = T.config(TestClock())
+        config.busyRetryDelays = []
+        config.carriedRecordSpan = .seconds(10)
+        let store = try HistoryStore(location: .file(url), config: config)
+        let open = HistoryEvent(kind: .thermalPressure, start: T.t0, level: .elevated, label: "Thermal")
+        var ended = open
+        ended.end = T.t0 + 15
+        for i in 0..<4 { await store.append(RecordBatch(record: fullRecord(T.t0 + Double(i) * 5))) }  // 0…15 s
+        await store.append(RecordBatch(events: [open, ended]))
+        let locked = OSAllocatedUnfairLock(initialState: false)
+        let holder = Task { try await other.holdWriteLock(seconds: 1.8) { locked.withLock { $0 = true } } }
+        while !locked.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+
+        await #expect(throws: (any Error).self) { try await store.flush() }
+        #expect(await store.carriedRecordCount == 3)                       // 5…15 s kept, 0 s dropped
+        #expect(await store.droppedCarriedRecords == 1)
+        try await holder.value
+        try await store.flush()
+        #expect(try await store.intValue("SELECT COUNT(*) FROM system_raw") == 3)
+        #expect(try await store.intValue("SELECT MIN(ts) FROM system_raw") == Int((T.t0 + 5).unixMs))
+        #expect(try await store.intValue("SELECT \"end\" FROM event") == Int((T.t0 + 15).unixMs))
+        #expect(await store.droppedBatches == 0)
+
+        let capped = HistoryStore.capCarried([], [open, ended, open], span: .seconds(10))
+        #expect(capped.events == [open])                                   // latest update per id wins
+    }
+
     /// R-M3: quit leaves no WAL behind, and the writer truncates the WAL to 8 MB after checkpoints.
     @Test func shutdownTruncatesTheWAL() async throws {
         let url = T.tempDB()
