@@ -224,7 +224,7 @@ final class Collector<T: Sendable>: Sendable {
     @Test func overlayRecordsWhileProcessesFail() async {
         let (_, records) = await overlayRun(SpyLog(), ticks: 10, processesFailWhen: { _ in true })
         #expect(records.count == 2)
-        #expect(records.allSatisfy { $0.record.interval == .seconds(5) })
+        #expect(records.map(\.record.interval) == [.seconds(5), .seconds(6)])   // overdue: actual gap
     }
 
     /// A process sensor recovering mid-window never produces two records less than 4.5 s apart.
@@ -236,7 +236,17 @@ final class Collector<T: Sendable>: Sendable {
             #expect(gaps.allSatisfy { $0 >= 5 }, "failUntil \(failUntil): gaps \(gaps)")   // 1-s grid: ≥ 4.5 s → ≥ 5
             #expect(gaps.allSatisfy { $0 <= 6 }, "failUntil \(failUntil): gaps \(gaps)")   // overdue at 5 s + tick
             #expect(records.count >= 5)
+            // Coverage: intervals after the first sum to the elapsed time between first and last record (±1 s).
+            let covered = records.dropFirst().reduce(Duration.zero) { $0 + $1.record.interval }
+            let elapsed = Duration.seconds((records.last?.tick ?? 0) - (records.first?.tick ?? 0))
+            #expect(abs((covered - elapsed) / .seconds(1)) <= 1, "failUntil \(failUntil): \(covered) vs \(elapsed)")
         }
+    }
+
+    @Test func overlayOverdueIntervalIsTheActualGapClamped() async {
+        let (_, records) = await overlayRun(SpyLog(), ticks: 13, processesFailWhen: { _ in true })
+        #expect(records.map(\.tick) == [0, 6, 12])
+        #expect(records.map(\.record.interval) == [.seconds(5), .seconds(6), .seconds(6)])
     }
 
     @Test func pausedTakesNoSamplesAndEmitsPauseEvent() async throws {

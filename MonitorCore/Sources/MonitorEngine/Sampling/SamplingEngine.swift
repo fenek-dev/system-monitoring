@@ -265,8 +265,8 @@ public actor SamplingEngine {
         frame.events = alertEvents + episodes.update(frame)
         let record: HistoryRecord?
         if mode == .overlay {
-            record = overlayRecordDue(now: now, processesFresh: tick.processes.isFresh, mode: mode)
-                ? recordBuilder.record(from: frame, interval: SamplingMode.background.interval) : nil
+            record = overlayRecordInterval(now: now, processesFresh: tick.processes.isFresh, mode: mode)
+                .map { recordBuilder.record(from: frame, interval: $0) }
         } else {
             record = recordBuilder.record(from: frame)
         }
@@ -280,14 +280,22 @@ public actor SamplingEngine {
     /// (aligned with its 5-s cadence); at `since ≥ 5 s + tick` it is overdue and taken regardless (failing,
     /// backing-off or disabled process sensor). Each overlay row stores ONE 1-s sample weighted as 5 s
     /// (`interval_ms` = 5000) — accepted ruling: rollups treat it as covering the 5 s since the previous row.
-    private func overlayRecordDue(now: UInt64, processesFresh: Bool, mode: SamplingMode) -> Bool {
-        guard let last = lastRecordNs, now > last else { return lastRecordNs == nil }
+    /// Returns the record's interval, or nil when no record is due. Due path: 5 s. Overdue path: the actual gap
+    /// since the last record, clamped to 5–10 s, so a steady 6-s overdue cadence doesn't under-count coverage.
+    /// First record (no previous one): 5 s.
+    private func overlayRecordInterval(now: UInt64, processesFresh: Bool, mode: SamplingMode) -> Duration? {
+        let nominal = SamplingMode.background.interval ?? .seconds(5)
+        guard let last = lastRecordNs else { return nominal }
+        guard now > last else { return nil }
         let since = now - last                                        // guarded: now > last
-        let period = SensorSlot<Int>.ns(SamplingMode.background.interval) ?? 5_000_000_000
+        let period = SensorSlot<Int>.ns(nominal) ?? 5_000_000_000
         let tick = SensorSlot<Int>.ns(mode.interval) ?? 1_000_000_000
+        if since >= period + tick {                                   // overdue
+            let gap = min(max(since, period), 2 * period)
+            return .nanoseconds(Int64(clamping: gap))
+        }
         let due = since >= period - min(tick / 2, period)
-        let overdue = since >= period + tick
-        return (due && processesFresh) || overdue
+        return due && processesFresh ? nominal : nil
     }
 
     private func resetBaselines() {
