@@ -27,6 +27,11 @@ if [[ $# -gt 0 ]]; then
     scripts/test.sh "$@" || fail "tests"
 fi
 
+echo "== weak-symbol coverage (always)"
+# Every weak private symbol called from Swift must be in its tt_*_available() (S-I1): a missing one crash-loops
+# the app on a macOS that drops it. Source-level and fast, so it gates every merge whatever suites were named.
+scripts/test.sh WeakSymbolCoverageTests >/dev/null || fail "WeakSymbolCoverageTests (run scripts/test.sh WeakSymbolCoverageTests)"
+
 echo "== &- grep"
 hits=$(grep -rn '&-' MonitorCore/Sources App --include='*.swift' | grep -v RateCalculator.swift || true)
 if [[ -n "$hits" ]]; then
