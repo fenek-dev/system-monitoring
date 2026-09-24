@@ -1427,5 +1427,7 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 | 8 | `ri_energy_nj` excludes GPU energy → per-row watts += IOReport GPU W × row AGX share (`g / max(100, Σg)`); step 3 SoC share is CPU-only; rows with GPU term > 10 % of total are estimated. | W1 |
 | 9 | Alert hold/window timers use monotonic uptime; trackers reset on sample gap > 2× nominal (sleep). `Date` kept for event timestamps. | W1 |
 | 10 | `NavigationModel.inspectedApp` + `VisibilityInputs.inspectedApp`; set by Processes page only while the inspector detail is expanded (process selection → its app). | W4 / W5c |
+| 11 | `BlockDriverCounter.isDiskImage: Bool` (default false); engine excludes disk-image drivers from disk totals. | W6d / W7 |
+| 12 | `HistoryMetric.memPressureLevel` (1/2/4); rollups keep time-weighted avg; consumers map > 2.5 critical, > 1.0 warning. | W7 / W5a |
 
 Grouping rule 3 (§5.1) changed 2026-09-24: all bundle-less processes (any uid) are their own `.process` group.
