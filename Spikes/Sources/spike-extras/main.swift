@@ -21,6 +21,12 @@ func procName(_ pid: pid_t) -> String {
     return proc_name(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : "pid \(pid)"
 }
 
+func classNameOf(_ entry: io_registry_entry_t) -> String? {
+    var buf = [CChar](repeating: 0, count: 128)
+    guard IOObjectGetClass(entry, &buf) == KERN_SUCCESS else { return nil }
+    return String(cString: buf)
+}
+
 // MARK: - 1. Disk IOPS/bytes (IOBlockStorageDriver Statistics)
 
 struct DiskStats { var opsRead: UInt64 = 0; var opsWrite: UInt64 = 0; var bytesRead: UInt64 = 0; var bytesWrite: UInt64 = 0 }
@@ -59,31 +65,45 @@ func diskStats(_ driver: io_service_t) -> DiskStats {
                       bytesRead: u64("Bytes (Read)"), bytesWrite: u64("Bytes (Write)"))
 }
 
-func runDiskIOPS() {
+@discardableResult
+func runDiskIOPS() -> String? {
     print("== 1. Disk IOPS/bytes (IOBlockStorageDriver) ==")
     let drivers = allBlockStorageDrivers()
     defer { for d in drivers { IOObjectRelease(d) } }
-    if drivers.isEmpty { print("  no IOBlockStorageDriver services found"); return }
+    if drivers.isEmpty { print("  no IOBlockStorageDriver services found"); return nil }
     let names = drivers.map { bsdNameOfChild($0) ?? "?" }
 
     let (first, cost1) = measureMs { drivers.map { diskStats($0) } }
+    let sampleStart = Date()
     Thread.sleep(forTimeInterval: 1.0)
     let (second, cost2) = measureMs { drivers.map { diskStats($0) } }
+    // Don't assume exactly 1.0s elapsed between samples (the sleep call and the
+    // two measurement passes each add a little jitter) - measure it for real so
+    // the rates below are accurate, not just "off by whatever Thread.sleep felt
+    // like doing".
+    let elapsed = Date().timeIntervalSince(sampleStart)
 
-    print("  drivers=\(drivers.count) sample1=\(ms(cost1)) sample2=\(ms(cost2)) interval~1.0s")
+    print("  drivers=\(drivers.count) sample1=\(ms(cost1)) sample2=\(ms(cost2)) elapsed=\(String(format: "%.3f", elapsed))s")
     for i in 0..<drivers.count {
-        let dr = Double(second[i].opsRead &- first[i].opsRead)
-        let dw = Double(second[i].opsWrite &- first[i].opsWrite)
-        let drb = Double(second[i].bytesRead &- first[i].bytesRead)
-        let dwb = Double(second[i].bytesWrite &- first[i].bytesWrite)
-        print("  [\(names[i])] readIOPS=\(String(format: "%.0f", dr)) writeIOPS=\(String(format: "%.0f", dw)) " +
-              "readMBps=\(String(format: "%.3f", drb / 1_048_576)) writeMBps=\(String(format: "%.3f", dwb / 1_048_576))")
+        let dr = Double(second[i].opsRead &- first[i].opsRead) / elapsed
+        let dw = Double(second[i].opsWrite &- first[i].opsWrite) / elapsed
+        let drb = Double(second[i].bytesRead &- first[i].bytesRead) / elapsed
+        let dwb = Double(second[i].bytesWrite &- first[i].bytesWrite) / elapsed
+        // 1_048_576 = 2^20, i.e. MiB (binary mebibytes), not decimal MB - label accordingly.
+        print("  [\(names[i])] readIOPS=\(String(format: "%.1f", dr)) writeIOPS=\(String(format: "%.1f", dw)) " +
+              "readMiBps=\(String(format: "%.3f", drb / 1_048_576)) writeMiBps=\(String(format: "%.3f", dwb / 1_048_576))")
     }
+    return names.first { $0 != "?" }
 }
 
 // MARK: - 2. NVMe SMART (NVMeSMARTLib CFPlugIn via CPrivate C helper)
 
-func findNVMeSMARTService() -> io_service_t {
+/// Full-registry fallback: sweep every IOService and filter by the
+/// "NVMe SMART Capable" property. Correct, but pays the cost of enumerating
+/// (and CFRelease-ing) every service in the whole registry - see
+/// findNVMeSMARTServiceViaBSDName for the cheaper, targeted approach smartctl
+/// actually uses.
+func findNVMeSMARTServiceBySweep() -> io_service_t {
     var iter: io_iterator_t = 0
     guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(kIOServiceClass), &iter) == KERN_SUCCESS else { return 0 }
     defer { IOObjectRelease(iter) }
@@ -102,11 +122,54 @@ func findNVMeSMARTService() -> io_service_t {
     return found
 }
 
-func runNVMeSMART() {
+/// Targeted lookup, mirroring what smartctl does: start at the specific BSD
+/// disk's IOMedia node and walk UP the IOService plane's parent chain until a
+/// node with "NVMe SMART Capable"=true is found (a few hops: IOMedia ->
+/// IOBlockStorageDriver -> the NVMe block device). Much cheaper than sweeping
+/// the whole registry, and it's the SMART-capable ancestor of *this specific
+/// disk* rather than "the first SMART-capable thing anywhere".
+func findNVMeSMARTServiceViaBSDName(_ bsdName: String) -> (service: io_service_t, trail: [String]) {
+    guard let matching = IOBSDNameMatching(kIOMainPortDefault, 0, bsdName) else { return (0, []) }
+    var current = IOServiceGetMatchingService(kIOMainPortDefault, matching)
+    guard current != 0 else { return (0, []) }
+    var trail: [String] = [classNameOf(current) ?? "?"]
+    var hops = 0
+    while hops < 20 {
+        if let cf = IORegistryEntryCreateCFProperty(current, "NVMe SMART Capable" as CFString, kCFAllocatorDefault, 0),
+           (cf.takeRetainedValue() as? Bool) == true {
+            return (current, trail) // caller now owns `current`
+        }
+        var parent: io_registry_entry_t = 0
+        let kr = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent)
+        IOObjectRelease(current)
+        guard kr == KERN_SUCCESS, parent != 0 else { return (0, trail) }
+        current = parent
+        trail.append(classNameOf(current) ?? "?")
+        hops += 1
+    }
+    IOObjectRelease(current)
+    return (0, trail)
+}
+
+func runNVMeSMART(bsdName: String) {
     print("== 2. NVMe SMART (NVMeSMARTLibExternal.h) ==")
-    let (svc, findCost) = measureMs { findNVMeSMARTService() }
+
+    let ((viaParent, trail), parentCost) = measureMs { findNVMeSMARTServiceViaBSDName(bsdName) }
+    print("  parent-chain lookup from \"\(bsdName)\": \(trail.joined(separator: " -> ")) cost=\(ms(parentCost))")
+
+    var svc = viaParent
+    var findCost = parentCost
+    var method = "parent-chain from \(bsdName)"
+    if svc == 0 {
+        let (viaSweep, sweepCost) = measureMs { findNVMeSMARTServiceBySweep() }
+        print("  parent-chain lookup found nothing; fell back to a full registry sweep, cost=\(ms(sweepCost))")
+        svc = viaSweep
+        findCost = sweepCost
+        method = "full registry sweep (fallback)"
+    }
+
     guard svc != 0 else {
-        print("  not found: no IOService in the registry has 'NVMe SMART Capable'=true (findCost=\(ms(findCost)))")
+        print("  not found: no IOService in the registry has 'NVMe SMART Capable'=true")
         return
     }
     defer { IOObjectRelease(svc) }
@@ -116,7 +179,7 @@ func runNVMeSMART() {
     let svcName = String(cString: nameBuf)
 
     let (result, readCost) = measureMs { nvme_smart_read(svc) }
-    print("  service=\(svcName) findCost=\(ms(findCost)) readCost=\(ms(readCost))")
+    print("  service=\(svcName) method=\(method) findCost=\(ms(findCost)) readCost=\(ms(readCost))")
 
     if result.success != 0 {
         let dataReadBytes = result.dataUnitsRead &* 512_000
@@ -148,6 +211,21 @@ func runSleepAssertions() {
         return
     }
 
+    // IOPMLib.h documents "NoIdleSleepAssertion"/"NoDisplaySleepAssertion" as
+    // the legacy assertion-type names for the exact same functional assertion
+    // as "PreventUserIdleSystemSleep"/"PreventUserIdleDisplaySleep" ("please
+    // use ... instead") - old callers (this run: Arc, Claude desktop) still
+    // create assertions under the old name, so counting only the new literal
+    // strings undercounts. Normalize both onto the canonical name for
+    // counting, but keep the original string in the printed detail.
+    func canonicalAssertionType(_ type: String) -> String {
+        switch type {
+        case "NoIdleSleepAssertion": return "PreventUserIdleSystemSleep"
+        case "NoDisplaySleepAssertion": return "PreventUserIdleDisplaySleep"
+        default: return type
+        }
+    }
+
     var idleSystemCount = 0
     var idleDisplayCount = 0
     print("  processes with assertions: \(byPid.count)")
@@ -158,23 +236,29 @@ func runSleepAssertions() {
         for a in list {
             let type = (a["AssertType"] as? String) ?? "?"
             let name = (a["AssertName"] as? String) ?? ""
-            if type == "PreventUserIdleSystemSleep" { idleSystemCount += 1 }
-            if type == "PreventUserIdleDisplaySleep" { idleDisplayCount += 1 }
+            let canonical = canonicalAssertionType(type)
+            if canonical == "PreventUserIdleSystemSleep" { idleSystemCount += 1 }
+            if canonical == "PreventUserIdleDisplaySleep" { idleDisplayCount += 1 }
             parts.append(name.isEmpty ? type : "\(type)(\"\(name)\")")
         }
         print("  pid=\(pid) name=\(procName(pid)) assertions=[\(parts.joined(separator: ", "))]")
     }
-    print("  PreventUserIdleSystemSleep=\(idleSystemCount) PreventUserIdleDisplaySleep=\(idleDisplayCount)")
+    print("  PreventUserIdleSystemSleep=\(idleSystemCount) (incl. legacy NoIdleSleepAssertion) " +
+          "PreventUserIdleDisplaySleep=\(idleDisplayCount) (incl. legacy NoDisplaySleepAssertion)")
 }
 
 // MARK: - 4. Router latency and loss
 
-func gatewayViaSysctl() -> String? {
+/// Walks a `sysctl(CTL_NET, PF_ROUTE, ...)` routing-socket-message dump and
+/// returns every gateway found for a `0.0.0.0` (default) destination, so the
+/// caller can tell "exactly one default route" apart from "several,
+/// ambiguous" (see the VPN/scoped-route note in `runRouterPing`).
+func defaultGatewaysViaSysctl() -> [String] {
     var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY]
     var len = 0
-    guard sysctl(&mib, u_int(mib.count), nil, &len, nil, 0) == 0, len > 0 else { return nil }
+    guard sysctl(&mib, u_int(mib.count), nil, &len, nil, 0) == 0, len > 0 else { return [] }
     var buf = [UInt8](repeating: 0, count: len)
-    guard sysctl(&mib, u_int(mib.count), &buf, &len, nil, 0) == 0 else { return nil }
+    guard sysctl(&mib, u_int(mib.count), &buf, &len, nil, 0) == 0 else { return [] }
 
     func ipString(_ raw: UnsafeRawBufferPointer, at offset: Int, saLen: Int, limit: Int) -> String? {
         let want = MemoryLayout<sockaddr_in>.size
@@ -190,8 +274,9 @@ func gatewayViaSysctl() -> String? {
         return String(cString: ipbuf)
     }
 
-    return buf.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> String? in
+    return buf.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> [String] in
         var offset = 0
+        var found: [String] = []
         while offset + MemoryLayout<rt_msghdr>.size <= len {
             let rtm = raw.load(fromByteOffset: offset, as: rt_msghdr.self)
             let msglen = Int(rtm.rtm_msglen)
@@ -211,16 +296,28 @@ func gatewayViaSysctl() -> String? {
                     if i == Int32(RTAX_DST), ip == "0.0.0.0" { dstIsDefault = true }
                     if i == Int32(RTAX_GATEWAY) { gateway = ip }
                 }
-                let rounded = saLen <= 0 ? MemoryLayout<Int>.size
-                    : ((saLen + MemoryLayout<Int>.size - 1) / MemoryLayout<Int>.size) * MemoryLayout<Int>.size
+                // XNU's routing-socket message builder (rtsock.c) pads each
+                // sockaddr to a 4-byte (uint32_t) boundary - ROUNDUP32 - not
+                // sizeof(long)/8, regardless of the reading process's native
+                // word size. Verified empirically against a live NET_RT_DUMP:
+                // a 20-byte sockaddr_dl gateway (a directly-connected/cloned
+                // route) followed by a netmask field only re-syncs correctly
+                // under 4-byte rounding; 8-byte rounding overshoots by 4
+                // bytes and silently misreads the next field as a
+                // plausible-looking but wrong address (confirmed against
+                // `netstat -rn`: it decoded as an unrelated host's IP that
+                // happened to sit 4 bytes later in the same message).
+                let rounded = saLen <= 0 ? 4 : ((saLen + 3) / 4) * 4
                 addrOffset += rounded
             }
-            if dstIsDefault, let gw = gateway { return gw }
+            if dstIsDefault, let gw = gateway { found.append(gw) }
             offset += msglen
         }
-        return nil
+        return found
     }
 }
+
+func gatewayViaSysctl() -> String? { defaultGatewaysViaSysctl().first }
 
 func gatewayViaSCDynamicStore() -> String? {
     guard let store = SCDynamicStoreCreate(nil, "spike-extras" as CFString, nil, nil) else { return nil }
@@ -261,7 +358,7 @@ func icmpChecksum(_ data: [UInt8]) -> UInt16 {
     return ~UInt16(sum & 0xffff)
 }
 
-func pingOnce(fd: Int32, dest: sockaddr_in, identifier: UInt16, seq: UInt16, timeout: TimeInterval) -> Double? {
+func sendEcho(fd: Int32, dest: sockaddr_in, identifier: UInt16, seq: UInt16) -> Bool {
     var packet = [UInt8](repeating: 0, count: 16)
     packet[0] = 8 // ICMP_ECHO
     packet[1] = 0 // code
@@ -274,7 +371,6 @@ func pingOnce(fd: Int32, dest: sockaddr_in, identifier: UInt16, seq: UInt16, tim
     packet[2] = UInt8(cksum >> 8); packet[3] = UInt8(cksum & 0xff)
 
     var destAddr = dest
-    let start = Date()
     let sent = withUnsafePointer(to: &destAddr) { destPtr -> Int in
         destPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
             packet.withUnsafeBytes { buf in
@@ -282,19 +378,32 @@ func pingOnce(fd: Int32, dest: sockaddr_in, identifier: UInt16, seq: UInt16, tim
             }
         }
     }
-    guard sent > 0 else { return nil }
+    return sent > 0
+}
 
-    let deadline = start.addingTimeInterval(timeout)
+/// Drains whatever ICMP echo replies are already queued (or arrive within
+/// `budget`), verifying both the sequence number AND the reply's source
+/// address before recording an RTT - a stray/unrelated ICMP packet on the
+/// wire (or a spoofed one) matching only the identifier+seq should never be
+/// counted as "the gateway answered".
+func drainReplies(fd: Int32, identifier: UInt16, expectedSource: in_addr, records: inout [Double?], sentAt: [Date], budget: TimeInterval) {
+    let deadline = Date().addingTimeInterval(budget)
     while true {
         let remaining = deadline.timeIntervalSinceNow
-        if remaining <= 0 { return nil }
+        if remaining < 0 { return }
         var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        let rc = poll(&pfd, 1, Int32(remaining * 1000))
-        if rc <= 0 { return nil }
+        let rc = poll(&pfd, 1, Int32(max(0, remaining * 1000)))
+        guard rc > 0 else { return }
 
         var recvBuf = [UInt8](repeating: 0, count: 1024)
-        let n = recvBuf.withUnsafeMutableBytes { rb -> Int in
-            recvfrom(fd, rb.baseAddress, rb.count, 0, nil, nil)
+        var fromAddr = sockaddr_in()
+        var fromLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let n = withUnsafeMutablePointer(to: &fromAddr) { fp -> Int in
+            fp.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                recvBuf.withUnsafeMutableBytes { rb in
+                    recvfrom(fd, rb.baseAddress, rb.count, 0, sa, &fromLen)
+                }
+            }
         }
         // Gotcha: even on SOCK_DGRAM/IPPROTO_ICMP (unprivileged "ping" sockets),
         // macOS delivers the reply with the IPv4 header still attached (like a raw
@@ -307,22 +416,35 @@ func pingOnce(fd: Int32, dest: sockaddr_in, identifier: UInt16, seq: UInt16, tim
         guard n >= ihl + 8 else { continue }
         let replyType = recvBuf[ihl]
         let replyId = (UInt16(recvBuf[ihl + 4]) << 8) | UInt16(recvBuf[ihl + 5])
-        let replySeq = (UInt16(recvBuf[ihl + 6]) << 8) | UInt16(recvBuf[ihl + 7])
-        if replyType == 0, replyId == identifier, replySeq == seq { // ICMP_ECHOREPLY
-            return Date().timeIntervalSince(start) * 1000
+        let replySeq = Int((UInt16(recvBuf[ihl + 6]) << 8) | UInt16(recvBuf[ihl + 7]))
+        guard replyType == 0, replyId == identifier, replySeq >= 0, replySeq < records.count else { continue } // ICMP_ECHOREPLY
+        guard fromAddr.sin_addr.s_addr == expectedSource.s_addr else { continue } // must actually be from the gateway
+        if records[replySeq] == nil {
+            records[replySeq] = Date().timeIntervalSince(sentAt[replySeq]) * 1000
         }
     }
 }
 
 func runRouterPing() {
     print("== 4. Router latency and loss ==")
-    let (sysctlGw, sysctlCost) = measureMs { gatewayViaSysctl() }
+    let (defaultGws, sysctlCost) = measureMs { defaultGatewaysViaSysctl() }
     let (scGw, scCost) = measureMs { gatewayViaSCDynamicStore() }
-    print("  sysctl(NET_RT_FLAGS,RTF_GATEWAY)=\(sysctlGw ?? "nil") cost=\(ms(sysctlCost))")
+    print("  sysctl(NET_RT_FLAGS,RTF_GATEWAY) default route(s)=\(defaultGws) cost=\(ms(sysctlCost))")
     print("  SCDynamicStore State:/Network/Global/IPv4/Router=\(scGw ?? "nil") cost=\(ms(scCost))")
+    if defaultGws.count > 1 {
+        print("  NOTE: \(defaultGws.count) gateway routes claim destination 0.0.0.0 - taking the first one sysctl " +
+              "returns, with no metric/scope/interface tie-breaking.")
+    }
+    // Known limitation (not exercised on this single-uplink Wi-Fi machine): a
+    // VPN (utun) or a scoped/per-interface default route can add a SECOND
+    // default route. Picking "the first RTF_GATEWAY entry with dst 0.0.0.0",
+    // as this spike does, can silently pick the wrong one when that happens.
+    // A real implementation should prefer the interface SCDynamicStore's
+    // State:/Network/Global/IPv4 names as PrimaryInterface, or read each
+    // route's rtm_rmx metric, rather than taking the first sysctl match.
 
-    var gateway = sysctlGw ?? scGw
-    var source = sysctlGw != nil ? "sysctl" : (scGw != nil ? "SCDynamicStore" : "none")
+    var gateway = defaultGws.first ?? scGw
+    var source = defaultGws.first != nil ? "sysctl" : (scGw != nil ? "SCDynamicStore" : "none")
     if gateway == nil {
         let (routeGw, routeCost) = measureMs { gatewayViaRouteCommand() }
         print("  fallback `route -n get default`=\(routeGw ?? "nil") cost=\(ms(routeCost))")
@@ -352,22 +474,45 @@ func runRouterPing() {
     }
 
     let identifier = UInt16(getpid() & 0xffff)
-    var rtts: [Double] = []
-    var sent = 0
+    let count = 5
+    let period: TimeInterval = 0.2 // fixed 200ms *send* cadence, per the brief
+    var rtts = [Double?](repeating: nil, count: count)
+    var sentAt = [Date](repeating: Date(), count: count)
+
+    let scheduleStart = Date()
     let (_, totalCost) = measureMs {
-        for seq in 0..<5 {
-            sent += 1
-            if let rtt = pingOnce(fd: fd, dest: dest, identifier: identifier, seq: UInt16(seq), timeout: 1.0) {
-                rtts.append(rtt)
-            }
-            if seq < 4 { Thread.sleep(forTimeInterval: 0.2) }
+        for seq in 0..<count {
+            // Send on a fixed schedule (t = seq * 200ms since the first send),
+            // independent of whether/when earlier replies arrive. The first
+            // version of this spike waited for each reply (or its 1s timeout)
+            // before sleeping 200ms and sending the next one, so the real
+            // inter-request gap depended on reply latency, not a fixed period.
+            let targetSendTime = scheduleStart.addingTimeInterval(Double(seq) * period)
+            let wait = targetSendTime.timeIntervalSinceNow
+            if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+            sentAt[seq] = Date()
+            _ = sendEcho(fd: fd, dest: dest, identifier: identifier, seq: UInt16(seq))
+            // Block (via poll, inside drainReplies) until either a reply shows
+            // up - RTT is stamped the instant it's read, so this doesn't lose
+            // accuracy - or it's time for the next scheduled send, whichever
+            // comes first. A plain non-blocking (budget=0) peek here would
+            // "notice" a reply only on the *next* iteration's check, up to one
+            // full period late, which would inflate the measured RTT by up to
+            // ~200ms while still reporting the correct received/loss counts -
+            // exactly what an earlier version of this fix did. The last
+            // request instead gets a full 1s grace period, since there's no
+            // next send to race against.
+            let isLast = seq == count - 1
+            let budget = isLast ? 1.0 : max(0, scheduleStart.addingTimeInterval(Double(seq + 1) * period).timeIntervalSinceNow)
+            drainReplies(fd: fd, identifier: identifier, expectedSource: dest.sin_addr, records: &rtts, sentAt: sentAt, budget: budget)
         }
     }
 
-    let lossPct = 100.0 * Double(sent - rtts.count) / Double(sent)
-    print("  sent=\(sent) received=\(rtts.count) loss=\(String(format: "%.0f", lossPct))% totalCost=\(ms(totalCost))")
-    if !rtts.isEmpty {
-        let minRtt = rtts.min()!, maxRtt = rtts.max()!, avgRtt = rtts.reduce(0, +) / Double(rtts.count)
+    let received = rtts.compactMap { $0 }
+    let lossPct = 100.0 * Double(count - received.count) / Double(count)
+    print("  sent=\(count) received=\(received.count) loss=\(String(format: "%.0f", lossPct))% totalCost=\(ms(totalCost))")
+    if !received.isEmpty {
+        let minRtt = received.min()!, maxRtt = received.max()!, avgRtt = received.reduce(0, +) / Double(received.count)
         print("  rtt min/avg/max = \(String(format: "%.2f", minRtt))/\(String(format: "%.2f", avgRtt))/\(String(format: "%.2f", maxRtt)) ms")
     }
 }
@@ -419,8 +564,8 @@ func runWiFi() {
 
 // MARK: - main
 
-runDiskIOPS()
-runNVMeSMART()
+let primaryDisk = runDiskIOPS()
+runNVMeSMART(bsdName: primaryDisk ?? "disk0")
 runSleepAssertions()
 runRouterPing()
 runWiFi()
