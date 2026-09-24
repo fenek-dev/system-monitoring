@@ -218,6 +218,28 @@ enum RouteBytes {
             if c.rx > UInt64(UInt32.max) || c.tx > UInt64(UInt32.max) { big += 1 }
         }
         print("W6c ifmib fixture: \(plist.count) interfaces, \(big) with counters > 2^32")
+        #expect(big >= 1) // the fixture proves 64-bit counters (en0 rx ≈ 970 GB at capture)
+    }
+
+    @Test func overlayNeverEmitsTruncatedCounters() {
+        let rows = Self.iflist.withUnsafeBytes { InterfaceParse.interfaces($0) }.filter { $0.name == "en0" || $0.name == "en5" }
+        var lastGood: [String: (index: UInt16, counters: IFCounters)] = [:]
+        let big = IFCounters(rx: 970_000_000_000, tx: 27_000_000_000, baudRate: 1)
+        // First tick: en0 reads fine; en5's IFMIB fails and it has no history → dropped.
+        var out = InterfaceParse.overlay(rows, counters: [14: big], lastGood: &lastGood)
+        #expect(out.map(\.name) == ["en0"])
+        #expect(out[0].rxBytes == 970_000_000_000 && out[0].txBytes == 27_000_000_000 && out[0].baudRate == 1)
+        // Second tick: en0's IFMIB read fails → last good value, not IFLIST2's 5_000_000_000.
+        out = InterfaceParse.overlay(rows, counters: [:], lastGood: &lastGood)
+        #expect(out.map(\.name) == ["en0"])
+        #expect(out[0].rxBytes == 970_000_000_000)
+        // Interface re-created under a new index: its old counters don't carry over.
+        var moved = rows
+        moved[0].index = 99
+        #expect(InterfaceParse.overlay(moved, counters: [:], lastGood: &lastGood).isEmpty)
+        // Vanished interfaces leave the history.
+        _ = InterfaceParse.overlay([], counters: [:], lastGood: &lastGood)
+        #expect(lastGood.isEmpty)
     }
 
     @Test func parsesCapturedDefaultRoute() throws {

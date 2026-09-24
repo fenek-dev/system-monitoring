@@ -6,9 +6,9 @@ import os
 /// Per-app / per-connection network bytes from the private NetworkStatistics framework (what `nettop` uses).
 ///
 /// One long-lived manager (creation floods ~150 "added" callbacks, 0.3–1.3 s). Every callback runs on the box's
-/// serial queue; `sample()` returns the last **completed** counts query and starts the next one asynchronously
-/// (interactive: every tick; background: 10 s). Removed sources get a final counts callback from NStat before
-/// the removed block, so their bytes are folded into `closedBytes` even between queries.
+/// serial queue; `sample()` returns the last **completed** query and starts the next one asynchronously
+/// (interactive: every tick; background: 10 s). Removed sources get a final description + counts callback from
+/// NStat before the removed block, so their bytes are folded into `closedBytes` even between queries.
 public final class NStatSensor: Sensor {
     public typealias Reading = NetworkFlowsReading
     public let id: SensorID = .networkFlows
@@ -55,6 +55,7 @@ public final class NStatSensor: Sensor {
     public func invalidate() {
         guard let m = manager else { return }
         manager = nil
+        box.retire() // late completions of this manager's queries are ignored from here on
         NStatManagerDestroy(m)
         let box = self.box
         box.queue.async { box.reset() }
@@ -65,13 +66,15 @@ public final class NStatSensor: Sensor {
     private func startQuery(_ m: NStatManagerRef) {
         let box = self.box
         let describe = box.needsDescriptions()
-        guard box.beginQuery(nowNs: W6cClock.uptimeNs(), parts: describe ? 2 : 1) else { return }
-        if describe { NStatManagerQueryAllSourcesDescriptions(m) { box.partCompleted() } }
-        NStatManagerQueryAllSources(m) { box.partCompleted() }
+        guard let gen = box.beginQuery(nowNs: W6cClock.uptimeNs(), parts: describe ? 2 : 1) else { return }
+        if describe { NStatManagerQueryAllSourcesDescriptions(m) { box.partCompleted(gen) } }
+        NStatManagerQueryAllSources(m) { box.partCompleted(gen) }
     }
 }
 
-/// Callback-driven NStat state (ARCHITECTURE §4): C blocks capture only this box.
+/// Callback-driven NStat state (ARCHITECTURE §4): C blocks capture only this box. No syscall runs under the lock:
+/// callbacks read what they need, call sysctl/proc_pidinfo/if_indextoname unlocked, then apply. That is race-free
+/// because every mutation happens on the one serial `queue`.
 final class NStatBox: Sendable {
     struct State: Sendable {
         var table = NStatFlowTable()
@@ -82,6 +85,8 @@ final class NStatBox: Sendable {
         var nextID: UInt64 = 1
         var last: NetworkFlowsReading?
         var lastCapturedNs: UInt64 = 0
+        /// Bumped by every new query and by `retire()`: completions carrying an older generation are ignored.
+        var generation: UInt64 = 0
         var queryStartedNs: UInt64?
         var pendingParts = 0
         var lastQueryCostNs: UInt64 = 0
@@ -90,7 +95,7 @@ final class NStatBox: Sendable {
         var firstSignalled = false
     }
 
-    /// A query stuck longer than this no longer blocks new ones.
+    /// A query stuck longer than this no longer blocks new ones (the new one supersedes it).
     static let queryStallNs: UInt64 = 5_000_000_000
     static let pruneIntervalNs: UInt64 = 30_000_000_000
 
@@ -109,13 +114,24 @@ final class NStatBox: Sendable {
         lock.withLock { s in s.last.map { ($0, s.lastCapturedNs) } }
     }
 
-    /// False while a query is in flight (unless it stalled). `parts` = number of completion blocks to await.
-    func beginQuery(nowNs: UInt64, parts: Int) -> Bool {
+    /// The new query's generation, or nil while one is in flight (unless it stalled). `parts` = completion
+    /// blocks to await.
+    func beginQuery(nowNs: UInt64, parts: Int) -> UInt64? {
         lock.withLock { s in
-            if let started = s.queryStartedNs, nowNs >= started, nowNs - started < Self.queryStallNs { return false }
+            if let started = s.queryStartedNs, nowNs >= started, nowNs - started < Self.queryStallNs { return nil }
+            s.generation += 1
             s.queryStartedNs = nowNs
             s.pendingParts = parts
-            return true
+            return s.generation
+        }
+    }
+
+    /// Invalidates in-flight queries (manager about to be destroyed).
+    func retire() {
+        lock.withLock { s in
+            s.generation += 1
+            s.queryStartedNs = nil
+            s.pendingParts = 0
         }
     }
 
@@ -156,11 +172,17 @@ final class NStatBox: Sendable {
                 sample = NStatParse.sample({ d[$0] }, keys: k, endpoints: want)
             }
         }
-        let parsed = sample, newKeys = refined
+        // Resolve the start time outside the lock, only when the table will ask for it.
+        var start: UInt64?
+        let upid = sample.uniquePID
+        if let pid = sample.pid, lock.withLock({ $0.table.needsStartTime(id, uniquePID: upid) }) {
+            start = W6cProcess.startTimeUs(pid: pid, uniquePID: upid)
+        }
+        let parsed = sample, newKeys = refined, resolved = start
         lock.withLock { s in
             if missing, s.refineBudget > 0 { s.refineBudget -= 1 }
             if let newKeys { s.keys = newKeys }
-            s.table.update(id, with: parsed, startTime: W6cProcess.startTimeUs)
+            s.table.update(id, with: parsed) { _, _ in resolved }
         }
     }
 
@@ -169,25 +191,33 @@ final class NStatBox: Sendable {
         lock.withLock { $0.table.remove(id) }
     }
 
-    /// One query completion block fired; the reading is built when the last one has.
-    func partCompleted() {
+    /// One query completion block fired; the reading is built when the last one of the current generation has.
+    func partCompleted(_ gen: UInt64) {
         assertOnQueue()
         let now = W6cClock.uptimeNs()
-        let signal = lock.withLock { s -> Bool in
+        let ready = lock.withLock { s -> (prune: [ProcessID], ifIndexes: [UInt32], names: [UInt32: String])? in
+            guard gen == s.generation, s.pendingParts > 0 else { return nil }
             s.pendingParts -= 1
-            guard s.pendingParts <= 0 else { return false }
-            if now < s.lastPruneNs || now - s.lastPruneNs >= Self.pruneIntervalNs {
-                s.table.prune(nowNs: now, isAlive: W6cProcess.isAlive)
+            guard s.pendingParts == 0 else { return nil }
+            let prune = now < s.lastPruneNs || now - s.lastPruneNs >= Self.pruneIntervalNs
+            let missing = s.wantEndpoints ? s.table.interfaceIndexes().filter { s.interfaceNames[$0] == nil } : []
+            return (prune ? s.table.pruneCandidates() : [], missing, s.interfaceNames)
+        }
+        guard let ready else { return }
+        // Syscalls outside the lock.
+        let alive = Set(ready.prune.filter(W6cProcess.isAlive))
+        var names = ready.names
+        for i in ready.ifIndexes { if let n = Self.interfaceName(i) { names[i] = n } }
+        let pruneNow = !ready.prune.isEmpty
+        let resolvedNames = names
+        let signal = lock.withLock { s -> Bool in
+            guard gen == s.generation else { return false }
+            if pruneNow || now < s.lastPruneNs || now - s.lastPruneNs >= Self.pruneIntervalNs {
+                s.table.prune(nowNs: now) { alive.contains($0) }
                 s.lastPruneNs = now
             }
-            var names = s.interfaceNames
-            s.last = s.table.reading(endpoints: s.wantEndpoints) { idx in
-                if let n = names[idx] { return n }
-                let n = Self.interfaceName(idx)
-                if let n { names[idx] = n }
-                return n
-            }
-            s.interfaceNames = names
+            s.interfaceNames = resolvedNames
+            s.last = s.table.reading(endpoints: s.wantEndpoints) { resolvedNames[$0] }
             s.lastCapturedNs = now
             if let started = s.queryStartedNs, now >= started { s.lastQueryCostNs = now - started }
             s.queryStartedNs = nil
@@ -200,9 +230,10 @@ final class NStatBox: Sendable {
     func reset() {
         assertOnQueue()
         lock.withLock { s in
-            let next = s.nextID
+            let next = s.nextID, gen = s.generation
             s = State()
             s.nextID = next // late callbacks of the old manager carry ids the new table never had
+            s.generation = gen
         }
     }
 

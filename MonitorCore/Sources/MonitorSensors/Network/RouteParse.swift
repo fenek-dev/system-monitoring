@@ -9,6 +9,12 @@ struct RouteEntry: Sendable, Equatable {
     var flags: Int32
 }
 
+enum RouterChoice: Sendable, Equatable {
+    case router(String)
+    case vpnOnly
+    case noRoute
+}
+
 /// A default route (destination 0.0.0.0 via an IPv4 gateway).
 struct DefaultRoute: Sendable, Equatable {
     var gateway: String
@@ -70,6 +76,25 @@ enum RouteParse {
             guard e.destinationFamily == AF_INET, e.destination?.address == nil, let gw = e.gateway else { return nil }
             return DefaultRoute(gateway: gw, interfaceIndex: e.interfaceIndex)
         }
+    }
+
+    /// Physical (non-tunnel) interfaces are Ethernet-class `en*` (Wi-Fi, Ethernet, Thunderbolt, USB).
+    static func isPhysical(_ name: String?) -> Bool { name?.hasPrefix("en") ?? false }
+
+    /// Latency target (ruling 2026-09-24): the router of the **physical** primary interface, never a VPN gateway.
+    /// Primary physical → its default route (else SystemConfiguration's router, else the first physical route).
+    /// Primary a tunnel (utun/ipsec/ppp) or unknown → the first physical default route (scoped routes stay in the
+    /// dump). Only tunnel routes → `.vpnOnly`; none at all → `.noRoute`.
+    static func physicalRouter(_ routes: [DefaultRoute], names: [UInt16: String], primary: String?,
+                               scRouter: String?) -> RouterChoice {
+        let physical = routes.filter { isPhysical(names[$0.interfaceIndex]) }
+        if isPhysical(primary) {
+            if let r = physical.first(where: { names[$0.interfaceIndex] == primary }) { return .router(r.gateway) }
+            if let sc = scRouter { return .router(sc) }
+        }
+        if let r = physical.first { return .router(r.gateway) }
+        if !routes.isEmpty || (primary != nil && !isPhysical(primary)) { return .vpnOnly }
+        return .noRoute
     }
 
     /// Several default routes (VPN, scoped routes): prefer the primary interface's, else the first.

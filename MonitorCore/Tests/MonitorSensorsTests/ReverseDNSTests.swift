@@ -58,7 +58,7 @@ import Testing
     final class Gate: Sendable {
         let release = DispatchSemaphore(value: 0)
         let stats = OSAllocatedUnfairLock(initialState: (current: 0, peak: 0, calls: 0))
-        func resolve(_ a: String) -> String? {
+        func resolve(_ a: String) -> ReverseDNSResult {
             stats.withLock { s in
                 s.current += 1
                 s.calls += 1
@@ -66,7 +66,7 @@ import Testing
             }
             release.wait()
             stats.withLock { $0.current -= 1 }
-            return "host-\(a)"
+            return .name("host-\(a)")
         }
     }
 
@@ -79,7 +79,7 @@ import Testing
         let dns = ReverseDNS(maxConcurrent: 4, resolve: { gate.resolve($0) }, now: { 0 })
         let t0 = W6cClock.uptimeNs()
         for i in 0..<10 { #expect(dns.name(for: "10.0.0.\(i)") == nil) }
-        #expect(W6cClock.uptimeNs() - t0 < 50_000_000) // resolvers are blocked; name() is not
+        #expect(W6cClock.uptimeNs() - t0 < 250_000_000) // resolvers are blocked; name() is not (functional, not perf)
         Self.waitUntil { dns.inFlightCount == 4 }
         #expect(dns.inFlightCount == 4)
         for _ in 0..<10 { gate.release.signal() }
@@ -91,10 +91,38 @@ import Testing
         gate.release.signal() // for the 9.9.9.9 lookup just scheduled
     }
 
+    @Test func classifiesGetnameinfoResults() {
+        #expect(ReverseDNSLookup.result(rc: 0, host: "dns.google", address: "8.8.8.8") == .name("dns.google"))
+        #expect(ReverseDNSLookup.result(rc: 0, host: "8.8.8.8", address: "8.8.8.8") == .noName)
+        #expect(ReverseDNSLookup.result(rc: 0, host: "", address: "8.8.8.8") == .noName)
+        #expect(ReverseDNSLookup.result(rc: EAI_NONAME, host: "", address: "8.8.8.8") == .noName)
+        #expect(ReverseDNSLookup.result(rc: EAI_AGAIN, host: "", address: "8.8.8.8") == .failed)
+        #expect(ReverseDNSLookup.result(rc: EAI_FAIL, host: "", address: "8.8.8.8") == .failed)
+        #expect(ReverseDNSLookup.hostName("not-an-ip") == .noName)
+    }
+
+    /// Transient failures expire after 30 s; "no name" is kept the full 10 minutes.
+    @Test func transientFailuresUseShortTTL() {
+        let clock = OSAllocatedUnfairLock(initialState: UInt64(0))
+        let calls = OSAllocatedUnfairLock(initialState: [String: Int]())
+        let dns = ReverseDNS(resolve: { a in
+            calls.withLock { $0[a, default: 0] += 1 }
+            return a == "10.0.0.1" ? .failed : .noName
+        }, now: { clock.withLock { $0 } })
+        _ = dns.name(for: "10.0.0.1")
+        _ = dns.name(for: "10.0.0.2")
+        Self.waitUntil { dns.cacheCount == 2 }
+        clock.withLock { $0 = 31_000_000_000 }
+        _ = dns.name(for: "10.0.0.1") // failure expired → looked up again
+        _ = dns.name(for: "10.0.0.2") // no-name still cached
+        Self.waitUntil { calls.withLock { $0["10.0.0.1"] } == 2 }
+        #expect(calls.withLock { $0 } == ["10.0.0.1": 2, "10.0.0.2": 1])
+    }
+
     @Test func expiredEntriesAreLookedUpAgain() {
         let clock = OSAllocatedUnfairLock(initialState: UInt64(0))
         let calls = OSAllocatedUnfairLock(initialState: 0)
-        let dns = ReverseDNS(ttlNs: 1_000, resolve: { a in calls.withLock { $0 += 1 }; return "n-\(a)" },
+        let dns = ReverseDNS(ttlNs: 1_000, resolve: { a in calls.withLock { $0 += 1 }; return .name("n-\(a)") },
                              now: { clock.withLock { $0 } })
         _ = dns.name(for: "1.2.3.4")
         Self.waitUntil { dns.name(for: "1.2.3.4") != nil }
@@ -120,8 +148,8 @@ struct ReverseDNSSmokeTests {
             name = dns.name(for: "127.0.0.1")
         }
         let direct = ReverseDNSLookup.hostName("127.0.0.1")
-        print("W6c rdns: 127.0.0.1 → \(name ?? "nil") (direct \(direct ?? "nil"))")
+        print("W6c rdns: 127.0.0.1 → \(name ?? "nil") (direct \(direct))")
         #expect(name == "localhost")
-        #expect(name == direct)
+        #expect(direct == .name("localhost"))
     }
 }

@@ -4,6 +4,13 @@ import SystemConfiguration
 /// Interface byte counters (64-bit, IFMIB; enumeration via `NET_RT_IFLIST2`), kinds and names (SystemConfiguration), primary interface
 /// and router. Counters every tick (one sysctl into a retained buffer); the slow part (SC interface list,
 /// primary, default route) refreshes every 10 s or when the interface set changes.
+///
+/// Rows: hardware interfaces SystemConfiguration knows (Wi-Fi, Ethernet, Thunderbolt ports and Thunderbolt Bridge)
+/// plus the primary one (may be a VPN `utun`, kind `.other`); never loopback. Exactly one row has `isPrimary`
+/// (when the Mac is online). **System totals should come from the primary row**: summing every row double-counts
+/// (a bridge carries its members' bytes; a VPN tunnel carries the same bytes as the physical interface under it).
+/// Byte counters are always 64-bit (IFMIB); a row whose 64-bit read fails reuses its last good counters or is
+/// omitted — never the 32-bit-truncated IFLIST2 value.
 public final class InterfaceSensor: Sensor {
     public typealias Reading = InterfacesReading
     public let id: SensorID = .interfaces
@@ -18,6 +25,7 @@ public final class InterfaceSensor: Sensor {
     private var router: String?
     private var knownIndexes: [UInt16] = []
     private var lastSlowNs: UInt64?
+    private var lastGood: [String: (index: UInt16, counters: IFCounters)] = [:]
 
     public init() {}
 
@@ -36,8 +44,8 @@ public final class InterfaceSensor: Sensor {
         }
         // IFLIST2 enumerates (names, flags, IPv4); its byte counters are 32-bit-truncated, so the reported
         // interfaces get their 64-bit counters from IFMIB (one small sysctl each).
-        var rows = InterfaceParse.included(raw, descriptors: descriptors, primary: primary)
-        NetworkFFI.overlay64BitCounters(&rows)
+        let included = InterfaceParse.included(raw, descriptors: descriptors, primary: primary)
+        let rows = InterfaceParse.overlay(included, counters: NetworkFFI.ifmibCounters(included), lastGood: &lastGood)
         return (InterfaceParse.reading(rows, descriptors: descriptors, primary: primary, router: router), now)
     }
 
