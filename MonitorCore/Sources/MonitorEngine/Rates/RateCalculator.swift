@@ -45,4 +45,7 @@ public struct RateCalculator<Key: Hashable & Sendable>: Sendable {
     }
 
     public var count: Int { states.count }
+
+    /// A baseline exists for `key` (false = the next call is its first sight, as opposed to a counter reset).
+    public func isTracking(_ key: Key) -> Bool { states[key] != nil }
 }

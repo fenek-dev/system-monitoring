@@ -247,6 +247,22 @@ struct RuntimeHarness {
         try await fallback?.shutdown()
     }
 
+    @Test func intervalStatsSummarisePerModeWindows() {
+        var s = LivePipeline.IntervalStats()
+        func frame(_ ms: Int, _ mode: SamplingMode) -> SystemFrame {
+            SystemFrame(wallTime: Date(), uptimeNs: 0, interval: .milliseconds(ms), mode: mode)
+        }
+        for i in 0..<(LivePipeline.IntervalStats.window - 1) { s.add(frame(5_000 + i, .background)) }
+        s.add(frame(1_000, .interactive))                           // other mode: separate window
+        #expect(s.lastSummary == nil)
+        s.add(frame(9_000, .background))                            // 60th background frame → summary
+        let sum = s.lastSummary
+        #expect(sum?.mode == .background)
+        #expect(sum.map { abs($0.median - 5.030) < 0.002 } == true)
+        #expect(sum.map { abs($0.max - 9) < 1e-9 } == true)
+        #expect(sum.map { $0.p95 >= 5.055 && $0.p95 <= 5.058 } == true)
+    }
+
     @Test func historyPersistentReachesTheFacade() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("telltale-runtime-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }

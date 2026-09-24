@@ -1,6 +1,6 @@
 import MonitorModel
 
-/// Per `AppKey` since launch: CPU time, GPU time, network rx/tx. Totals outlive the processes and the app itself;
+/// Per `AppKey` since launch: CPU time, GPU time, network rx/tx, disk read/write (ICR-14). Totals outlive the processes and the app itself;
 /// if a process moves to another key, its new deltas accrue there and the old key keeps what it had.
 public struct SessionAccumulator: Sendable {
     private var totalsByKey: [AppKey: ProcessDelta] = [:]
@@ -30,6 +30,13 @@ public struct SessionAccumulator: Sendable {
         return (t.cpuNs, t.gpuNs, t.rx, t.tx)
     }
 
+    /// ICR-14: disk bytes since Telltale started, per app (never drops when a member exits); nil when no member ever
+    /// reported a disk counter.
+    public func diskTotals(_ key: AppKey) -> (read: UInt64, write: UInt64)? {
+        guard let t = totalsByKey[key], t.hasDisk else { return nil }
+        return (t.diskR, t.diskW)
+    }
+
     var keyCount: Int { totalsByKey.count }
 }
 
@@ -40,5 +47,8 @@ extension ProcessDelta {
         gpuNs = ProcessAssembler.saturatingAdd(gpuNs, d.gpuNs)
         rx = ProcessAssembler.saturatingAdd(rx, d.rx)
         tx = ProcessAssembler.saturatingAdd(tx, d.tx)
+        diskR = ProcessAssembler.saturatingAdd(diskR, d.diskR)
+        diskW = ProcessAssembler.saturatingAdd(diskW, d.diskW)
+        if d.hasDisk { hasDisk = true }
     }
 }

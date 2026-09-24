@@ -4,7 +4,7 @@ import MonitorModel
 /// Command line of `telltale-probe` (W7 T2). One command per run; see `ProbeOptions.usage`.
 struct ProbeOptions: Sendable {
     enum Command: Sendable, Equatable {
-        case list, sensor(SensorID), bench, record(String), frames, maintainNow, crash(SensorID), help
+        case list, sensor(SensorID), bench, record(String), replay(String), frames, maintainNow, crash(SensorID), help
     }
 
     var command: Command = .help
@@ -20,6 +20,7 @@ struct ProbeOptions: Sendable {
     var disabled: Set<SensorID> = []
     var quiet = false
     var json = false
+    var trimIdle = false
 
     static let usage = """
     telltale-probe — exercise Telltale sensors, the engine and the store without the app.
@@ -27,7 +28,9 @@ struct ProbeOptions: Sendable {
       --list                         every sensor: cadence, prepare() result / unavailable reason
       --sensor <id>                  sample one sensor directly (no engine); prints the last reading
       --bench [--sensor <id>]        per-sensor sample() cost p50/p95/max + total, then full engine ticks
-      --record <file>                engine ticks → [RawTick] JSON (fixture format)
+      --record <file> [--trim-idle]  engine ticks → [RawTick] JSON (fixture format); --trim-idle drops processes and
+                                     coalitions whose counters never change (deltas unchanged; see FixtureTrim)
+      --replay <file>                a recording → FrameAssembler → frame summaries
       --frames                       engine ticks → frame summaries (system + top apps)
       --maintain-now [--data-dir d]  flush + rollup + retention + vacuum on d/history.sqlite
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
@@ -66,6 +69,7 @@ struct ProbeOptions: Sendable {
             case "--sensor": sensorArg = try sensorID(try value(a))
             case "--bench": bench = true
             case "--record": command = .record(try value(a))
+            case "--replay": command = .replay(try value(a))
             case "--frames": command = .frames
             case "--maintain-now": command = .maintainNow
             case "--crash-sensor": command = .crash(try sensorID(try value(a)))
@@ -92,6 +96,7 @@ struct ProbeOptions: Sendable {
             case "--disable": o.disabled.formUnion(try parseSensors(try value(a)))
             case "--quiet": o.quiet = true
             case "--json": o.json = true
+            case "--trim-idle": o.trimIdle = true
             case "-h", "--help": command = .help
             default: throw ParseError(description: "unknown argument \(a)")
             }

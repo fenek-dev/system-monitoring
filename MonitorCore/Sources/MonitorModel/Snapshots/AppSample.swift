@@ -18,6 +18,12 @@ public struct AppSample: Sendable, Codable, Hashable, Identifiable {
     public var netRxSession: UInt64?, netTxSession: UInt64?
     public var threads: Int32?, connectionCount: Int?, preventsSleep: Bool
     public var metrics: AppMetrics
+    /// ICR-14: disk bytes since Telltale started, accumulated per app like CPU/network (never drops when a member
+    /// exits; includes residual rows).
+    public var diskReadSession: UInt64?, diskWriteSession: UInt64?
+    /// ICR-13: the part of `coalitionResidual` from the "Exited processes" row (members that started/exited between
+    /// ticks) — not hidden/restricted processes. nil when there is none.
+    public var exitedResidual: AppMetrics?
 
     public init(
         identity: AppIdentity = AppIdentity(),
@@ -41,8 +47,14 @@ public struct AppSample: Sendable, Codable, Hashable, Identifiable {
         threads: Int32? = nil,
         connectionCount: Int? = nil,
         preventsSleep: Bool = false,
-        metrics: AppMetrics = AppMetrics()
+        metrics: AppMetrics = AppMetrics(),
+        diskReadSession: UInt64? = nil,
+        diskWriteSession: UInt64? = nil,
+        exitedResidual: AppMetrics? = nil
     ) {
+        self.exitedResidual = exitedResidual
+        self.diskReadSession = diskReadSession
+        self.diskWriteSession = diskWriteSession
         self.identity = identity
         self.processIDs = processIDs
         self.hiddenProcessCount = hiddenProcessCount

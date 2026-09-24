@@ -79,10 +79,20 @@ import Testing
                 let appPercent = f.apps.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
                 #expect(abs(appPercent - systemPercent) <= max(0.15 * systemPercent, 20),
                         "\(name) @\(f.uptimeNs): apps \(appPercent) % vs system \(systemPercent) %")
+                // A restricted pid is covered by its coalition's row — or, when that coalition's residual is below the
+                // row thresholds (no row), its tooltip names the leader's APP (display name), per CoalitionAttributor;
+                // nil only when the coalition has no live leader.
+                let leaders = Dictionary((step.tick.coalitions.value?.coalitions ?? []).map { ($0.id, $0.leaderPID) },
+                                         uniquingKeysWith: { a, _ in a })
                 for p in f.processes where p.provenance == .restricted {
                     guard let cid = p.coalitionID else { continue }
-                    #expect(f.processes.contains { $0.coalitionID == cid && $0.provenance == .coalition },
-                            "\(name): restricted pid \(p.pid) not covered by a coalition row")
+                    if f.processes.contains(where: { $0.coalitionID == cid && $0.provenance == .coalition }) { continue }
+                    let leader = leaders[cid].flatMap { $0 }.flatMap { lp in
+                        f.processes.first { $0.pid == lp && !$0.id.isSynthetic && $0.coalitionID == cid }
+                    }
+                    let leaderApp = leader.flatMap { l in f.apps.first { $0.identity.key == l.app }?.identity.displayName }
+                    #expect(p.coalitionLeaderName == leaderApp,
+                            "\(name): restricted pid \(p.pid) (no row): tooltip \(p.coalitionLeaderName ?? "nil") ≠ leader app \(leaderApp ?? "nil")")
                 }
                 checked += 1
             }

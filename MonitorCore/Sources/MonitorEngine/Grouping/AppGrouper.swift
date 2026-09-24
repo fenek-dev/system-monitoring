@@ -86,6 +86,14 @@ public struct AppGrouper {
                 if let v = value(p, m) { r[m] = (r[m] ?? 0) + v }
             }
             a.coalitionResidual = r
+            // ICR-13: the "Exited processes" part separately, so the UI doesn't call it hidden processes.
+            if p.id.isExitedResidual {
+                var e = a.exitedResidual ?? AppMetrics()
+                for m in [AppMetric.cpu, .diskRead, .diskWrite, .energy] {
+                    if let v = value(p, m) { e[m] = (e[m] ?? 0) + v }
+                }
+                a.exitedResidual = e
+            }
         }
     }
 

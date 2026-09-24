@@ -59,12 +59,34 @@ struct CoalitionTracker: Sendable {
         return out
     }
 
-    /// pid → coalition id from the reading's membership lists.
-    func pidToCoalition(_ result: SensorResult<CoalitionsReading>) -> [Int32: UInt64] {
-        guard let reading = result.value else { return [:] }
+    /// Membership of the previous fresh/cached reading (one tick of memory, see `pidToCoalition`).
+    private var previousMembership: [Int32: UInt64] = [:]
+
+    /// pid → coalition id from the reading's membership lists (`current`), plus `sticky`: members of the previous
+    /// reading missing from this one. A member that exited between the process-table read and the coalition read is
+    /// still in the process list (its Δ counted) and in the coalition's Δ — without its coalition it wouldn't be
+    /// subtracted from the residual and would count twice (ICR-13 "Exited processes", seen as Σ apps 119 % of
+    /// system). Kept as a separate small map (not merged into ~600 entries). A missing or failed (stale) reading
+    /// clears the memory, so an old map never merges in after a gap.
+    mutating func pidToCoalition(_ result: SensorResult<CoalitionsReading>)
+        -> (current: [Int32: UInt64], sticky: [Int32: UInt64]) {
+        let reading: CoalitionsReading
+        switch result {
+        case .fresh(let r, _), .cached(let r, _): reading = r
+        case .failed(_, let last, _):
+            previousMembership = [:]
+            guard let last else { return ([:], [:]) }
+            reading = last
+        case .notRequested:
+            previousMembership = [:]
+            return ([:], [:])
+        }
         var map: [Int32: UInt64] = [:]
         for c in reading.coalitions { for pid in c.memberPIDs { map[pid] = c.id } }
-        return map
+        var sticky: [Int32: UInt64] = [:]
+        for (pid, cid) in previousMembership where map[pid] == nil { sticky[pid] = cid }
+        if case .failed = result {} else { previousMembership = map }
+        return (map, sticky)
     }
 
     mutating func reset() { self = CoalitionTracker() }
@@ -82,14 +104,29 @@ struct CoalitionTracker: Sendable {
 /// residual is below the thresholds and no residual row exists, the leader's **app** display name instead.
 /// Session deltas: the frame assembler adds residual-row CPU only when the coalition reading advanced
 /// (`CoalitionDeltas` reuse the previous delta for a cached reading, like `RateCalculator`).
+///
+/// ICR-13 — all-visible coalitions: rusage wins, except that a positive CPU residual above BOTH
+/// `minExitedCPUPercent` (of one core) and `minExitedShare` of the coalition's Δ becomes one synthetic
+/// "Exited processes" row (`ProcessID.exitedResidual`) in the leader's app (provenance `.coalition`, CPU + disk
+/// residuals; energy through `EnergyAttributor` step 2, estimated). That is the CPU of members that started and/or
+/// exited between two ticks — invisible to per-pid rusage. Below the thresholds (the ~1 % meter disagreement) nothing
+/// changes. Note (as spec'd): the row's energy is coalition W − Σ v6 W, so it also carries the coalition-vs-v6 meter
+/// bias (~20 %) — hence estimated.
 public struct CoalitionAttributor: Sendable {
     public let minResidualCPUPercent: Double
     public let minResidualWatts: Double
+    public let minExitedCPUPercent: Double
+    public let minExitedShare: Double
 
-    public init(minResidualCPUPercent: Double = 0.5, minResidualWatts: Double = 0.05) {
+    public init(minResidualCPUPercent: Double = 0.5, minResidualWatts: Double = 0.05,
+                minExitedCPUPercent: Double = 5, minExitedShare: Double = 0.10) {
         self.minResidualCPUPercent = minResidualCPUPercent
         self.minResidualWatts = minResidualWatts
+        self.minExitedCPUPercent = minExitedCPUPercent
+        self.minExitedShare = minExitedShare
     }
+
+    static let exitedRowName = "Exited processes"
 
     public mutating func attribute(_ processes: inout [ProcessSample], coalitions: CoalitionDeltas,
                                    identities: [Int32: AppIdentity]) -> [ProcessSample] {
@@ -158,6 +195,30 @@ public struct CoalitionAttributor: Sendable {
                 id: .coalitionResidual(cid), name: leaderName ?? "System", user: leader?.user, uid: leader?.uid ?? 0,
                 isCurrentUser: false, app: leader == nil ? .system : app, provenance: .coalition, coalitionID: cid,
                 coalitionLeaderName: leaderName, cpuPercent: cpu, diskReadBps: diskR, diskWriteBps: diskW))
+        }
+
+        // ICR-13: all-visible coalitions → "Exited processes" row when the residual is clearly not meter noise.
+        for cid in members.keys.sorted() where !restrictedCoalitions.contains(cid) {
+            guard let idx = members[cid], let d = coalitions.byID[cid], d.seconds > 0 else { continue }
+            var visCPU = 0.0, visR = 0.0, visW = 0.0
+            for i in idx {
+                visCPU += processes[i].cpuPercent ?? 0
+                visR += processes[i].diskReadBps ?? 0
+                visW += processes[i].diskWriteBps ?? 0
+            }
+            let cpu = d.cpuPercent - visCPU
+            guard cpu > minExitedCPUPercent, cpu > minExitedShare * d.cpuPercent else { continue }
+            let leader = coalitions.membership[cid]?.leaderPID
+                .flatMap { indexByPID[$0] }
+                .map { processes[$0] }
+                .flatMap { $0.coalitionID == cid ? $0 : nil }
+            // No live leader → the member with the lowest pid (independent of process-table order).
+            guard let owner = leader ?? idx.map({ processes[$0] }).min(by: { $0.pid < $1.pid }) else { continue }
+            synthetic.append(ProcessSample(
+                id: .exitedResidual(cid), name: Self.exitedRowName, user: owner.user, uid: owner.uid,
+                isCurrentUser: owner.isCurrentUser, app: identities[owner.pid]?.key ?? owner.app, provenance: .coalition,
+                coalitionID: cid, coalitionLeaderName: leader?.name, cpuPercent: cpu,
+                diskReadBps: d.diskReadBps.map { max(0, $0 - visR) }, diskWriteBps: d.diskWriteBps.map { max(0, $0 - visW) }))
         }
         return synthetic
     }

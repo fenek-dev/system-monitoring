@@ -261,14 +261,19 @@ struct SystemAssembler {
                 var bs = BatterySnapshot(percent: b.percent, isCharging: b.isCharging, onAC: b.onAC)
                 let minutes = b.isCharging ? b.minutesToFull : (b.onAC ? nil : b.minutesToEmpty)
                 bs.timeRemaining = minutes.map { .seconds($0 * 60) }
-                if let maxC = b.maxCapacityWh, let design = b.designCapacityWh, design > 0 { bs.healthFraction = maxC / design }
+                bs.timeRemainingCalculating = b.timeRemainingCalculating && bs.timeRemaining == nil   // "Calculating…"
+                // Ruling: health = raw max / design, clamped ≤ 100 % (new cells report above design).
+                if let maxC = b.maxCapacityWh, let design = b.designCapacityWh, design > 0 {
+                    bs.healthFraction = min(1, maxC / design)
+                }
                 bs.cycleCount = b.cycleCount
                 bs.condition = b.condition
                 bs.maxCapacityWh = b.maxCapacityWh
                 bs.designCapacityWh = b.designCapacityWh
                 bs.currentCapacityWh = b.currentCapacityWh
                 bs.temperatureC = b.temperatureC
-                if let v = b.voltageV, let a = b.amperageA, a < 0 { bs.drainWatts = v * -a }
+                // Ruling: signed battery power V × A — negative discharging ("−18.9 W"), positive charging ("+W").
+                if let v = b.voltageV, let a = b.amperageA { bs.drainWatts = v * a }
                 p.battery = bs
             }
         }
