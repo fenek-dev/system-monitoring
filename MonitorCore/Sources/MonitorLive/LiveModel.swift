@@ -46,6 +46,10 @@ public final class LiveModel {
     public private(set) var appsVersion = 0
 
     private var presenting = false
+    /// Bumped (while presenting) whenever the ring buffers got a new point or gap. `series`/`appSeries` read it
+    /// in addition to the category counter, so charts scroll even when a category's snapshot is unchanged
+    /// (idle disk, constant power), while snapshot observers of that category stay quiet.
+    private var seriesVersion = 0
 
     @ObservationIgnored private var history: LiveHistory
     @ObservationIgnored private var latestFrame: SystemFrame?
@@ -67,14 +71,17 @@ public final class LiveModel {
         set {
             guard newValue != presenting else { return }
             presenting = newValue
-            if newValue, let f = latestFrame { present(f, forceBump: true) }
+            if newValue, let f = latestFrame {
+                present(f, forceBump: true)
+                seriesVersion += 1
+            }
         }
     }
 
     // MARK: - Apply
 
     public func apply(_ frame: SystemFrame) {
-        history.append(frame)
+        let appended = history.append(frame)
         latestFrame = frame
 
         set(\.alert, frame.alert)
@@ -87,7 +94,10 @@ public final class LiveModel {
             set(\.phase, .collecting(since: frame.wallTime))    // first frame after wake/unpause has no rates
         }
 
-        if presenting { present(frame, forceBump: false) }
+        if presenting {
+            present(frame, forceBump: false)
+            if appended { seriesVersion += 1 }
+        }
     }
 
     public func setPaused(_ paused: Bool, at: Date) {
@@ -96,7 +106,7 @@ public final class LiveModel {
             set(\.phase, .paused(since: at))
             set(\.samplingInterval, nil)
             a = AlertState(pulseToken: alert.pulseToken, paused: true)
-            history.appendGap(at: at)
+            if history.appendGap(at: at), presenting { seriesVersion += 1 }
         } else {
             if case .paused = phase { set(\.phase, .collecting(since: at)) }
             a.paused = false
@@ -120,11 +130,13 @@ public final class LiveModel {
 
     public func series(_ metric: HistoryMetric, window: Duration = .seconds(60)) -> [SeriesPoint] {
         _ = version(metric.category)
+        _ = seriesVersion
         return history.series(metric, window: window)
     }
 
     public func appSeries(_ app: AppKey, _ metric: AppMetric, window: Duration = .seconds(60)) -> [SeriesPoint] {
         _ = appsVersion
+        _ = seriesVersion
         return history.appSeries(app, metric, window: window)
     }
 
