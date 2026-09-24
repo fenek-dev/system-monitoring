@@ -102,7 +102,8 @@ import Testing
         let b = try #require(f.apps.first { $0.identity.key == Self.b.key })
         #expect(b.gpuTimeNs == 4 * sec / 5)
         let windowServerApp = try #require(f.apps.first { $0.processIDs.contains { $0.pid == 418 } })
-        #expect((windowServerApp.cpuTimeNs ?? 0) >= 4 * sec * 3 / 5 - 10)  // synthetic row CPU counted in session
+        #expect(windowServerApp.cpuTimeNs == 4 * 4 * sec / 5)     // synthetic 0.6 s + filled mds 0.2 s per tick
+        #expect(windowServerApp.gpuTimeNs == 4 * sec / 10)        // unattributed AGX (creator gone) → System
     }
 
     @Test func cachedCoalitionReadingAddsNoSessionCPUForResidualRows() throws {
@@ -148,6 +149,35 @@ import Testing
         #expect(fa.assemble(Self.tick(3, flows: flowsAt(3)), inspectedApp: nil).connections.isEmpty)
     }
 
+    private static func flows(_ n: UInt64) -> [FlowCounter] {
+        [FlowCounter(flowID: 1, process: ProcessID(pid: 11, startTimeUs: 0), proto: .tcp, rxBytes: n * 1_000, txBytes: n * 10),
+         FlowCounter(flowID: 2, process: ProcessID(pid: 20, startTimeUs: 1), proto: .udp, rxBytes: n * 7, txBytes: n)]
+    }
+
+    @Test func switchingInspectedAppSwitchesConnections() {
+        var fa = Self.assembler()
+        _ = fa.assemble(Self.tick(1, flows: Self.flows(1)), inspectedApp: Self.a.key)
+        let a = fa.assemble(Self.tick(2, flows: Self.flows(2)), inspectedApp: Self.a.key)
+        #expect(a.connections.map(\.id) == [1])
+        let b = fa.assemble(Self.tick(3, flows: Self.flows(3)), inspectedApp: Self.b.key)
+        #expect(b.connections.map(\.id) == [2])
+        #expect(b.connections.first?.app == Self.b.key)
+        #expect(b.connections.first?.rxBps == nil)               // B's flow has no baseline yet
+        let b2 = fa.assemble(Self.tick(4, flows: Self.flows(4)), inspectedApp: Self.b.key)
+        #expect(b2.connections.first?.rxBps == 7)
+    }
+
+    @Test func cachedFlowsReadingReusesPreviousRate() {
+        var fa = Self.assembler()
+        _ = fa.assemble(Self.tick(1, flows: Self.flows(1)), inspectedApp: Self.a.key)
+        _ = fa.assemble(Self.tick(2, flows: Self.flows(2)), inspectedApp: Self.a.key)
+        var t3 = Self.tick(3)
+        t3.networkFlows = .cached(NetworkFlowsReading(flows: Self.flows(2)), capturedNs: 2 * sec)
+        let f = fa.assemble(t3, inspectedApp: Self.a.key)
+        #expect(f.connections.first?.rxBps == 1_000)
+        #expect(f.processes[pid: 11]?.netRxBps == 1_000)
+    }
+
     @Test func resetDropsRatesAndInterval() {
         var fa = Self.assembler()
         _ = fa.assemble(Self.tick(1), inspectedApp: nil)
@@ -178,33 +208,52 @@ import Testing
             let f = fa.assemble(t2, inspectedApp: nil)
             times.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
             #expect(f.processes.count >= 920)
+            #expect(f.processes.contains { $0.id.isSynthetic })
         }
         let mean = times.reduce(0, +) / Double(times.count)
         print("PERF assemble920 mean \(String(format: "%.3f", mean)) ms over 100 runs (advisory ≤ 3 ms)")
     }
 
-    /// 920 pids (330 restricted), 770 coalitions.
+    /// 920 pids (330 restricted), 770 coalitions: 80 with two restricted members (synthetic rows), 170 with one
+    /// (fills), ~85 visible members mixed into restricted coalitions; 60 AGX clients; 400 NStat flows.
     static func bigTicks() -> (RawTick, RawTick) {
         func make(_ n: UInt64) -> RawTick {
             var procs: [RawProcess] = []
             var coalitions: [CoalitionUsage] = []
-            for c in 0..<770 { coalitions.append(CoalitionUsage(id: UInt64(c + 1), leaderPID: Int32(c + 1), memberPIDs: [],
-                                                                 cpuTimeNs: n * UInt64(c + 1) * 1_000_000, energyNJ: n * 1_000)) }
+            for c in 0..<770 { coalitions.append(CoalitionUsage(id: UInt64(c + 1), leaderPID: nil, memberPIDs: [],
+                                                                 cpuTimeNs: n * UInt64(c + 1) * 10_000_000,
+                                                                 energyNJ: n * 100_000_000, diskReadBytes: n * 4_096,
+                                                                 diskWriteBytes: n * 4_096)) }
             for i in 0..<920 {
                 let pid = Int32(i + 1)
-                let cid = i % 770
-                coalitions[cid].memberPIDs.append(pid)
+                let cid: Int
                 if i < 330 {
+                    cid = i % 250                                      // cids 0…79 get two restricted members
                     procs.append(foreign(pid))
                 } else {
+                    cid = i % 7 == 0 ? i % 250 : 250 + (i - 330) % 520
                     procs.append(own(pid, cpuNs: n * UInt64(i) * 100_000, energyNJ: n * 1_000, diskR: n * 10, diskW: n * 10,
                                      responsible: Int32(331 + (i % 50))))
                 }
+                coalitions[cid].memberPIDs.append(pid)
+                if coalitions[cid].leaderPID == nil { coalitions[cid].leaderPID = pid }
+            }
+            let clients = (0..<60).map { k in
+                GPUClientCounter(clientID: UInt64(k), pid: Int32(331 + k * 9), creatorName: "p\(331 + k * 9)",
+                                 gpuTimeNs: n * UInt64(k) * 1_000_000)
+            }
+            let flows: [FlowCounter] = (0..<400).map { (k: Int) -> FlowCounter in
+                let start: UInt64 = k % 2 == 0 ? 1 : 0
+                let kk = UInt64(k)
+                return FlowCounter(flowID: kk, process: ProcessID(pid: Int32(331 + k), startTimeUs: start),
+                                   proto: .tcp, rxBytes: n * kk * 100, txBytes: n * kk * 10)
             }
             let t = n * sec
             return RawTick(uptimeNs: t, processes: .fresh(ProcessTableReading(processes: procs), capturedNs: t),
                            coalitions: .fresh(CoalitionsReading(coalitions: coalitions), capturedNs: t),
-                           soc: .fresh(SoCPowerReading(cpuWatts: 5, gpuWatts: 1), capturedNs: t))
+                           soc: .fresh(SoCPowerReading(cpuWatts: 5, gpuWatts: 1), capturedNs: t),
+                           gpuClients: .fresh(GPUClientsReading(clients: clients), capturedNs: t),
+                           networkFlows: .fresh(NetworkFlowsReading(flows: flows), capturedNs: t))
         }
         return (make(1), make(2))
     }

@@ -17,6 +17,8 @@ public struct FrameAssembler {
     private var connectionTx = RateCalculator<UInt64>()
     private var lastUptimeNs: UInt64?
     private var lastDevice: DeviceInfo?
+    /// Scratch, reused across ticks.
+    private var byApp: [AppKey: ProcessDelta] = [:]
 
     public init(resolver: any AppResolving, energy: any EnergyAttributor = RulingEnergyAttributor(), currentUID: uid_t = getuid()) {
         self.resolver = resolver
@@ -53,13 +55,16 @@ public struct FrameAssembler {
             assertions: tick.sleepAssertions, coalitionOf: coalitionTracker.pidToCoalition(tick.coalitions),
             uptimeNs: tick.uptimeNs), resolver: resolver)
 
-        // Coalition residual (restricted coalitions only).
+        // Coalition residual (restricted coalitions only). Rows are moved out of `pa` so mutations don't copy them.
         var rows = pa.samples
+        pa.samples = []
+        let realRowCount = rows.count
         if let coalitionDeltas {
             rows += coalitionAttributor.attribute(&rows, coalitions: coalitionDeltas, identities: pa.identityByPID)
         }
 
-        // Energy: v6 → coalition residual → SoC share; estimated per row (ICR-5).
+        // Energy: v6 → coalition residual → SoC share (+ ICR-8 GPU term); estimated per row (ICR-5).
+        // `dt` is part of the locked protocol; RulingEnergyAttributor works from rates and ignores it.
         let watts = energy.watts(processes: rows, coalitions: coalitionDeltas ?? CoalitionDeltas(), soc: tick.soc.value,
                                  dt: pa.interval ?? 0)
         let estimated = energy.estimatedIDs
@@ -74,7 +79,7 @@ public struct FrameAssembler {
         }
 
         // Session totals: only readings that advanced this tick contribute.
-        var byApp: [AppKey: ProcessDelta] = [:]
+        byApp.removeAll(keepingCapacity: true)
         for r in rows {
             if let d = pa.deltas[r.id] { byApp[r.app, default: ProcessDelta()].accumulate(d) }
             if r.provenance == .coalition, coalitionAdvanced, let cid = r.coalitionID,
@@ -94,13 +99,14 @@ public struct FrameAssembler {
             apps[i].netTxSession = t.tx
         }
 
-        frame.connections = connections(tick.networkFlows, inspectedApp: inspectedApp, rows: pa.samples,
+        frame.connections = connections(tick.networkFlows, inspectedApp: inspectedApp, rows: rows,
                                         owners: pa.flowOwners)
 
-        let realRows = pa.samples
-        let threads = realRows.reduce(0) { $0 + Int($1.threads ?? 0) }
-        let snaps = system.assemble(tick, device: frame.device, processCount: tick.processes.value == nil ? nil : realRows.count,
-                                    threadCount: tick.processes.value == nil ? nil : threads)
+        // processCount counts every pid; threadCount only threads readable via rusage (restricted pids: unknown).
+        let hasTable = tick.processes.value != nil
+        let threads = rows.reduce(0) { $0 + Int($1.threads ?? 0) }
+        let snaps = system.assemble(tick, device: frame.device, processCount: hasTable ? realRowCount : nil,
+                                    threadCount: hasTable ? threads : nil)
         frame.cpu = snaps.cpu
         frame.gpu = snaps.gpu
         frame.memory = snaps.memory
@@ -123,12 +129,12 @@ public struct FrameAssembler {
             connectionTx.reset()
             return []
         }
-        var appOf: [ProcessID: AppKey] = [:]
-        for r in rows where r.app == inspectedApp { appOf[r.id] = inspectedApp }
+        var members = Set<ProcessID>()
+        for r in rows where r.app == inspectedApp && !r.id.isSynthetic { members.insert(r.id) }
         var out: [ConnectionSample] = []
         var live = Set<UInt64>()
         for f in reading.flows {
-            guard let owner = owners[f.process], appOf[owner] != nil else { continue }
+            guard let owner = owners[f.process], members.contains(owner) else { continue }
             live.insert(f.flowID)
             out.append(ConnectionSample(
                 id: f.flowID, process: owner, app: inspectedApp, proto: f.proto, localPort: f.localPort,
