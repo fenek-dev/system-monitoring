@@ -1217,7 +1217,8 @@ Check arc 0 in the 18-pt canvas: the start point is (9 + 5.689·sin 7°, 9 − 5
 **Paint order and compositing** (required, because the round caps overlap):
 1. **Group arcs by color.** All non-stressed arcs go into **one** `Path` (or `NSBezierPath`) with one subpath per arc, and are stroked **once**. Each stressed color gets its own single-path stroke the same way. A single stroke of one path never double-covers its own overlap, so no alpha buildup occurs.
 2. **Order**: stroke the non-stressed (label-color / template) path first. Then stroke the stressed path(s), elevated before critical. Then fill the center dot last. A stressed arc's caps therefore sit on top of its neighbors' caps.
-3. **Transparency layer**: wrap the whole glyph in one transparency layer, and apply any glyph-wide alpha (the paused 0.5, and the pulse) to that layer rather than to individual strokes. The overlap between differently colored neighbors then does not composite twice against the menu bar.
+3. **Transparency layers**: wrap the whole glyph in one transparency layer. Its alpha carries **only** the paused 0.5. The overlap between differently colored neighbors then does not composite twice against the menu bar.
+   - The critical **pulse** (§4.3, 1 → 0.45 → 1) dims only the stressed-color sub-path. Draw that path in its **own** nested transparency layer and apply the pulse alpha to that layer. The non-stressed path and the dot stay at full alpha.
    - SwiftUI: `ctx.drawLayer { … }` with `ctx.opacity` set on the outer context.
    - AppKit: `CGContext.beginTransparencyLayer(auxiliaryInfo:)` … `endTransparencyLayer()` with `setAlpha` before it.
 4. The template (calm) image follows the same rule: one path for all 5 arcs plus the dot, drawn opaque black.
