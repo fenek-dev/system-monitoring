@@ -108,7 +108,7 @@ public struct LiveProcessSampler: ProcessSampling {
         }
     }
 
-    /// Blocking body (runs on a GCD utility queue). Any failure removes the run directory.
+    /// Blocking body (runs on a dedicated `dev.telltale.sample` thread). Any failure removes the run directory.
     nonisolated static func run(executable: URL, timeout: TimeInterval,
                                 arguments: @Sendable (Int32, String) -> [String], pid: Int32,
                                 name: String, root: URL) -> ProcessSampleResult {

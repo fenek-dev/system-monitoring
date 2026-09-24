@@ -75,22 +75,56 @@ struct ShellProcessActionsTests {
         #expect(p.isRunning)
     }
 
+    /// Real owner path (`ownerUID` is nil for a gone pid): an exited target is `.exited`, not `.notPermitted`.
     @Test func exitedProcessReportsExited() async throws {
         let p = try spawn()
         let gone = id(p)
         kill(gone.pid, SIGKILL)
         #expect(await waitExit(p))
-        let actions = ProcessActionsLive.make(owner: { _ in getuid() })     // owner check passes; start time fails
+        let actions = ProcessActionsLive.make()
         #expect(await actions.forceQuit(target(gone)) == .exited)
+        #expect(await actions.quit(target(gone)) == .exited)
+        #expect(await actions.forceQuit(app([gone])) == .exited)
     }
 
-    /// Force Quit on a group kills every live member; a member that already exited is skipped.
+    /// Real owner path: a helper that exited while the dialog was open doesn't block the group; Quit asks only the
+    /// leader (earliest-started live member) of a bundle-less group.
+    @Test func groupWithAnExitedHelperStillActs() async throws {
+        let leader = try spawn(), helper = try spawn(), gone = try spawn()
+        defer { kill(helper.processIdentifier, SIGKILL) }
+        let exited = id(gone)
+        kill(exited.pid, SIGKILL)
+        #expect(await waitExit(gone))
+        let actions = ProcessActionsLive.make()
+        let group = app([exited, id(leader), id(helper)], key: AppKey(kind: .process, id: "/bin/sleep"))
+        #expect(await actions.quit(group) == .done)
+        #expect(await waitExit(leader))
+        #expect(leader.terminationStatus == SIGTERM)
+        #expect(helper.isRunning)                                           // helpers are never asked to quit
+    }
+
+    /// Real owner path: a live root-owned member makes the whole group `.notPermitted`; nothing is signalled.
+    @Test func groupWithARootOwnedMemberIsNotPermitted() async throws {
+        let mine = try spawn()
+        defer { kill(mine.processIdentifier, SIGKILL) }
+        let rootPID = try #require((2..<5_000).first { pid in
+            ProcessActionsLive.ownerUID(Int32(pid)) == 0 && ProcessActionsLive.liveStartTimeUs(Int32(pid)) != nil
+        }.map(Int32.init))
+        let root = ProcessID(pid: rootPID, startTimeUs: try #require(ProcessActionsLive.liveStartTimeUs(rootPID)))
+        let actions = ProcessActionsLive.make()
+        #expect(await actions.forceQuit(app([id(mine), root])) == .notPermitted)
+        #expect(await actions.quit(app([root, id(mine)])) == .notPermitted)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(mine.isRunning)
+    }
+
+    /// Force Quit on a group kills every live member; a member that already exited is skipped (real owner path).
     @Test func forceQuitGroupKillsEveryVerifiedMember() async throws {
         let a = try spawn(), b = try spawn(), c = try spawn()
         let gone = id(c)
         kill(gone.pid, SIGKILL)
         #expect(await waitExit(c))
-        let actions = ProcessActionsLive.make(owner: { _ in getuid() })
+        let actions = ProcessActionsLive.make()
         #expect(await actions.forceQuit(app([id(a), gone, id(b)])) == .done)
         #expect(await waitExit(a))
         #expect(await waitExit(b))

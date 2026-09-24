@@ -23,6 +23,9 @@ import os
 
     /// Single instance per data dir: take the lock, or ask the running instance to open its dashboard and exit
     /// before a second runtime (status item, sampler, store writer) is built.
+    /// Registers the "open your dashboard" listener right after taking the lock, before the environment is built, so
+    /// a launch that races ours is never lost: a request arriving before the controllers exist is kept and served
+    /// once they do (`serveActivation`).
     private func claimSingleInstance(_ options: LaunchOptions) {
         let dir = options.dataDirectory ?? AppEnvironment.defaultDataDirectory()
         switch InstanceLock.acquire(dataDirectory: dir) {
@@ -34,6 +37,27 @@ import os
             exit(0)
         case .unavailable(let why):
             log.error("instance lock unavailable (\(why, privacy: .public)); continuing")
+        }
+        activationObserver = InstanceActivation.observe(dataDirectory: dir) { [weak self] page in
+            guard let self else { return }
+            log.notice("second launch → open dashboard")
+            if launched {
+                env.commands.openDashboard(page)
+            } else {
+                pendingActivation = .some(page)
+            }
+        }
+    }
+
+    private var launched = false
+    /// An activation request received before launch finished (the inner value is the requested page, if any).
+    private var pendingActivation: DashboardPage??
+
+    private func serveActivation() {
+        launched = true
+        if let page = pendingActivation {
+            pendingActivation = nil
+            env.commands.openDashboard(page)
         }
     }
 
@@ -70,10 +94,7 @@ import os
         power = PowerEvents(willSleep: { env.runtime.systemWillSleep() }, didWake: { env.runtime.systemDidWake() })
         NSApp.mainMenu = mainMenu()
         installTerminationSignal()
-        activationObserver = InstanceActivation.observe(dataDirectory: env.dataDirectory) { [weak self] page in
-            self?.log.notice("second launch → open dashboard")
-            self?.env.commands.openDashboard(page)
-        }
+        serveActivation()
 
         #if DEBUG
         if let level = env.options.statusPreview {
