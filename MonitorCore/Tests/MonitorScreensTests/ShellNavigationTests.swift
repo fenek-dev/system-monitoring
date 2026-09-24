@@ -10,7 +10,7 @@ struct ShellNavigationTests {
     @Test func defaults() {
         let n = NavigationModel()
         #expect(n.page == .overview && n.range == .live && n.historyRange == .day)
-        #expect(n.processesMode == .apps && n.selection == nil)
+        #expect(n.processesMode == .apps && n.selection == nil && n.inspectedApp == nil)
     }
 
     @Test func openKeepsPageForNil() {
@@ -27,10 +27,11 @@ struct ShellNavigationTests {
         let key = AppKey(kind: .app, id: "com.apple.dt.Xcode")
         n.inspect(key)
         #expect(n.page == .processes && n.processesMode == .apps && n.selection == .app(key))
+        #expect(n.inspectedApp == key)
         var i = VisibilityInputs()
         i.dashboardOpen = true
         i.page = n.page
-        i.selection = n.selection
+        i.inspectedApp = n.inspectedApp
         #expect(i.visibility.inspectedApp == key)
     }
 

@@ -1,7 +1,7 @@
 import Foundation
 import MonitorModel
 
-/// Raw UI facts the app shell observes (panel open, window occlusion/miniaturize, page, selection).
+/// Raw UI facts the app shell observes (panel open, window occlusion/miniaturize, page, inspected app).
 public struct VisibilityInputs: Equatable, Sendable {
     public var popoverOpen = false
     /// The dashboard window exists and is ordered in.
@@ -10,7 +10,8 @@ public struct VisibilityInputs: Equatable, Sendable {
     public var dashboardOccluded = false
     public var dashboardMiniaturized = false
     public var page: DashboardPage = .overview
-    public var selection: NavigationModel.ProcessSelection?
+    /// `NavigationModel.inspectedApp` (ICR-10).
+    public var inspectedApp: AppKey?
 
     public init() {}
 
@@ -18,8 +19,7 @@ public struct VisibilityInputs: Equatable, Sendable {
     /// connections only for an app inspected on Processes.
     public var visibility: UIVisibility {
         let visible = dashboardOpen && !dashboardOccluded && !dashboardMiniaturized
-        var inspected: AppKey?
-        if visible, page == .processes, case .app(let key)? = selection { inspected = key }
+        let inspected = visible && page == .processes ? inspectedApp : nil
         return UIVisibility(popoverOpen: popoverOpen, dashboardVisible: visible, page: visible ? page : nil,
                             inspectedApp: inspected)
     }

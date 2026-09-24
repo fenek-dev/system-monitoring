@@ -19,11 +19,11 @@ public final class SettingsStore {
         public static let disabledSensors = "DisabledSensors"
     }
 
-    /// Prefix of per-sensor crash-canary markers cleared by "Re-enable sensors" (see w4-report ICR note:
-    /// `CrashCanary` exposes no clear API yet).
-    public static let crashMarkerPrefix = "CrashCanary."
-
     @ObservationIgnored public let defaults: UserDefaults
+
+    /// Clears the crash-canary markers ("Disabled after a crash"). The canary owns its keys and domain
+    /// (`CrashCanary.reenableAll()` in MonitorEngine); the app injects it through the runtime. Nil in renders.
+    @ObservationIgnored public var reenableCrashedSensors: (@MainActor () -> Void)?
 
     public var units: UnitPreferences {
         didSet { if units != oldValue { saveUnits() } }
@@ -97,14 +97,12 @@ public final class SettingsStore {
         saveDisabled()
     }
 
-    /// Settings "Re-enable sensors": clears the kill-switch list and every crash marker in this suite.
+    /// Settings "Re-enable sensors": clears the kill-switch list and (via the canary's own API) every crash marker.
     /// Takes effect when the runtime next builds its sensors (next launch).
     public func reenableSensors() {
         disabledSensors = []
         defaults.removeObject(forKey: Key.disabledSensors)
-        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.crashMarkerPrefix) {
-            defaults.removeObject(forKey: key)
-        }
+        reenableCrashedSensors?()
     }
 
     // MARK: - Load / save

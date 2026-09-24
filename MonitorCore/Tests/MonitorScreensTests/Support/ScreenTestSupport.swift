@@ -45,10 +45,10 @@ enum ScreenSize {
     static let popoverArtboard = ScreenCatalog.popoverArtboardSize // 440×720
     static let statusIcons = ScreenCatalog.statusIconsSize        // 640×330
     static let settings = ScreenCatalog.settingsSize
-    /// Dashboard content area at the default size: 1280 − 220 sidebar, 860 − 52 header.
-    static let pageContent = CGSize(width: 1060, height: 808)
+    /// Dashboard content area at the default size: 1280 − 220 sidebar, 860 − 53 header (52 band + 1 edge).
+    static let pageContent = CGSize(width: 1060, height: 807)
     static let sidebar = CGSize(width: 220, height: 860)
-    static let pageHeader = CGSize(width: 1060, height: 52)
+    static let pageHeader = CGSize(width: 1060, height: 53)
 }
 
 extension View {
