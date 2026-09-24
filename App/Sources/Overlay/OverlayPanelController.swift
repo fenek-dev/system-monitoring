@@ -29,6 +29,8 @@ final class OverlayPanelController {
     private var panel: OverlayPanel?
     private var host: NSHostingView<AnyView>?
     private var placeLoop: ObservationLoop<PlaceKey>?
+    private var sizeLoop: ObservationLoop<Double>?
+    private var contentSize: CGSize = .zero
     private var screenObserver: NSObjectProtocol?
     private static let log = Logger(subsystem: "dev.telltale", category: "Overlay")
 
@@ -65,18 +67,21 @@ final class OverlayPanelController {
         panel.contentView = host
         self.panel = panel
         self.host = host
-        place()
-        panel.orderFrontRegardless()
+        contentSize = host.fittingSize
 
         let live = env.live
         let settings = env.settings
+        // The size loop's first call finds the size unchanged; the place loop's first call is the one `place()`
+        // before the panel is ordered in.
+        sizeLoop = ObservationLoop({ settings.overlayOpacity }) { [weak self] _ in self?.remeasure(force: false) }
         placeLoop = ObservationLoop({ PlaceKey(lastUpdate: live.lastUpdate, corner: settings.overlayCorner) }) {
             [weak self] _ in self?.place()
         }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.place() }
+            MainActor.assumeIsolated { self?.remeasure(force: true) }
         }
+        panel.orderFrontRegardless()
         Self.log.notice("shown frame=\(String(describing: panel.frame), privacy: .public)")
     }
 
@@ -84,6 +89,8 @@ final class OverlayPanelController {
         guard let panel else { return }
         placeLoop?.cancel()
         placeLoop = nil
+        sizeLoop?.cancel()
+        sizeLoop = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
         panel.orderOut(nil)
@@ -94,15 +101,24 @@ final class OverlayPanelController {
         Self.log.notice("hidden")
     }
 
-    /// Fitting size of the content, in the configured corner of the display under the mouse (else the main one).
+    /// Re-measures the content (layout pass) only on show, opacity and screen changes, never per tick.
+    private func remeasure(force: Bool) {
+        guard let host else { return }
+        let size = host.fittingSize
+        guard force || size != contentSize else { return }
+        contentSize = size
+        place()
+    }
+
+    /// Cached content size, in the configured corner of the display under the mouse (else the main one).
     private func place() {
-        guard let panel, let host else { return }
+        guard let panel else { return }
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return }
         let mainIndex = NSScreen.main.flatMap { m in screens.firstIndex { $0 == m } } ?? 0
         let i = OverlayPlacement.screenIndex(mouse: NSEvent.mouseLocation, screenFrames: screens.map(\.frame),
                                              mainIndex: mainIndex)
-        let frame = OverlayPlacement.frame(size: host.fittingSize, visibleFrame: screens[i].visibleFrame,
+        let frame = OverlayPlacement.frame(size: contentSize, visibleFrame: screens[i].visibleFrame,
                                            corner: env.settings.overlayCorner)
         if frame != panel.frame { panel.setFrame(frame, display: true) }
     }

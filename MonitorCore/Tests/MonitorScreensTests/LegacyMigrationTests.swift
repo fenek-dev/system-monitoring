@@ -2,7 +2,7 @@ import Foundation
 @testable import MonitorScreens
 import Testing
 
-/// Telltale → Warden one-time migration (Task 11): data dir move, defaults copy, login item, completion marker.
+/// Telltale → Warden one-time migration (Task 11): data dir move, defaults copy, login item, notice, marker.
 @Suite("Legacy migration") @MainActor
 final class LegacyMigrationTests {
     let root: URL
@@ -10,6 +10,8 @@ final class LegacyMigrationTests {
     let new: URL
     let oldDefaults = InMemoryDefaults()
     let newDefaults = InMemoryDefaults()
+    /// Number of `replace` calls per domain object (one-pass write check).
+    var replaces: [ObjectIdentifier: Int] = [:]
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-migration-\(UUID().uuidString)")
@@ -18,7 +20,11 @@ final class LegacyMigrationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
-    deinit { try? FileManager.default.removeItem(at: root) }
+    deinit {
+        let ro = root.appendingPathComponent("ro").path
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ro)
+        try? FileManager.default.removeItem(at: root)
+    }
 
     private func seedOldData() throws {
         try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
@@ -26,14 +32,19 @@ final class LegacyMigrationTests {
     }
 
     private func domain(_ d: InMemoryDefaults) -> LegacyMigration.Domain {
-        LegacyMigration.Domain(defaults: d, persisted: { d.dictionaryRepresentation() })
+        LegacyMigration.Domain(persisted: { d.dictionaryRepresentation() }, replace: { [weak self] dict in
+            self?.replaces[ObjectIdentifier(d), default: 0] += 1
+            for k in d.dictionaryRepresentation().keys where dict[k] == nil { d.removeObject(forKey: k) }
+            for (k, v) in dict { d.set(v, forKey: k) }
+        })
     }
 
-    private func migration(running: Bool = false, legacyLogin: Bool = false, login: Bool = false,
+    private func migration(to newDir: URL? = nil, running: Bool = false, login: Bool = false,
                            enable: @escaping () throws -> Void = {}) -> LegacyMigration {
-        LegacyMigration(legacyDataDirectory: old, dataDirectory: new,
+        LegacyMigration(legacyDataDirectory: old, dataDirectory: newDir ?? new,
                         defaults: [(from: domain(oldDefaults), to: domain(newDefaults))], marker: newDefaults,
-                        legacyInstanceRunning: { running }, legacyLoginItemEnabled: { legacyLogin },
+                        legacyInstanceRunning: { running },
+                        legacyLoginItem: { $0["test.launchAtLogin"] as? Bool },
                         loginItemEnabled: { login }, enableLoginItem: enable)
     }
 
@@ -59,6 +70,15 @@ final class LegacyMigrationTests {
         #expect(newDefaults.string(forKey: "units.temperature") == "fahrenheit")
     }
 
+    /// Fix 4: all old keys land in one `replace` (setPersistentDomain), not key by key.
+    @Test func defaultsAreWrittenInOnePass() {
+        for i in 0..<5 { oldDefaults.set(i, forKey: "k\(i)") }
+        let r = migration().run()
+        #expect(r.copiedKeys == 5)
+        #expect(replaces[ObjectIdentifier(newDefaults)] == 1)
+        #expect((0..<5).allSatisfy { newDefaults.integer(forKey: "k\($0)") == $0 })
+    }
+
     @Test func existingNewDataAndDefaultsAreKept() throws {
         try seedOldData()
         try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
@@ -69,13 +89,15 @@ final class LegacyMigrationTests {
         #expect(r.completed && r.data == .newAlreadyExists && r.copiedKeys == 0)
         #expect(FileManager.default.fileExists(atPath: old.appendingPathComponent("history.sqlite").path))
         #expect(newDefaults.string(forKey: "units.temperature") == "celsius")
+        #expect(replaces[ObjectIdentifier(newDefaults)] == nil)
     }
 
-    @Test func nothingToMigrateStillCompletes() {
+    @Test func nothingToMigrateStillCompletesWithoutNotice() {
         let r = migration().run()
         #expect(r.completed && r.data == .noLegacyData && r.copiedKeys == 0 && !r.loginItemRegistered)
         #expect(newDefaults.bool(forKey: LegacyMigration.doneKey))
         #expect(!FileManager.default.fileExists(atPath: new.path))
+        #expect(!LegacyMigration.takeNotice(newDefaults))
     }
 
     /// A running Telltale owns the old store and domain: touch nothing and retry next launch.
@@ -88,36 +110,70 @@ final class LegacyMigrationTests {
         #expect(!newDefaults.bool(forKey: LegacyMigration.doneKey) && !newDefaults.bool(forKey: "overlay.enabled"))
     }
 
+    /// Fix 3: a failed move (unwritable parent) copies no defaults and writes no marker; the next launch retries.
+    @Test func failedMoveStopsBeforeDefaultsAndMarker() throws {
+        try seedOldData()
+        oldDefaults.set(true, forKey: "overlay.enabled")
+        let ro = root.appendingPathComponent("ro", isDirectory: true)
+        try FileManager.default.createDirectory(at: ro, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: ro.path)
+        let r = migration(to: ro.appendingPathComponent("dev.warden", isDirectory: true)).run()
+        guard case .failed = r.data else {
+            Issue.record("expected .failed, got \(String(describing: r.data))")
+            return
+        }
+        #expect(!r.completed && r.copiedKeys == 0)
+        #expect(!newDefaults.bool(forKey: LegacyMigration.doneKey) && !newDefaults.bool(forKey: "overlay.enabled"))
+        #expect(!LegacyMigration.takeNotice(newDefaults))
+        #expect(FileManager.default.fileExists(atPath: old.appendingPathComponent("history.sqlite").path))
+    }
+
     @Test func perDataDirSuiteIsCopiedToo() {
         let oldSuite = InMemoryDefaults(), newSuite = InMemoryDefaults()
         oldSuite.set(0.55, forKey: "overlay.opacity")
         let m = LegacyMigration(legacyDataDirectory: nil, dataDirectory: nil,
                                 defaults: [(from: domain(oldDefaults), to: domain(newDefaults)),
                                            (from: domain(oldSuite), to: domain(newSuite))],
-                                marker: newDefaults, legacyInstanceRunning: { false },
-                                legacyLoginItemEnabled: { false }, loginItemEnabled: { false }, enableLoginItem: {})
+                                marker: newDefaults, legacyInstanceRunning: { false })
         let r = m.run()
         #expect(r.completed && r.data == nil && r.copiedKeys == 1)
         #expect(newSuite.double(forKey: "overlay.opacity") == 0.55)
     }
 
-    @Test func loginItemFollowsTheLegacyRegistration() {
-        var calls = 0
-        let r = migration(legacyLogin: true, enable: { calls += 1 }).run()
-        #expect(r.loginItemRegistered && calls == 1)
+    /// Fix 2: shown once after a migration that moved something, then never again.
+    @Test func noticeIsPendingOnceAfterAMigration() throws {
+        try seedOldData()
+        _ = migration().run()
+        #expect(LegacyMigration.takeNotice(newDefaults))
+        #expect(!LegacyMigration.takeNotice(newDefaults))
+        _ = migration().run()                                        // already done: no new notice
+        #expect(!LegacyMigration.takeNotice(newDefaults))
+        #expect(LegacyMigration.noticeText.contains("System Settings › General › Login Items"))
     }
 
-    @Test func loginItemLeftAloneWhenLegacyWasOffOrNewIsOn() throws {
+    @Test func loginItemOnlyWhenTheOldDefaultsRecordIt() {
         var calls = 0
-        #expect(!migration(legacyLogin: false, enable: { calls += 1 }).run().loginItemRegistered)
-        newDefaults.removeObject(forKey: LegacyMigration.doneKey)
-        #expect(!migration(legacyLogin: true, login: true, enable: { calls += 1 }).run().loginItemRegistered)
+        oldDefaults.set(true, forKey: "test.launchAtLogin")
+        #expect(migration(enable: { calls += 1 }).run().loginItemRegistered)
+        #expect(calls == 1)
+    }
+
+    @Test func loginItemLeftAloneWhenNotRecordedOffOrAlreadyOn() {
+        var calls = 0
+        oldDefaults.set(1, forKey: "other")                              // not recorded → nothing
+        #expect(!migration(enable: { calls += 1 }).run().loginItemRegistered)
+        for (recorded, on) in [(false, false), (true, true)] {
+            newDefaults.removeObject(forKey: LegacyMigration.doneKey)
+            oldDefaults.set(recorded, forKey: "test.launchAtLogin")
+            #expect(!migration(login: on, enable: { calls += 1 }).run().loginItemRegistered)
+        }
         #expect(calls == 0)
     }
 
     @Test func failedLoginRegistrationStillCompletes() {
         struct Denied: Error {}
-        let r = migration(legacyLogin: true, enable: { throw Denied() }).run()
+        oldDefaults.set(true, forKey: "test.launchAtLogin")
+        let r = migration(enable: { throw Denied() }).run()
         #expect(r.completed && !r.loginItemRegistered)
     }
 }

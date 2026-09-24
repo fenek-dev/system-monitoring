@@ -15,7 +15,7 @@ public enum LivePresentation: Sendable {
 }
 
 /// UI-facing live state. One `apply` per tick (ARCHITECTURE §5.7, §7):
-/// - `alert`, `phase`, `samplingInterval`, `sensorHealth` (+ `healthVersion`) and the ring buffers always update
+/// - `alert`, `phase`, `samplingInterval`, `sensorHealth` (+ `healthVersion`), `hasFrame` and the ring buffers always update
 ///   (status item, Settings › Sensors);
 /// - at `.overlay` presentation only `cpu`, `gpu`, `memory` (+ their counters), `lastUpdate` and the series update;
 /// - at `.full` everything else updates too, and each property is assigned only when it changed;
@@ -31,6 +31,8 @@ public final class LiveModel {
     /// popover and dashboard closed. Assigned only when it changed, then `healthVersion` is bumped.
     public private(set) var sensorHealth: [SensorID: SensorStatus] = [:]
     public private(set) var healthVersion = 0
+    /// At least one frame was applied (any presentation; set once). The overlay waits for it at launch.
+    public private(set) var hasFrame = false
 
     // Updated only while presenting (cpu, gpu, memory, lastUpdate at `.overlay` too)
     public private(set) var device: DeviceInfo
@@ -109,6 +111,7 @@ public final class LiveModel {
         let appended = history.append(frame)
         latestFrame = frame
 
+        if !hasFrame { hasFrame = true }
         set(\.alert, frame.alert)
         set(\.samplingInterval, frame.mode.interval)
         if set(\.sensorHealth, frame.sensorHealth) { healthVersion += 1 }

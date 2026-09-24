@@ -105,6 +105,15 @@ func frame(t: Double, cpuUsage: Double = 0.4, memUsed: UInt64 = 1_000, apps: [Ap
         #expect(!live.isPresenting)
     }
 
+    /// Overlay launch gate: `hasFrame` flips on the first `apply` at any presentation (`lastUpdate` stays nil at
+    /// `.none`, so it can't gate the overlay's first show).
+    @Test func hasFrameIsSetByTheFirstApplyEvenWhenNotPresenting() {
+        let live = LiveModel()
+        #expect(!live.hasFrame)
+        live.apply(frame(t: 1))
+        #expect(live.hasFrame && live.lastUpdate == nil)
+    }
+
     @Test func overlayFromNoneRepresentsTotalsAndFullRepresentsEverything() {
         let live = LiveModel()
         var f = frame(t: 0, cpuUsage: 0.9, apps: [app("a", cpu: 10)])

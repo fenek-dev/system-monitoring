@@ -23,7 +23,7 @@ public protocol ProcessSampling: Sendable {
 
 /// `/usr/bin/sample <pid> 3 -file <unique dir>/Warden-<name>-<pid>-<uuid8>.txt` on a detached utility task.
 /// - The report goes to a fresh per-run directory (`mkdtemp`, 0700, unique) under `reportsRoot`
-///   (`$TMPDIR/Telltale-samples`, 0700, owned by us, not a symlink), so a leftover or planted file is never trusted.
+///   (`$TMPDIR/Warden-samples`, 0700, owned by us, not a symlink), so a leftover or planted file is never trusted.
 /// - Success needs exit 0 and a regular file (lstat: not a symlink) modified after the spawn.
 /// - Timeout: SIGTERM after `timeout` (15 s), SIGKILL 2 s later; reported as a failure.
 /// - Cleanup: a failed run removes its directory. Report directories older than 1 day are pruned at launch
@@ -37,7 +37,7 @@ public struct LiveProcessSampler: ProcessSampling {
     public var reportsRoot: URL
 
     public static let defaultReportsRoot = FileManager.default.temporaryDirectory
-        .appendingPathComponent("Telltale-samples", isDirectory: true)
+        .appendingPathComponent("Warden-samples", isDirectory: true)
     /// Reports are kept this long (for the Finder reveal), then pruned.
     public static let reportLifetime: TimeInterval = 86_400
 

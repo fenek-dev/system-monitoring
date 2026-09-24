@@ -18,7 +18,7 @@ import os
     private var hotKey: GlobalHotKey?
     /// Settings' recorder is capturing keys: the global hotkey stays unregistered until it stops.
     private var hotKeyRecording = false
-    private var overlayLoop: ObservationLoop<Bool>?
+    private var overlayLoop: ObservationLoop<OverlayKey>?
     private var hotKeyLoop: ObservationLoop<HotKeySpec>?
     private var power: PowerEvents?
     private var termination: TerminationController?
@@ -73,7 +73,7 @@ import os
         if let cmd = options.loginItemCommand {
             runLoginItemCommand(cmd)                                // CLI check; never starts the runtime
         }
-        LegacyMigrationRunner.run(options)                          // Telltale → Warden, once; before any store opens
+        let migrationMarker = LegacyMigrationRunner.run(options)    // Telltale → Warden, once; before any store opens
         claimSingleInstance(options)                                // exits if another instance owns the data dir
         DispatchQueue.global(qos: .utility).async { LiveProcessSampler.pruneReports() }   // [Sample] reports > 1 day
         // Dark per window (panel, dashboard, settings), never app-wide: the status bar button must keep the
@@ -127,6 +127,11 @@ import os
                 if o.openSettings { settingsWindow.show() }
                 if o.openPopover { popover.open() }
             }
+        }
+        // Once, after the Telltale → Warden migration moved something (after launch settles, off the launch path).
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            LegacyMigrationRunner.showNoticeIfPending(migrationMarker)
         }
         #if DEBUG
         if let n = ProcessInfo.processInfo.environment["TELLTALE_POPOVER_CYCLES"].flatMap(Int.init) {
@@ -232,20 +237,31 @@ import os
     private func installOverlayWiring() {
         let settings = env.settings
         overlayForced = env.options.overlay
-        overlayLoop = ObservationLoop({ settings.overlayEnabled }) { [weak self] _ in self?.applyOverlay() }
+        let live = env.live
+        overlayLoop = ObservationLoop({ OverlayKey(enabled: settings.overlayEnabled, ready: live.hasFrame) }) {
+            [weak self] _ in self?.applyOverlay()
+        }
         hotKeyLoop = ObservationLoop({ settings.overlayHotKey }) { [weak self] _ in self?.registerHotKey() }
     }
 
     /// `--overlay`: shown for this run without touching `settings.overlayEnabled`; the first toggle clears it.
     private var overlayForced = false
 
-    private func applyOverlay() {
-        if env.settings.overlayEnabled || overlayForced { overlay.show() } else { overlay.hide() }
+    private struct OverlayKey: Equatable {
+        var enabled: Bool
+        var ready: Bool
     }
 
-    /// Hotkey, popover footer: flip what is on screen and persist it.
+    private var overlayWanted: Bool { env.settings.overlayEnabled || overlayForced }
+
+    /// Shown only once the first frame arrived (spec "Launch": never an empty overlay at launch).
+    private func applyOverlay() {
+        if overlayWanted && env.live.hasFrame { overlay.show() } else { overlay.hide() }
+    }
+
+    /// Hotkey, popover footer: flip the wanted state and persist it.
     private func toggleOverlay() {
-        let on = !overlay.isShown
+        let on = !overlayWanted
         overlayForced = false
         env.settings.overlayEnabled = on
         applyOverlay()
