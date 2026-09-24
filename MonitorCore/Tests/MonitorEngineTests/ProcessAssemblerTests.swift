@@ -84,6 +84,20 @@ import Testing
         #expect(run(&legacy, [own(20, start: us(1), cpuNs: sec)], at: 2 * sec).samples[pid: 20]?.cpuPercent == nil)
     }
 
+    @Test func processMissingFromMembershipInheritsItsParentsCoalition() {
+        // A build child born after (or exited before) the coalition read: parent's coalition, else responsible's.
+        let map: [Int32: UInt64] = [10: 7, 20: 9]
+        var child = own(30, cpuNs: sec)
+        child.ppid = 10
+        #expect(ProcessAssembler.coalition(of: child, in: map) == 7)
+        child.ppid = 1                                                     // launchd child: responsible's coalition
+        child.responsiblePID = 20
+        #expect(ProcessAssembler.coalition(of: child, in: map) == 9)
+        child.responsiblePID = nil
+        #expect(ProcessAssembler.coalition(of: child, in: map) == nil)
+        #expect(ProcessAssembler.coalition(of: own(10), in: map) == 7)     // listed members use their own
+    }
+
     @Test func cachedReadingKeepsPreviousRates() throws {
         var pa = ProcessAssembler(currentUID: testUID)
         _ = run(&pa, [own(10, cpuNs: 0)], at: sec)

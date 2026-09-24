@@ -1,4 +1,5 @@
 import Foundation
+import MonitorEngine
 import MonitorModel
 
 /// `--record --trim-idle`: shrinks a recording (a busy Mac has ~900 processes, ~450 KB per tick) without changing what
@@ -24,11 +25,17 @@ enum FixtureTrim {
         var changedCoal: Set<UInt64> = []
         var allCoal: Set<UInt64> = []
         var sensorPIDs: Set<Int32> = []
-        for t in ticks {
+        for (k, t) in ticks.enumerated() {
             for p in t.processes.value?.processes ?? [] {
                 allProcs.insert(p.id)
                 let v = [p.cpuTimeNs, p.energyNJ, p.diskReadBytes, p.diskWriteBytes]
-                if let f = firstProc[p.id] { if f != v { changedPIDs.insert(p.id.pid) } } else { firstProc[p.id] = v }
+                if let f = firstProc[p.id] {
+                    if f != v { changedPIDs.insert(p.id.pid) }
+                } else {
+                    firstProc[p.id] = v
+                    // Appears mid-recording with counters: may count in full as a newborn (counter / interval).
+                    if k > 0, v.contains(where: { ($0 ?? 0) > 0 }) { changedPIDs.insert(p.id.pid) }
+                }
             }
             for c in t.coalitions.value?.coalitions ?? [] {
                 allCoal.insert(c.id)
@@ -93,6 +100,30 @@ enum FixtureTrim {
         }
         let keptProcs = allProcs.filter { keep.contains($0.pid) }.count
         return Result(ticks: out, processes: (keptProcs, allProcs.count), coalitions: (changedCoal.count, allCoal.count))
+    }
+}
+
+extension FixtureTrim {
+    /// Replays both recordings through fresh `FrameAssembler`s; returns the worst per-tick differences in
+    /// per-app CPU % (apps kept in both), Σ app CPU %, system CPU fraction and Σ app watts.
+    static func verify(full: [RawTick], trimmed: [RawTick])
+        -> (appCPU: Double, sumCPU: Double, systemCPU: Double, sumWatts: Double) {
+        var a = FrameAssembler(resolver: BundleAppResolver())
+        var b = FrameAssembler(resolver: BundleAppResolver())
+        var worst = (appCPU: 0.0, sumCPU: 0.0, systemCPU: 0.0, sumWatts: 0.0)
+        for (x, y) in zip(full, trimmed) {
+            let fx = a.assemble(x, inspectedApp: nil), fy = b.assemble(y, inspectedApp: nil)
+            let cx = Dictionary(fx.apps.map { ($0.identity.key, $0.cpuPercent ?? 0) }, uniquingKeysWith: +)
+            for app in fy.apps {
+                worst.appCPU = max(worst.appCPU, abs((cx[app.identity.key] ?? 0) - (app.cpuPercent ?? 0)))
+            }
+            let sumX = fx.apps.reduce(0) { $0 + ($1.cpuPercent ?? 0) }, sumY = fy.apps.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+            let wX = fx.apps.reduce(0) { $0 + ($1.energyWatts ?? 0) }, wY = fy.apps.reduce(0) { $0 + ($1.energyWatts ?? 0) }
+            worst.sumCPU = max(worst.sumCPU, abs(sumX - sumY))
+            worst.sumWatts = max(worst.sumWatts, abs(wX - wY))
+            worst.systemCPU = max(worst.systemCPU, abs((fx.cpu.usage ?? 0) - (fy.cpu.usage ?? 0)))
+        }
+        return worst
     }
 }
 

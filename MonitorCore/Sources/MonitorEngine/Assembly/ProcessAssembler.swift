@@ -115,6 +115,18 @@ struct ProcessAssembler {
         looseOwners.removeAll()
     }
 
+    /// The process's resource coalition. A process missing from the coalition reading's membership (born after it
+    /// was built, or exited before it was read) is in its parent's coalition — coalitions are inherited on fork
+    /// (launchd-spawned services get their own, but those are long-lived and listed) — else its responsible
+    /// process's. Without this, a short-lived build child counts twice: its own delta, and again inside the
+    /// coalition's residual (ICR-13 "Exited processes").
+    static func coalition(of r: RawProcess, in map: [Int32: UInt64]) -> UInt64? {
+        if let c = map[r.id.pid] { return c }
+        if r.ppid > 1, let c = map[r.ppid] { return c }
+        if let resp = r.responsiblePID, resp != r.id.pid, let c = map[resp] { return c }
+        return nil
+    }
+
     mutating func assemble(_ input: ProcessInputs, resolver: any AppResolving) -> ProcessAssembly {
         var out = ProcessAssembly()
         guard let table = input.processes.value, let capturedNs = input.processes.capturedNs else {
@@ -159,7 +171,7 @@ struct ProcessAssembler {
             var s = ProcessSample(
                 id: r.id, name: Self.displayName(r), path: r.path, user: userName(r.uid), uid: r.uid,
                 isCurrentUser: r.uid == currentUID, app: identity.key,
-                provenance: r.restricted ? .restricted : .measured, coalitionID: input.coalitionOf[r.id.pid],
+                provenance: r.restricted ? .restricted : .measured, coalitionID: Self.coalition(of: r, in: input.coalitionOf),
                 cpuTimeNs: r.cpuTimeNs, threads: r.threads,
                 diskReadTotal: r.diskReadBytes, diskWriteTotal: r.diskWriteBytes,
                 preventsSleep: !(assertions?[r.id.pid]?.isEmpty ?? true))

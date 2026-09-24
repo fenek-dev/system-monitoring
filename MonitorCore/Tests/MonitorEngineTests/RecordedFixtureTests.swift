@@ -79,10 +79,13 @@ import Testing
                 let appPercent = f.apps.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
                 #expect(abs(appPercent - systemPercent) <= max(0.15 * systemPercent, 20),
                         "\(name) @\(f.uptimeNs): apps \(appPercent) % vs system \(systemPercent) %")
+                // A restricted pid is covered by its coalition's row — or, when that coalition's residual is below the
+                // row thresholds (idle), its tooltip names the leader (coalitionLeaderName), per CoalitionAttributor.
                 for p in f.processes where p.provenance == .restricted {
                     guard let cid = p.coalitionID else { continue }
-                    #expect(f.processes.contains { $0.coalitionID == cid && $0.provenance == .coalition },
-                            "\(name): restricted pid \(p.pid) not covered by a coalition row")
+                    let covered = f.processes.contains { $0.coalitionID == cid && $0.provenance == .coalition }
+                    #expect(covered || p.coalitionLeaderName != nil,
+                            "\(name): restricted pid \(p.pid) neither covered by a coalition row nor pointing at a leader")
                 }
                 checked += 1
             }

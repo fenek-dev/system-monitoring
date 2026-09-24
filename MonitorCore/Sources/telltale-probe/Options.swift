@@ -4,7 +4,7 @@ import MonitorModel
 /// Command line of `telltale-probe` (W7 T2). One command per run; see `ProbeOptions.usage`.
 struct ProbeOptions: Sendable {
     enum Command: Sendable, Equatable {
-        case list, sensor(SensorID), bench, record(String), frames, maintainNow, crash(SensorID), help
+        case list, sensor(SensorID), bench, record(String), replay(String), frames, maintainNow, crash(SensorID), help
     }
 
     var command: Command = .help
@@ -30,6 +30,7 @@ struct ProbeOptions: Sendable {
       --bench [--sensor <id>]        per-sensor sample() cost p50/p95/max + total, then full engine ticks
       --record <file> [--trim-idle]  engine ticks → [RawTick] JSON (fixture format); --trim-idle drops processes and
                                      coalitions whose counters never change (deltas unchanged; see FixtureTrim)
+      --replay <file>                a recording → FrameAssembler → frame summaries
       --frames                       engine ticks → frame summaries (system + top apps)
       --maintain-now [--data-dir d]  flush + rollup + retention + vacuum on d/history.sqlite
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
@@ -68,6 +69,7 @@ struct ProbeOptions: Sendable {
             case "--sensor": sensorArg = try sensorID(try value(a))
             case "--bench": bench = true
             case "--record": command = .record(try value(a))
+            case "--replay": command = .replay(try value(a))
             case "--frames": command = .frames
             case "--maintain-now": command = .maintainNow
             case "--crash-sensor": command = .crash(try sensorID(try value(a)))

@@ -167,9 +167,12 @@ enum Commands {
         await engine.stop()
         if o.trimIdle {
             let t = FixtureTrim.trimIdle(ticks)
+            let v = FixtureTrim.verify(full: ticks, trimmed: t.ticks)
             ticks = t.ticks
             print("trim-idle: kept \(t.processes.kept)/\(t.processes.total) processes, "
                 + "\(t.coalitions.kept)/\(t.coalitions.total) coalitions")
+            print(String(format: "trim-idle verify (max |Δ| full vs trimmed): app cpu %.4f%%, Σ app cpu %.4f%%, "
+                + "system cpu %.6f, Σ app W %.4f", v.appCPU, v.sumCPU, v.systemCPU, v.sumWatts))
         }
         do {
             let data = try RawTick.fixtureEncoder.encode(ticks)        // W1's shared fixture format
@@ -189,6 +192,25 @@ enum Commands {
             print(Report.frame(frame, verbose: !o.quiet))
         }
         await engine.stop()
+    }
+
+    // MARK: --replay
+
+    /// A recording back through a `FrameAssembler` (no engine, no wake handling): frame summaries per tick.
+    static func replay(_ path: String, _ o: ProbeOptions) {
+        let ticks: [RawTick]
+        do {
+            ticks = try RawTick.fixtureDecoder.decode([RawTick].self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        } catch {
+            print("replay: \(error)")
+            exit(1)
+        }
+        var fa = FrameAssembler(resolver: BundleAppResolver())
+        for (k, t) in ticks.enumerated() {
+            let f = fa.assemble(t, inspectedApp: nil)
+            print("── tick \(k)")
+            print(Report.frame(f, verbose: !o.quiet))
+        }
     }
 
     // MARK: --maintain-now
