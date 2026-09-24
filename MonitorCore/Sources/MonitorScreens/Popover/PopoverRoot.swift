@@ -75,6 +75,7 @@ struct PopoverCategoryRow: View {
         PopoverRowView(row: PopoverModel.row(category, live: live, units: units, ceilings: ceilings), expanded: expanded,
                        topApps: expanded ? PopoverModel.expansionApps(category, live: live) : [], toggle: toggle)
             .equatable()
+            .environment(\.ttChartGapBridge, ChartSegments.liveBridgeSlots)   // Live 1-s grid sparklines (N2)
     }
 }
 

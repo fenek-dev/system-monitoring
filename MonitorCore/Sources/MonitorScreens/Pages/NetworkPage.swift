@@ -331,7 +331,7 @@ struct NetworkAppsCard: View {
                 onDoubleClick: { app in
                     nav.selection = .app(app.identity.key)
                     nav.page = .processes
-                })
+                }, columnsVersion: tableColumnsVersion(live, units: units))   // cells capture units + health (M2)
             }
         }
     }

@@ -165,7 +165,8 @@ private struct TemperaturesCard: View {
                     SystemChartUnavailable(reason: reason)
                 } else {
                     let domain = ThermalChartData.domain(series)
-                    TTLineChart(series, yDomain: domain, yTicks: ThermalChartData.ticks(domain)) {
+                    TTLineChart(series, yDomain: domain, yTicks: ThermalChartData.ticks(domain),
+                                bridge: range == .live ? ChartSegments.liveBridgeSlots : 0) {
                         TTFormat.temperatureCompact($0, units: units)
                     }
                 }

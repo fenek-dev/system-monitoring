@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MonitorLive
 import MonitorMocks
@@ -8,12 +9,68 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
+/// A persistent offscreen `NSHostingView` (the snapshot renderer builds a fresh host per call, which can't show
+/// whether an existing hierarchy updates). Same deterministic environment as `SnapshotRenderer.prepared`.
+@MainActor
+final class LiveHost {
+    private let host: NSHostingView<AnyView>
+    private let window: NSWindow
+    private let size: CGSize
+
+    init<V: View>(_ view: V, size: CGSize) {
+        self.size = size
+        // Before any text is drawn in this process: font smoothing is read once (else later goldens shift).
+        SnapshotRenderer.configureTextRendering()
+        _ = NSApplication.shared
+        host = NSHostingView(rootView: AnyView(SnapshotRenderer.prepared(view, size: size)))
+        host.frame = CGRect(origin: .zero, size: size)
+        window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
+    }
+
+    deinit { MainActor.assumeIsolated { window.close() } }
+
+    func image() -> CGImage? {
+        TTFormat.$locale.withValue(SnapshotRenderer.locale) { () -> CGImage? in
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            host.layoutSubtreeIfNeeded()
+            let rect = CGRect(origin: .zero, size: size)
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+            host.cacheDisplay(in: rect, to: rep)
+            return rep.cgImage.flatMap { SnapshotImage.normalized($0) }
+        }
+    }
+}
+
 @Suite("Network snapshots")
 @MainActor
 struct NetworkSnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted])
     func network(_ scenario: MockScenario) {
         assertScreen("network", scenario: scenario)
+    }
+
+    /// U-M2: rows are Equatable on their `AppSample`, and cells capture `units`. Switching Settings → units to bits
+    /// in a live host must redraw rows whose data did not change (`columnsVersion`): the updated host matches a
+    /// fresh bits render and differs from the bytes render.
+    @Test func switchingUnitsRerendersNetworkRows() throws {
+        let size = CGSize(width: 1020, height: 320)
+        let ctx = ScreenFixture.context(.calm, page: .network)
+        let card = NetworkAppsCard().telltaleEnvironment(ctx)
+        let host = LiveHost(card, size: size)
+        let bytes = try #require(host.image())
+        ctx.settings.units = UnitPreferences(networkRate: .bits)
+        let switched = try #require(host.image())
+
+        let fresh = ScreenFixture.context(.calm, page: .network)
+        fresh.settings.units = UnitPreferences(networkRate: .bits)
+        let bits = try #require(LiveHost(NetworkAppsCard().telltaleEnvironment(fresh), size: size).image())
+        #expect(SnapshotImage.compare(bytes, bits).fraction > 0.001)       // the units do change the cells
+        #expect(SnapshotImage.compare(switched, bits).fraction < 0.0005)   // and the live rows followed
     }
 
     /// "Today" comes from the store asynchronously; a synchronous render shows it only when injected.

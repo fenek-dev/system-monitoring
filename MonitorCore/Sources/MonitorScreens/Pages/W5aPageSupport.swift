@@ -62,6 +62,7 @@ struct RangeSeriesReader<Content: View>: View {
         if range == .live {
             content(RangeSeries(range: .live, end: now ?? live.lastUpdate ?? Date(),
                                 points: Dictionary(uniqueKeysWithValues: metrics.map { ($0, live.chartSeries($0)) })))
+                .environment(\.ttChartGapBridge, ChartSegments.liveBridgeSlots)   // 1-s grid: 5-s cadence bridged
         } else {
             let end = Self.storeEnd(clock: clock, range: range, fallback: now ?? Date())
             let key = LoadKey(range: range, bucketEnd: end)
@@ -213,8 +214,9 @@ final class RankCache<Row> {
     return ("Not reported on this Mac", false)
 }
 
-/// `TTTable.columnsVersion` for cells that capture sensor health and unit settings (M2).
-@MainActor func tableColumnsVersion(_ live: LiveModel, units: UnitPreferences) -> Int {
+/// `TTTable.columnsVersion` for cells that capture sensor health and unit settings (M2): `healthVersion` + units.
+/// Tables whose cells capture only health pass the default units.
+@MainActor func tableColumnsVersion(_ live: LiveModel, units: UnitPreferences = UnitPreferences()) -> Int {
     var h = Hasher()
     h.combine(live.healthVersion)
     h.combine(units.temperature.rawValue)
@@ -463,10 +465,17 @@ extension AppSample {
     var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy(\.isExitedResidual) }
 
     /// "Estimated" CPU marker, the same rule as the Processes table (M4): an exited-only group, a group whose value
-    /// includes an ICR-13 exited share, or one with coalition-provenance members.
-    @MainActor func cpuIsEstimated(_ live: LiveModel) -> Bool {
-        isExitedResidualOnly || exitedResidual != nil
-            || live.processes(of: identity.key).contains { $0.provenance == .coalition }
+    /// includes an ICR-13 exited share, or one with coalition-provenance members (`coalitionApps`, computed once per
+    /// processes change by `coalitionApps(_:)` — never per cell, N3).
+    func cpuIsEstimated(coalitionApps: Set<AppKey>) -> Bool {
+        isExitedResidualOnly || exitedResidual != nil || coalitionApps.contains(identity.key)
+    }
+
+    /// Apps with at least one coalition-provenance member, in one pass over the processes.
+    static func coalitionApps(_ processes: [ProcessSample]) -> Set<AppKey> {
+        var keys = Set<AppKey>()
+        for p in processes where p.provenance == .coalition { keys.insert(p.app) }
+        return keys
     }
 
     /// "Estimated" energy marker (Processes rule, M4): energy attributed by estimate or including an exited share.

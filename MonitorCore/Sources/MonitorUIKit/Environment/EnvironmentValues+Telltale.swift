@@ -26,6 +26,9 @@ public extension EnvironmentValues {
     /// skip per-cell tooltips (`MetricValue`) and render `TTRowActionsButton` as a static glyph, so a tick that
     /// changes a row's values does not rebuild tooltips, buttons and menu anchors (W5c pattern). Default true.
     @Entry var ttRowActive: Bool = true
+    /// Charts bridge nil runs of up to this many slots between two samples (`ChartSegments.liveBridgeSlots` on the
+    /// Live 1-s grid; 0 = strict gap rule, stored ranges). Set by the Live range readers and the popover.
+    @Entry var ttChartGapBridge: Int = 0
 }
 
 /// Disclosure state handed to a table row's cells (use `TTDisclosureButton` in the name cell).

@@ -181,6 +181,7 @@ private struct PowerByComponentCard: View {
                                                                          PowerChartScale.ceiling(stacked.map(\.points))))
                 }
             }
+            .environment(\.ttChartGapBridge, range == .live ? ChartSegments.liveBridgeSlots : 0)
             .frame(minHeight: 160, maxHeight: .infinity)
             TTTimeAxis(range: range, end: end)
         }
@@ -386,6 +387,7 @@ private struct EnergyImpactCard: View {
                         rowMenu: { AnyView(TTRowActionsMenu(target: $0.target)) },
                         children: { childRows($0, health: health) },
                         style: TTTableStyle(emptyMessage: "No app energy use"),
+                        columnsVersion: tableColumnsVersion(live),   // sleep-reason cells capture health (M2)
                         hasChildren: { hasChildRows($0) })
             }
         }
