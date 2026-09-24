@@ -45,14 +45,16 @@ struct ProcessListTable: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 80)
                 } else if isSnapshot {
-                    VStack(spacing: 1) { rows(nameWidth: nameWidth) }
+                    // Only the rows that fit (plus one partial), clipped: deterministic and cheap.
+                    let fit = Int((geo.size.height - 28 - 4) / 35) + 1
+                    VStack(spacing: 1) { rows(Array(lines.prefix(max(0, fit))), nameWidth: nameWidth) }
                         .padding(.top, TTSpace.x4)
-                        .frame(maxHeight: .infinity, alignment: .top)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         .clipped()
                 } else {
                     ScrollViewReader { proxy in
                         ScrollView(.vertical) {
-                            LazyVStack(spacing: 1) { rows(nameWidth: nameWidth) }
+                            LazyVStack(spacing: 1) { rows(lines, nameWidth: nameWidth) }
                                 .padding(.top, TTSpace.x4)
                         }
                         .scrollIndicators(.automatic)
@@ -101,7 +103,7 @@ struct ProcessListTable: View {
         column == 0 || column == 2 ? .leading : .trailing
     }
 
-    @ViewBuilder private func rows(nameWidth: CGFloat) -> some View {
+    @ViewBuilder private func rows(_ lines: [ProcessRow], nameWidth: CGFloat) -> some View {
         ForEach(lines) { row in
             let selected = row.id.selection != nil && row.id.selection == selection
             ProcessTableRow(row: row, nameWidth: nameWidth, selected: selected, showsDisclosure: showsDisclosure,
@@ -146,20 +148,11 @@ struct ProcessTableRow: View, Equatable {
         let widths = ProcessListTable.fixedWidths
         HStack(spacing: TTSpace.tableCellGap) {
             nameCell.frame(width: nameWidth, alignment: .leading)
-            MetricValue(row.pid.map { String($0) },
-                        unavailableReason: row.rowKind == .process && row.pid == nil ? "Coalition residual row" : nil,
-                        font: TTFont.body12)
-                .frame(width: widths[0], alignment: .trailing)
-            Text(row.user ?? "")
-                .font(TTFont.body12)
-                .foregroundStyle(TTColor.textSecondary)
-                .frame(width: widths[1], alignment: .leading)
-            metric(.cpu, TTFormat.cpuPercent(row.cpu, sign: false), estimated: row.cpuEstimated, width: widths[2])
-            metric(.gpu, TTFormat.cpuPercent(row.gpu, sign: false), width: widths[3])
-            metric(.memory, TTFormat.bytes(row.memory), width: widths[4])
-            metric(.network, TTFormat.rateCell(row.network, units: units), width: widths[5])
-            metric(.disk, TTFormat.diskRateCell(row.disk), width: widths[6])
-            metric(.energy, TTFormat.appWatts(row.energy), estimated: row.energyEstimated, width: widths[7])
+            if row.rowKind == .restrictedSummary {
+                Spacer(minLength: 0)
+            } else {
+                cells(widths)
+            }
         }
         .font(TTFont.body12)
         .monospacedDigit()
@@ -178,6 +171,23 @@ struct ProcessTableRow: View, Equatable {
         )
         .onHover { hovering = $0 }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private func cells(_ widths: [CGFloat]) -> some View {
+        MetricValue(row.pid.map { String($0) },
+                    unavailableReason: row.rowKind == .process && row.pid == nil ? "Coalition residual row" : nil,
+                    font: TTFont.body12)
+            .frame(width: widths[0], alignment: .trailing)
+        Text(row.user ?? "")
+            .font(TTFont.body12)
+            .foregroundStyle(TTColor.textSecondary)
+            .frame(width: widths[1], alignment: .leading)
+        metric(.cpu, TTFormat.cpuPercent(row.cpu, sign: false), estimated: row.cpuEstimated, width: widths[2])
+        metric(.gpu, TTFormat.cpuPercent(row.gpu, sign: false), width: widths[3])
+        metric(.memory, TTFormat.bytes(row.memory), width: widths[4])
+        metric(.network, TTFormat.rateCell(row.network, units: units), width: widths[5])
+        metric(.disk, TTFormat.diskRateCell(row.disk), width: widths[6])
+        metric(.energy, TTFormat.appWatts(row.energy), estimated: row.energyEstimated, width: widths[7])
     }
 
     @ViewBuilder private var nameCell: some View {

@@ -158,16 +158,22 @@ private struct AppDetailBody: View {
                         .accessibilityLabel("Activity range")
                 }
                 .frame(height: 24)
-                VStack(spacing: TTSpace.x4) {
-                    ForEach(InspectorLane.allCases, id: \.self) { lane in
-                        let pts = model.points(lane, row: row, live: live)
-                        TTTimelineRow(label: lane.label, icon: lane.icon, value: lane.valueText(row, units: units),
-                                      unavailableReason: row.reasons[lane.column], points: pts, color: lane.color,
-                                      yDomain: lane.domain(pts), chartWidth: nil, height: 34)
+                GeometryReader { geo in
+                    // The sparkline fills the width (DESIGN §2.5 App detail); the value keeps a 72-pt column.
+                    let chart = max(40, geo.size.width - 84 - 2 * TTSpace.x12 - Self.valueWidth)
+                    VStack(spacing: TTSpace.x4) {
+                        ForEach(InspectorLane.allCases, id: \.self) { lane in
+                            let pts = model.points(lane, row: row, live: live)
+                            TTTimelineRow(label: lane.label, icon: lane.icon, value: lane.valueText(row, units: units),
+                                          unavailableReason: row.reasons[lane.column], points: pts,
+                                          color: lane.color, yDomain: lane.domain(pts), chartWidth: chart, height: 34)
+                        }
                     }
                 }
+                .frame(height: 6 * 34 + 5 * TTSpace.x4)
                 TTTimeAxis(range: model.range, end: end)
                     .padding(.leading, 96)
+                    .padding(.trailing, Self.valueWidth + TTSpace.x12)
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .task(id: AppInspectorModel.StoredKey(app: row.appKey, range: model.range,
@@ -179,6 +185,8 @@ private struct AppDetailBody: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
+
+    static let valueWidth: CGFloat = 72
 
     /// Stored ranges reload once per display bucket, not per second.
     static func bucketEnd(_ end: Date, range: HistoryRange) -> Date {

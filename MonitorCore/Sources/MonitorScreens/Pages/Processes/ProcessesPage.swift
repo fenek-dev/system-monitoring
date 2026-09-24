@@ -11,6 +11,9 @@ public struct ProcessesPage: View {
     @Environment(LiveModel.self) private var live
     @Environment(NavigationModel.self) private var nav
     @Environment(\.processActions) private var actions
+    @Environment(\.processesDetailOnAppear) private var detailOnAppear
+    @Environment(\.processesExpandSelectionOnAppear) private var expandOnAppear
+    @Environment(\.isSnapshot) private var isSnapshot
     @State private var table = ProcessTableModel()
     @State private var coordinator = ProcessActionCoordinator()
     @State private var inspector = AppInspectorModel()
@@ -41,7 +44,7 @@ public struct ProcessesPage: View {
         }
         .padding(TTSpace.pagePadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(.easeInOut(duration: 0.2), value: detailExpanded)
+        .animation(isSnapshot ? nil : .easeInOut(duration: 0.2), value: detailExpanded)
         .pageHeaderTrailing(id: "processes-search") {
             TTSearchField(text: $table.query, prompt: "Search processes")
                 .focused($searchFocused)
@@ -64,7 +67,15 @@ public struct ProcessesPage: View {
             toggleDetail()
             return .handled
         }
-        .onAppear { if nav.selection != nil { detailExpanded = true } }
+        .onAppear {
+            // Initial state, not a user change: no animation (and deterministic snapshots).
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                detailExpanded = detailOnAppear ?? (nav.selection != nil)
+                if expandOnAppear, case .app(let key)? = nav.selection { table.setExpanded(key, true) }
+            }
+        }
         .onChange(of: live.appsVersion) {
             if nav.selection != nil, table.validated(nav.selection) == nil { nav.selection = nil }
         }
@@ -179,4 +190,12 @@ public struct ProcessesPage: View {
         withAnimation(.easeInOut(duration: 0.15)) { table.setExpanded(key, open) }
         return .handled
     }
+}
+
+extension EnvironmentValues {
+    /// Inspector detail state when the page appears (nil = expanded iff a row is already selected, e.g. the
+    /// popover's "open app" link). Snapshot tests pin it.
+    @Entry var processesDetailOnAppear: Bool? = nil
+    /// Expand the selected app group when the page appears (snapshot tests).
+    @Entry var processesExpandSelectionOnAppear: Bool = false
 }

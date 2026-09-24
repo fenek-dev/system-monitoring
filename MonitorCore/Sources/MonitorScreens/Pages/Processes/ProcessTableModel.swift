@@ -501,16 +501,19 @@ public extension ProcessTableModel {
         let owned = !synthetic && p.provenance == .measured ? p.isCurrentUser : false
         let target: ProcessTarget? = synthetic ? nil
             : .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid)
+        let kind = processKind(p, responsibleID: responsibleID)
+        // An app's main process shows its bundle ("/Applications/Final Cut Pro.app", DESIGN §3.12 inspector).
+        let displayPath = kind == "App" ? p.path.map(trimmedBundle) : p.path
         return ProcessRow(
             id: .process(p.id), rowKind: .process, depth: 0, parity: 0, name: p.name,
-            kindLabel: processKind(p, responsibleID: responsibleID),
+            kindLabel: kind,
             identity: AppIdentity(key: p.app, displayName: p.name, bundlePath: p.path.map(trimmedBundle)),
             pid: synthetic ? nil : p.pid, user: p.user, uid: p.uid, provenance: p.provenance,
             cpu: p.cpuPercent, gpu: p.gpuPercent, memory: p.memory,
             network: sum(p.netRxBps, p.netTxBps), disk: sum(p.diskReadBps, p.diskWriteBps), energy: p.energyWatts,
             reasons: processReasons(p, health: health),
             cpuEstimated: p.provenance == .coalition, energyEstimated: p.energyEstimated,
-            hasChildren: false, isExpanded: false, processCount: 1, threads: p.threads, path: p.path,
+            hasChildren: false, isExpanded: false, processCount: 1, threads: p.threads, path: displayPath,
             appKey: p.app, ownedByCurrentUser: owned,
             foreignOwner: owned ? nil : (p.user ?? "uid \(p.uid)"), target: target)
     }
@@ -518,7 +521,9 @@ public extension ProcessTableModel {
     private nonisolated static func appRow(_ app: AppSample, members: [ProcessSample], responsible: ProcessSample?,
                                            health: [SensorID: SensorStatus]) -> ProcessRow {
         let key = app.identity.key
-        let base = baseKind(key: key, representative: responsible ?? members.first)
+        // Coalition groups (no readable member) are "System" rows (DESIGN §3.12 rule 3).
+        let coalitionOnly = !members.isEmpty && members.allSatisfy { $0.provenance != .measured }
+        let base = coalitionOnly ? "System" : baseKind(key: key, representative: responsible ?? members.first)
         let count = max(app.processIDs.count, members.count)
         let real = members.filter { !$0.id.isSynthetic }
         let foreign = members.first { !$0.isCurrentUser || $0.provenance != .measured }

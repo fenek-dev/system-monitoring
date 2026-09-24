@@ -105,6 +105,7 @@ struct ProcessTableBuildTests {
         #expect(!out.lines[0].hasChildren)                                 // single-process app
         #expect(out.lines[2].kindLabel == "System")                        // WindowServer (_windowserver)
         #expect(out.lines[4].kindLabel == "Background")                    // mds_stores
+        #expect(out.lines[5].kindLabel == "System · 3 processes")          // coalition group
     }
 
     @Test func parityAlternatesOnTopLevelOnly() {
@@ -196,7 +197,9 @@ struct ProcessTableBuildTests {
         let out = ProcessTableModel.build(PT.input())
         #expect(out.lines.first?.path == "/Applications/Xcode.app")
         let procs = ProcessTableModel.build(PT.input(mode: .processes))
-        #expect(procs.lines.first?.path == "/Applications/Xcode.app/Contents/MacOS/Xcode")
+        #expect(procs.lines.first?.path == "/Applications/Xcode.app")                  // main process: bundle
+        let backend = procs.lines.first { $0.name == "com.docker.backend" }
+        #expect(backend?.path == "/Applications/Docker.app/Contents/MacOS/com.docker.backend")
     }
 }
 
