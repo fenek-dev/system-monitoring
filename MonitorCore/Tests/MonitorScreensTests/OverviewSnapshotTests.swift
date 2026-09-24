@@ -11,7 +11,7 @@ import Testing
 @Suite("Overview snapshots")
 @MainActor
 struct OverviewSnapshotTests {
-    @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted, .paused])
+    @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted, .paused, .deviceUnknown])
     func overview(_ scenario: MockScenario) {
         assertScreen("overview", scenario: scenario)
     }

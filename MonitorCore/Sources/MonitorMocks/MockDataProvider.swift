@@ -22,7 +22,17 @@ public struct MockDataProvider: Sendable {
         self.scenario = scenario
         self.seed = seed
         self.start = start
-        self.device = DemoDevice.device(referenceDate: start)
+        var device = DemoDevice.device(referenceDate: start)
+        switch scenario {
+        case .sensorsUnavailable:
+            device.fanCount = nil                   // SMC down → `FNum` unreadable → unknown, not 0 (U-I2)
+        case .deviceUnknown:
+            device.fanCount = nil
+            device.hasBattery = nil
+        default:
+            break
+        }
+        self.device = device
         self.signals = DemoSignals(scenario: scenario)
         var roster = DemoApps.roster(scenario: scenario)
         if scenario == .restricted {
@@ -424,9 +434,8 @@ public struct MockDataProvider: Sendable {
             RawTemperature(name: "NAND", celsius: 41, group: .ssd, source: .smc),
             RawTemperature(name: "Battery cell avg", celsius: bTemp, group: .battery, source: .smc),
         ]
-        // `DemoDevice` always models a two-fan MacBook Pro (no "no fans" scenario exists), so this is
-        // never conditional on `device.fanCount`.
-        let fans: [FanSnapshot] = [
+        // `DemoDevice` models a two-fan MacBook Pro; `.deviceUnknown` (SMC unreachable) reports no fans at all.
+        let fans: [FanSnapshot] = scenario == .deviceUnknown ? [] : [
             FanSnapshot(id: 0, name: "Left fan", rpm: signals.value(.fan1, at: tick), minRPM: 1_200, maxRPM: 5_700),
             FanSnapshot(id: 1, name: "Right fan", rpm: signals.value(.fan2, at: tick), minRPM: 1_200, maxRPM: 5_700),
         ]
@@ -467,7 +476,7 @@ public struct MockDataProvider: Sendable {
             aneWatts: scenario == .sensorsUnavailable ? nil : signals.value(.pa, at: tick),
             dramWatts: scenario == .sensorsUnavailable ? nil : signals.value(.pd, at: tick),
             systemWatts: scenario == .sensorsUnavailable ? nil : package * 0.97,
-            battery: battery,
+            battery: scenario == .deviceUnknown ? nil : battery,
             adapterWatts: nil,
             adapterName: nil,
             lowPowerMode: false
@@ -499,6 +508,7 @@ public struct MockDataProvider: Sendable {
     // MARK: - Sensor health
 
     private func makeSensorHealth() -> [SensorID: SensorStatus] {
+        if scenario == .deviceUnknown { return [.smc: .unavailable("SMC not reachable")] }
         guard scenario == .sensorsUnavailable else { return [:] }
         return [
             .soc: .unavailable("IOReport channels not available on this Mac"),
@@ -511,7 +521,7 @@ public struct MockDataProvider: Sendable {
 
     private func makeAlert() -> AlertState {
         switch scenario {
-        case .calm, .collecting, .sensorsUnavailable:
+        case .calm, .collecting, .sensorsUnavailable, .deviceUnknown:
             return .calm
         case .paused:
             return AlertState(paused: true)

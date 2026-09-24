@@ -70,7 +70,7 @@ enum PopoverModel {
             r.points = live.chartSeries(.socTemp)
             r.domain = 0...100
         case .power:
-            r.subtitle = live.power.battery == nil && live.device.hasBattery ? nil : W5a.batteryPhrase(live.power.battery)
+            r.subtitle = powerPhrase(live.power, device: live.device, lastUpdate: live.lastUpdate)
             // Package from IOReport; if the Energy Model is missing, the SMC system power so the row never
             // shows "—" while the Mac reports its draw (CP2).
             let w = W5a.packageWatts(live.power) ?? live.power.systemWatts
@@ -88,7 +88,17 @@ enum PopoverModel {
         return r
     }
 
-    /// Calm "Nominal · 2,140 rpm"; stressed "Fair · fans 3,900 rpm"; no fans "Nominal · no fans".
+    /// Battery phrase for the popover Power row and the Overview power card: the battery's phrase, "AC power" only
+    /// when this Mac is known to have no battery, nil (no claim) while that is unknown — before the first frame
+    /// (DESIGN §3.15 "First launch") or on a laptop whose battery reading is missing (U-I2).
+    static func powerPhrase(_ p: PowerSnapshot, device: DeviceInfo, lastUpdate: Date?) -> String? {
+        guard lastUpdate != nil else { return nil }
+        if p.battery != nil { return W5a.batteryPhrase(p.battery) }
+        return device.hasBattery == false ? W5a.batteryPhrase(nil) : nil
+    }
+
+    /// Calm "Nominal · 2,140 rpm"; stressed "Fair · fans 3,900 rpm"; no fans "Nominal · no fans" — only when the
+    /// fan count is known to be 0 (nil = unknown: SMC unreachable or before the first frame, U-I2).
     static func thermalSubtitle(_ t: ThermalSnapshot, device: DeviceInfo, stressed: Bool) -> String? {
         var parts: [String] = []
         if let p = t.pressure { parts.append(p.title) }

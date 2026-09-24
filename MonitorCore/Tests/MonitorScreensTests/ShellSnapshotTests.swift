@@ -9,7 +9,7 @@ import Testing
 /// rendered without a page, so W5 page changes never touch these; full screens (`overview`, `popover`…) are the
 /// page owners' goldens. Skipped until W3's `SnapshotRenderer` renders. Record with
 /// `TELLTALE_RECORD=1 scripts/test.sh ShellSnapshotTests` after the visual check against Main/StatusIcon.
-@Suite("Shell snapshots (ShellSnapshotTests)", .enabled { await ScreenFixture.snapshotsAvailable }) @MainActor
+@Suite("Shell snapshots (ShellSnapshotTests)") @MainActor
 struct ShellSnapshotTests {
     /// Calm only: DESIGN §3.15 "Paused" changes charts, the popover status, the Overview subtitle and the pause
     /// glyphs, not the sidebar (it keeps the last values), so a paused sidebar golden would duplicate this one.

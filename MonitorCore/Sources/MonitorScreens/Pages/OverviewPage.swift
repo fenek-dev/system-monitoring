@@ -198,7 +198,7 @@ struct OverviewPowerCard: View {
                         .font(TTFont.title1Unit).foregroundStyle(TTColor.textSecondary)
                 }
                 Spacer(minLength: 8)
-                if let phrase = live.power.battery == nil && live.device.hasBattery ? nil : W5a.batteryPhrase(p.battery) {
+                if let phrase = PopoverModel.powerPhrase(p, device: live.device, lastUpdate: live.lastUpdate) {
                     HStack(spacing: 6) {
                         if p.battery != nil { TTIcon(.battery, size: 16) }
                         Text(phrase).font(TTFont.body12).foregroundStyle(TTColor.textSecondary).monospacedDigit()

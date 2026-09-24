@@ -10,10 +10,12 @@ import Testing
 
 /// DESIGN §3.10 Power & Battery goldens (`__Snapshots__/power-*.png`).
 @MainActor
-@Suite("PowerSnapshotTests", .enabled { await ScreenFixture.snapshotsAvailable })
+@Suite("PowerSnapshotTests")
 struct PowerSnapshotTests {
     // collecting is identical to calm here (firstTick covers "Collecting…").
     @Test func calm() { assertScreen("power", scenario: .calm) }
+    /// U-I2: battery presence unknown → the battery card keeps its layout with "—" + "Collecting…", no "AC power".
+    @Test func deviceUnknown() { assertScreen("power", scenario: .deviceUnknown) }
     @Test func sensorsUnavailable() { assertScreen("power", scenario: .sensorsUnavailable) }
     @Test func restricted() { assertScreen("power", scenario: .restricted) }
 

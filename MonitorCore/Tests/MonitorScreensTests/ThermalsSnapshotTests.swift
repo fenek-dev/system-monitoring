@@ -10,13 +10,15 @@ import Testing
 
 /// DESIGN §3.9 Thermals page goldens (`__Snapshots__/thermals-*.png`).
 @MainActor
-@Suite("ThermalsSnapshotTests", .enabled { await ScreenFixture.snapshotsAvailable })
+@Suite("ThermalsSnapshotTests")
 struct ThermalsSnapshotTests {
     // restricted/collecting renders are identical to calm for this page (no process rows; firstTick covers
     // "Collecting…"), so they have no goldens of their own.
     @Test func calm() { assertScreen("thermals", scenario: .calm) }
     @Test func thermalCritical() { assertScreen("thermals", scenario: .thermalCritical) }
     @Test func sensorsUnavailable() { assertScreen("thermals", scenario: .sensorsUnavailable) }
+    /// U-I2: fan count unknown (SMC unreachable) → "—" + the SMC reason, never "This Mac has no fans".
+    @Test func deviceUnknown() { assertScreen("thermals", scenario: .deviceUnknown) }
 
     /// W7 T6 drill: SMC crashed (canary) and HID disabled. Every SoC temperature is unavailable; only the battery
     /// reports (31 °C, below the floor). The chart shows "—" + the reason, never a flat line on the 40° floor.

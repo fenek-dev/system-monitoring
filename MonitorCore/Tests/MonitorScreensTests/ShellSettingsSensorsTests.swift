@@ -27,8 +27,7 @@ struct ShellSettingsSensorsTests {
 
     /// The rendered Settings window shows the Sensors section ("Disabled sensors · smc" + "Re-enable sensors").
     /// Golden `shell-settings-crashed-sensor` (visually checked).
-    @Test(.enabled { await ScreenFixture.snapshotsAvailable })
-    func crashDisabledSensorRendersWithReenable() {
+    @Test func crashDisabledSensorRendersWithReenable() {
         let (settings, _) = ScreenFixture.settings()
         let ctx = ShellContext(live: crashedLive(), settings: settings, isSnapshot: true)
         let size = CGSize(width: ScreenSize.settings.width, height: 720)

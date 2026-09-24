@@ -51,13 +51,13 @@ private struct PowerHeaderSubtitle: View {
 enum PowerCopy {
     /// "On battery · 72.4 Wh · Low Power Mode off" / "On power adapter · 96 W · …" (DESIGN §3.10 header).
     /// A laptop whose battery reading is missing (sensor unavailable) doesn't claim a power source unless the adapter
-    /// wattage says so.
-    static func subtitle(_ p: PowerSnapshot, hasBattery: Bool) -> String {
+    /// wattage says so. `hasBattery == nil` (not known yet) claims nothing either (U-I2).
+    static func subtitle(_ p: PowerSnapshot, hasBattery: Bool?) -> String {
         var parts: [String] = []
         let adapter = p.adapterWatts.map { "On power adapter · \(TTFormat.number($0, digits: 0)) W" }
         if let b = p.battery {
             parts.append(b.onAC ? (adapter ?? "On power adapter") : "On battery")
-        } else if !hasBattery {
+        } else if hasBattery == false {
             parts.append(adapter ?? "On power adapter")
         } else if let adapter {
             parts.append(adapter)
@@ -100,10 +100,14 @@ enum PowerCopy {
         return p.battery == nil ? nil : "Connected"
     }
 
-    /// Why battery values are "—": no battery (desktop), else the battery sensor's reason.
-    static func batteryReason(hasBattery: Bool, status: SensorStatus) -> String {
-        guard hasBattery else { return "This Mac has no battery" }
-        return status.reason ?? "Not reported by the battery"
+    /// Why battery values are "—": no battery (desktop), else the battery sensor's reason; "Collecting…" while it
+    /// is not known yet whether this Mac has a battery (U-I2).
+    static func batteryReason(hasBattery: Bool?, status: SensorStatus) -> String {
+        switch hasBattery {
+        case false?: return "This Mac has no battery"
+        case nil: return status.reason ?? "Collecting…"
+        case true?: return status.reason ?? "Not reported by the battery"
+        }
     }
 
     /// Glyph fill: `battery`, `statusElevated` at ≤ 20 %, `statusCritical` at ≤ 10 % (ADDED).
@@ -228,9 +232,11 @@ private struct BatteryCard: View {
             .frame(minHeight: 20)
             // "No battery" only on Macs without one; a laptop whose battery sensor is down keeps the layout with
             // "—" + the sensor's reason.
-            if p.battery != nil || live.device.hasBattery {
+            // Unknown (`hasBattery == nil`, before the first frame) keeps this layout too: "—" + "Collecting…".
+            if p.battery != nil || live.device.hasBattery != false {
                 let b = p.battery
-                let missing = b == nil ? PowerCopy.batteryReason(hasBattery: true, status: live.status(of: .battery)) : nil
+                let missing = b == nil
+                    ? PowerCopy.batteryReason(hasBattery: live.device.hasBattery, status: live.status(of: .battery)) : nil
                 let notReported = missing ?? Self.notReported
                 HStack(spacing: TTSpace.x14) {
                     BatteryGlyph(percent: b?.percent)
