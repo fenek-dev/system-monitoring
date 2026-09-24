@@ -24,6 +24,12 @@ struct ShellLaunchOptionsTests {
                                     environment: ["TELLTALE_MOCK": "runaway"]).mockScenario == .paused)
     }
 
+    @Test func verificationArgs() {
+        #expect(LaunchOptions.parse(arguments: ["--status-preview", "critical", "--open-settings"], environment: [:])
+            == LaunchOptions(openSettings: true, statusPreview: .critical))
+        #expect(LaunchOptions.parse(arguments: ["--status-preview"], environment: [:]).statusPreview == .elevated)
+    }
+
     @Test func openDashboardPage() {
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard"], environment: [:]).openDashboard == .overview)
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard", "thermals"], environment: [:]).openDashboard == .thermals)

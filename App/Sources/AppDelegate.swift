@@ -6,33 +6,43 @@ import MonitorScreens
 import MonitorUIKit
 import os
 
+/// AppKit lifecycle + composition of the shell controllers (ARCHITECTURE §5.13).
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var env: AppEnvironment!
     private var statusItem: StatusItemController!
     private var popover: PopoverPanelController!
-    private var visibility: VisibilityTracker!
+    private var dashboard: DashboardWindowController!
+    private var settingsWindow: SettingsWindowController!
+    private var visibility: VisibilityWiring!
+    private var power: PowerEvents?
+    private var termination: TerminationController?
     private let log = Logger(subsystem: "dev.telltale", category: "App")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        // Dark per window (panel, dashboard, settings), never app-wide: the status bar button must keep the
+        // menu bar's own appearance so `labelColor` in the glyph follows a light or dark menu bar.
         let env = AppEnvironment()
         self.env = env
+        env.commands = makeCommands()
+        env.processActions = env.options.mockScenario == nil ? ProcessActionsLive.make() : .noop
 
-        visibility = VisibilityTracker { [log, env] v in
-            env.live.isPresenting = v.mode == .interactive
-            env.runtime.setVisibility(v)
-            log.info("visibility mode=\(v.mode == .interactive ? "interactive" : "background", privacy: .public) popover=\(v.popoverOpen) dashboard=\(v.dashboardVisible) page=\(v.page?.rawValue ?? "-", privacy: .public) demand=\(v.demand.rawValue)")
-        }
-        statusItem = StatusItemController(live: env.live, onToggle: { [weak self] in self?.togglePopover() },
+        visibility = VisibilityWiring(env: env)
+        statusItem = StatusItemController(live: env.live, onToggle: { [weak self] in self?.popover.toggle() },
                                           menu: { [weak self] in self?.statusMenu() ?? NSMenu() })
         popover = PopoverPanelController(
             env: env,
             anchor: { [weak self] in self?.statusItem.buttonScreenFrame },
             onVisibilityChange: { [weak self] open in
                 self?.statusItem.setHighlighted(open)
-                self?.visibility.update { $0.popoverOpen = open }
+                self?.visibility.tracker.update { $0.popoverOpen = open }
             },
             shortcuts: { [weak self] e in self?.handleShortcut(e) ?? false })
+        statusItem.willShowMenu = { [weak self] in self?.popover.close() }
+        dashboard = DashboardWindowController(env: env, visibility: visibility.tracker)
+        settingsWindow = SettingsWindowController(env: env)
+        power = PowerEvents(willSleep: { env.runtime.systemWillSleep() }, didWake: { env.runtime.systemDidWake() })
+        NSApp.mainMenu = mainMenu()
+        installTerminationSignal()
 
         #if DEBUG
         if let level = env.options.statusPreview {
@@ -42,45 +52,153 @@ import os
         }
         #endif
         env.runtime.start()
+        log.notice("started")
 
-        if env.options.openPopover {
+        let o = env.options
+        if o.openPopover || o.openDashboard != nil || o.openSettings {
             // Let the status item window get its menu bar position first (the popover anchors to it).
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(500))
-                self?.popover.open()
+                guard let self else { return }
+                if let page = o.openDashboard { dashboard.show(page: page) }
+                if o.openSettings { settingsWindow.show() }
+                if o.openPopover { popover.open() }
             }
         }
         #if DEBUG
         if let n = ProcessInfo.processInfo.environment["TELLTALE_POPOVER_CYCLES"].flatMap(Int.init) {
             runPopoverCycles(n)
         }
+        if ProcessInfo.processInfo.environment["TELLTALE_VISIBILITY_DRILL"] != nil { runVisibilityDrill() }
         #endif
     }
 
-    // MARK: Commands
+    // MARK: Termination (ARCHITECTURE §4): .terminateLater → await runtime.shutdown() (≤ 3 s) → reply
 
-    func togglePopover() { popover.toggle() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if termination == nil {
+            let env = self.env!
+            termination = TerminationController(
+                timeout: .seconds(3),
+                closeUI: { [weak self] in
+                    self?.popover.close()
+                    self?.dashboard.close()
+                    self?.power?.stop()
+                },
+                shutdown: { await env.runtime.shutdown() },
+                reply: { ok in NSApp.reply(toApplicationShouldTerminate: ok) })
+        }
+        termination?.requestTermination()
+        return .terminateLater
+    }
+
+    /// Quit from code. `terminate` answers `.terminateLater` and AppKit then spins a nested event loop until the
+    /// reply; called from inside a main-queue job (any MainActor `Task`), that job blocks the serial main queue, so
+    /// the shutdown Task could never run (deadlock seen with SIGTERM). A run-loop perform escapes the job first.
+    static func requestQuit() {
+        NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
+    }
+
+    /// SIGTERM (scripts `kill -TERM <pid>`, `launchctl`) takes the same graceful path as ⌘Q.
+    private var sigterm: DispatchSourceSignal?
+    private func installTerminationSignal() {
+        signal(SIGTERM, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        src.setEventHandler { Task { @MainActor in AppDelegate.requestQuit() } }
+        src.resume()
+        sigterm = src
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { dashboard.show() }
+        return true
+    }
+
+    // MARK: Commands (AppCommands, environment-injected)
+
+    private func makeCommands() -> AppCommands {
+        AppCommands(
+            openDashboard: { [weak self] page in
+                self?.popover.close()
+                self?.dashboard.show(page: page)
+            },
+            inspectApp: { [weak self] key in
+                guard let self else { return }
+                popover.close()
+                env.navigation.inspect(key)
+                dashboard.show(page: .processes)
+            },
+            openSettings: { [weak self] in
+                self?.popover.close()
+                self?.settingsWindow.show()
+            },
+            setPaused: { [weak self] p in self?.setPaused(p) },
+            closePopover: { [weak self] in self?.popover.close() },
+            quitTelltale: { AppDelegate.requestQuit() })
+    }
+
+    private func setPaused(_ p: Bool) {
+        env.runtime.setPaused(p)
+        // The pipeline may apply the pause to the live model asynchronously; make the glyph/header follow now.
+        if env.live.alert.paused != p { env.live.setPaused(p, at: Date()) }
+        log.notice("sampling \(p ? "paused" : "resumed", privacy: .public)")
+    }
 
     /// ⌘ shortcuts while the (non-activating) popover is key.
     private func handleShortcut(_ e: NSEvent) -> Bool {
         switch e.charactersIgnoringModifiers {
-        case "q": NSApp.terminate(nil)
-        case ",": openSettingsAction()
-        case "d": openDashboardAction()
+        case "q": AppDelegate.requestQuit()
+        case ",": env.commands.openSettings()
+        case "d": env.commands.openDashboard(.overview)
         default: return false
         }
         return true
     }
 
+    // MARK: Menus
+
     private func statusMenu() -> NSMenu {
-        let paused = env.live.alert.paused
         let menu = NSMenu()
         menu.addItem(item("Open Dashboard", #selector(openDashboardAction), "d"))
-        menu.addItem(item(paused ? "Resume Sampling" : "Pause Sampling", #selector(togglePauseAction), ""))
+        menu.addItem(item(env.live.alert.paused ? "Resume Sampling" : "Pause Sampling", #selector(togglePauseAction), ""))
         menu.addItem(item("Settings…", #selector(openSettingsAction), ","))
         menu.addItem(.separator())
         menu.addItem(item("Quit Telltale", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
         return menu
+    }
+
+    /// Key equivalents while a Telltale window is key (accessory apps show no menu bar, but the main menu still
+    /// resolves ⌘Q, ⌘,, ⌘D, ⌘W, ⌘M and text editing).
+    private func mainMenu() -> NSMenu {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        let app = NSMenu(title: "Telltale")
+        app.addItem(item("Open Dashboard", #selector(openDashboardAction), "d"))
+        app.addItem(item("Settings…", #selector(openSettingsAction), ","))
+        app.addItem(item("Pause/Resume Sampling", #selector(togglePauseAction), "p"))
+        app.addItem(.separator())
+        app.addItem(item("Quit Telltale", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
+        appItem.submenu = app
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        edit.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        edit.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        edit.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        edit.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        edit.addItem(NSMenuItem(title: "Find", action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: "f"))
+        editItem.submenu = edit
+        main.addItem(editItem)
+
+        let windowItem = NSMenuItem()
+        let window = NSMenu(title: "Window")
+        window.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        window.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        windowItem.submenu = window
+        main.addItem(windowItem)
+        return main
     }
 
     private func item(_ title: String, _ action: Selector, _ key: String, target: AnyObject? = nil) -> NSMenuItem {
@@ -89,39 +207,62 @@ import os
         return i
     }
 
-    @objc private func openDashboardAction() {}
-    @objc private func togglePauseAction() {}
-    @objc private func openSettingsAction() {}
+    @objc private func openDashboardAction() { env.commands.openDashboard(nil) }
+    @objc private func togglePauseAction() { env.commands.setPaused(!env.live.alert.paused) }
+    @objc private func openSettingsAction() { env.commands.openSettings() }
 
     // MARK: DEBUG verification aids
 
     #if DEBUG
-    /// `TELLTALE_POPOVER_CYCLES=N`: open/close the popover N times (T3 memory check), logging RSS.
+    /// `TELLTALE_POPOVER_CYCLES=N`: open/close the popover N times after 2 warm-up cycles (T3 memory check).
     private func runPopoverCycles(_ n: Int) {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self else { return }
             let cold = Self.residentMB()
-            for _ in 0..<2 {                                    // warm-up: first hosting loads SwiftUI/fonts
-                popover.open()
-                try? await Task.sleep(for: .milliseconds(300))
-                popover.close()
-                try? await Task.sleep(for: .milliseconds(200))
-            }
+            for _ in 0..<2 { await cycle() }
             try? await Task.sleep(for: .seconds(1))
             let start = Self.residentMB()
             log.notice("popover cycles cold rss=\(cold, format: .fixed(precision: 1)) MB, after warm-up=\(start, format: .fixed(precision: 1)) MB")
-            log.notice("popover cycles start rss=\(start, format: .fixed(precision: 1)) MB")
-            for _ in 0..<n {
-                popover.open()
-                try? await Task.sleep(for: .milliseconds(300))
-                popover.close()
-                try? await Task.sleep(for: .milliseconds(200))
-            }
+            for _ in 0..<n { await cycle() }
             try? await Task.sleep(for: .seconds(1))
             let end = Self.residentMB()
             log.notice("popover cycles n=\(n) end rss=\(end, format: .fixed(precision: 1)) MB delta=\(end - start, format: .fixed(precision: 1)) MB")
         }
+    }
+
+    /// `TELLTALE_VISIBILITY_DRILL=1`: dashboard open → miniaturize → restore → Thermals → inspect app → close,
+    /// 2 s apart, through the real AppKit window paths (T4 log check).
+    private func runVisibilityDrill() {
+        Task { @MainActor [weak self] in
+            let step: Duration = .seconds(2)
+            try? await Task.sleep(for: step)
+            guard let self else { return }
+            log.notice("drill: open dashboard")
+            env.commands.openDashboard(.cpu)
+            try? await Task.sleep(for: step)
+            log.notice("drill: miniaturize")
+            NSApp.windows.first { $0.title == "Telltale" }?.miniaturize(nil)
+            try? await Task.sleep(for: step)
+            log.notice("drill: deminiaturize")
+            env.commands.openDashboard(nil)
+            try? await Task.sleep(for: step)
+            log.notice("drill: page thermals")
+            env.navigation.page = .thermals
+            try? await Task.sleep(for: step)
+            log.notice("drill: inspect app")
+            env.commands.inspectApp(AppKey(kind: .app, id: "com.apple.Safari"))
+            try? await Task.sleep(for: step)
+            log.notice("drill: close dashboard")
+            dashboard.close()
+        }
+    }
+
+    private func cycle() async {
+        popover.open()
+        try? await Task.sleep(for: .milliseconds(300))
+        popover.close()
+        try? await Task.sleep(for: .milliseconds(200))
     }
 
     static func residentMB() -> Double {

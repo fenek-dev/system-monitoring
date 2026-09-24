@@ -22,6 +22,8 @@ final class PopoverPanelController: NSObject {
     private var host: NSHostingController<AnyView>?
     private var sizeObservation: NSKeyValueObservation?
     private var monitors: [Any] = []
+    private var resignObserver: NSObjectProtocol?
+    private var lastClose: ContinuousClock.Instant?
 
     /// `shortcuts` handles ⌘Q/⌘,/⌘D while the panel is key (the app is not active, so the main menu does not
     /// see them); return true when consumed.
@@ -36,10 +38,18 @@ final class PopoverPanelController: NSObject {
 
     var isOpen: Bool { panel != nil }
 
-    func toggle() { isOpen ? close() : open() }
+    /// Status click. A close within the last 250 ms came from the same click (resign-key or a monitor saw the
+    /// mouse-down first), so it must not reopen.
+    func toggle() {
+        if isOpen { return close() }
+        if let t = lastClose, ContinuousClock.now - t < .milliseconds(250) { return }
+        open()
+    }
 
     func open() {
         guard panel == nil else { return }
+        // Visibility first: `live.isPresenting` must apply the latest frame before the view tree reads it.
+        onVisibilityChange(true)
         let root = PopoverContainer(drawsShadow: false) { PopoverRoot() }
             .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: AnyView(root))
@@ -68,17 +78,24 @@ final class PopoverPanelController: NSObject {
         panel.orderFrontRegardless()
         panel.makeKey()
         installMonitors()
-        onVisibilityChange(true)
+        // Cmd-Tab / another app activating / one of our windows becoming key → close.
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close() }
+        }
     }
 
     func close() {
         guard let panel else { return }
         removeMonitors()
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        resignObserver = nil
         sizeObservation = nil
-        panel.orderOut(nil)
+        panel.close()
         panel.contentViewController = nil
         self.panel = nil
         host = nil
+        lastClose = .now
         onVisibilityChange(false)
     }
 
@@ -87,14 +104,15 @@ final class PopoverPanelController: NSObject {
         var size = host.preferredContentSize
         if size.height < 10 { size = host.view.fittingSize }
         size.width = 360
-        let a = anchor() ?? .zero
-        let hit = NSScreen.screens.first { $0.frame.contains(NSPoint(x: a.midX, y: a.midY)) }
+        let a = anchor()
+        let hit = a.flatMap { a in NSScreen.screens.first { $0.frame.contains(NSPoint(x: a.midX, y: a.midY)) } }
         guard let screen = hit ?? NSScreen.main else { return }
-        // Before the status item window is placed (e.g. at launch) the anchor is off-screen: use the top right.
-        let anchorRect = hit == nil ? NSRect(x: screen.frame.maxX - 200, y: screen.visibleFrame.maxY, width: 1, height: 1) : a
+        // No usable anchor (item hidden behind the notch, or not yet placed at launch): center on the screen.
+        let anchorRect = hit != nil ? a! : NSRect(x: screen.frame.midX, y: screen.visibleFrame.maxY, width: 0, height: 0)
         let f = PopoverPlacement.frame(anchor: anchorRect, content: size, visibleFrame: screen.visibleFrame,
                                        screenFrame: screen.frame)
         panel.setFrame(f, display: true)
+        panel.invalidateShadow()
     }
 
     // MARK: Dismissal

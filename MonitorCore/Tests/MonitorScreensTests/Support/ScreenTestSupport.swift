@@ -33,7 +33,7 @@ enum ScreenFixture {
     }
 
     /// True once W3's `SnapshotRenderer` produces images (the W0b stub returns nil). Gate snapshot tests with
-    /// `.enabled(if: ScreenFixture.snapshotsAvailable)` so they skip, not fail, before W3 lands.
+    /// `.enabled { await ScreenFixture.snapshotsAvailable }` so they skip, not fail, before W3 lands.
     static var snapshotsAvailable: Bool {
         SnapshotRenderer.render(Color.black, size: CGSize(width: 4, height: 4)) != nil
     }

@@ -23,13 +23,14 @@ public struct LaunchOptions: Sendable, Equatable {
     public var disabledSensors: Set<SensorID> = []
 
     public init(mockScenario: MockScenario? = nil, openDashboard: DashboardPage? = nil, openPopover: Bool = false,
-                openSettings: Bool = false, crashSensor: SensorID? = nil, dataDirectory: URL? = nil,
-                disabledSensors: Set<SensorID> = []) {
+                openSettings: Bool = false, crashSensor: SensorID? = nil, statusPreview: AlertLevel? = nil,
+                dataDirectory: URL? = nil, disabledSensors: Set<SensorID> = []) {
         self.mockScenario = mockScenario
         self.openDashboard = openDashboard
         self.openPopover = openPopover
         self.openSettings = openSettings
         self.crashSensor = crashSensor
+        self.statusPreview = statusPreview
         self.dataDirectory = dataDirectory
         self.disabledSensors = disabledSensors
     }

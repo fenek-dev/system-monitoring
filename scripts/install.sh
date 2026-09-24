@@ -18,10 +18,13 @@ status=${PIPESTATUS[0]}
 set -e
 [[ $status -eq 0 ]] || exit "$status"
 
-if pgrep -x Telltale >/dev/null; then
-    osascript -e 'tell application id "dev.telltale.Telltale" to quit' >/dev/null 2>&1 || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x Telltale >/dev/null || break; sleep 0.5; done
-    pkill -x Telltale 2>/dev/null || true
+# Quit only the installed copy (the one being replaced); worktree Debug builds keep running.
+BIN="$DEST/Contents/MacOS/Telltale"
+pids=$(pgrep -f "^$BIN( |$)" || true)
+if [[ -n "$pids" ]]; then
+    kill -TERM $pids 2>/dev/null || true                    # SIGTERM = the app's graceful ⌘Q path
+    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f "^$BIN( |$)" >/dev/null || break; sleep 0.5; done
+    kill -KILL $pids 2>/dev/null || true
 fi
 
 mkdir -p "$HOME/Applications"
