@@ -1,6 +1,6 @@
 import GRDB
 
-/// Internal hooks for `@testable` tests (the test target does not import GRDB).
+/// TEST-ONLY API: internal hooks for `@testable` tests (the test target does not import GRDB). Not for app code.
 extension HistoryStore {
     func columns(in table: String) async throws -> Set<String> {
         try await writer.read { db in Set(try db.columns(in: table).map(\.name)) }

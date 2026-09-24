@@ -146,18 +146,94 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         return Buckets(end: end, duration: range.span, width: width)
     }
 
+    /// Per bucket: the app's mean over the bucket's samples (samples without the app count as 0);
+    /// gap where the bucket has no system rows; nil where the app's metric was unavailable.
     public func appSeries(_ app: AppKey, _ metrics: [AppMetric], range: HistoryRange, end: Date, bucket: Duration?)
-        async throws -> [AppMetric: [SeriesPoint]] { [:] }
-
-    public func appShares(at time: Date, metric: AppMetric, range: HistoryRange, limit: Int) async throws -> [AppShare] {
-        []
+        async throws -> [AppMetric: [SeriesPoint]] {
+        guard !metrics.isEmpty else { return [:] }
+        let level = Level.forRange(range)
+        let buckets = Self.buckets(range: range, end: end, bucket: bucket, level: level)
+        let window = buckets.window(end: end)
+        let cols = metrics.map(\.rawValue)
+        let rows = try await writer.read { db in
+            try Queries.appBuckets(db, key: app, cols: cols, level: level, window: window, width: buckets.width)
+        }
+        var result: [AppMetric: [SeriesPoint]] = [:]
+        for (i, metric) in metrics.enumerated() { result[metric] = Queries.points(buckets, rows, column: i) }
+        return result
     }
 
-    public func topApps(_ metric: AppMetric, in interval: DateInterval, limit: Int) async throws -> [AppAggregate] { [] }
+    /// Shares within the `range.displayBucket` containing `time`: the top `limit` apps by value, then one
+    /// `.other` share holding the stored `other` row plus every app past the limit. Fractions sum to 1.
+    /// Empty when the bucket has no data or the metric totals 0.
+    public func appShares(at time: Date, metric: AppMetric, range: HistoryRange, limit: Int) async throws -> [AppShare] {
+        let level = Level.forRange(range)
+        let width = max(range.displayBucket.milliseconds, level.resolutionMs)
+        let start = Buckets.floorDiv(time.unixMs, width) * width
+        let window = Window(from: start, to: start + width)
+        let totals = try await writer.read { db in
+            try Queries.appTotals(db, metric: metric.rawValue, level: level, window: window)
+        }
+        let positive = totals.filter { $0.average > 0 }
+        let sum = positive.reduce(0) { $0 + $1.average }
+        guard sum > 0 else { return [] }
 
-    public func total(_ metric: HistoryMetric, in interval: DateInterval) async throws -> Double? { nil }
+        let ranked = positive.filter { $0.identity.key != .other }
+            .sorted { ($0.average, $1.identity.key.description) > ($1.average, $0.identity.key.description) }
+        let head = ranked.prefix(max(limit, 0))
+        let storedOther = positive.first { $0.identity.key == .other }
+        let otherValue = (storedOther?.average ?? 0) + ranked.dropFirst(head.count).reduce(0) { $0 + $1.average }
 
-    public func peak(_ metric: HistoryMetric, in interval: DateInterval) async throws -> Double? { nil }
+        var shares = head.map { AppShare(identity: $0.identity, value: $0.average, fraction: $0.average / sum) }
+        if otherValue > 0 {
+            var identity = storedOther?.identity ?? AppIdentity(key: .other, displayName: "Other")
+            if identity.displayName.isEmpty { identity.displayName = "Other" }
+            shares.append(AppShare(identity: identity, value: otherValue, fraction: otherValue / sum))
+        }
+        return shares
+    }
+
+    /// Apps (not `.other`) ranked by average over `interval` (absent samples = 0). `peak` is the highest stored
+    /// value (bucket average on rollup levels); `total` = ∫ value dt in value·seconds, nil for memory.
+    public func topApps(_ metric: AppMetric, in interval: DateInterval, limit: Int) async throws -> [AppAggregate] {
+        let level = level(forIntervalStart: interval.start)
+        let window = Window(from: interval.start.unixMs, to: interval.end.unixMs)
+        let totals = try await writer.read { db in
+            try Queries.appTotals(db, metric: metric.rawValue, level: level, window: window)
+        }
+        return totals.filter { $0.identity.key != .other }
+            .sorted { ($0.average, $1.identity.key.description) > ($1.average, $0.identity.key.description) }
+            .prefix(max(limit, 0))
+            .map { AppAggregate(identity: $0.identity, average: $0.average, peak: $0.peak,
+                                total: metric == .memory ? nil : $0.integral) }
+    }
+
+    /// ∫ value dt over `interval` (value·seconds, e.g. bytes for B/s, joules for W); nil without data.
+    public func total(_ metric: HistoryMetric, in interval: DateInterval) async throws -> Double? {
+        try await systemAggregate(metric, interval).integral
+    }
+
+    /// Highest stored value in `interval` (bucket average on rollup levels); nil without data.
+    public func peak(_ metric: HistoryMetric, in interval: DateInterval) async throws -> Double? {
+        try await systemAggregate(metric, interval).peak
+    }
+
+    private func systemAggregate(_ metric: HistoryMetric, _ interval: DateInterval) async throws
+        -> (integral: Double?, peak: Double?) {
+        let level = level(forIntervalStart: interval.start)
+        let window = Window(from: interval.start.unixMs, to: interval.end.unixMs)
+        return try await writer.read { db in
+            try Queries.systemAggregate(db, metric: metric.rawValue, level: level, window: window)
+        }
+    }
+
+    /// Finest level that still holds `start` under retention.
+    func level(forIntervalStart start: Date) -> Level {
+        let age = config.now().timeIntervalSince(start)
+        if age <= config.rawRetention.timeInterval { return .raw }
+        if age <= config.minuteRetention.timeInterval { return .minute }
+        return .quarter
+    }
 
     public func events(in interval: DateInterval) async throws -> [HistoryEvent] { [] }
 

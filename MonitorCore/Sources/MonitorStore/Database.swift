@@ -33,7 +33,10 @@ enum StoreDatabase {
         var config = Configuration()
         config.label = "dev.telltale.history"
         config.prepareDatabase { db in
-            // auto_vacuum only takes effect on a fresh file, before WAL mode and the first table (no-op afterwards).
+            // Writer connection only: DatabasePool gives its reader connections a copy of this configuration
+            // with `readonly = true` (GRDB `DatabasePool.readerConfiguration`); the in-memory queue is the writer.
+            // prepareDatabase runs before GRDB switches the pool to WAL, and auto_vacuum only takes effect on a
+            // fresh file before the first table exists (a no-op afterwards).
             if !db.configuration.readonly { try db.execute(sql: "PRAGMA auto_vacuum = INCREMENTAL") }
             try db.execute(sql: "PRAGMA synchronous = NORMAL; PRAGMA cache_size = -2000")
         }
