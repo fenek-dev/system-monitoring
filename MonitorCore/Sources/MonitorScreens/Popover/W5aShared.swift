@@ -296,6 +296,105 @@ struct PageLink: View {
     }
 }
 
+// MARK: - Force Quit confirmation
+
+extension ProcessTarget {
+    var displayName: String {
+        switch self {
+        case .app(let identity, _): identity.displayName
+        case .process(_, let name, _, _): name
+        }
+    }
+}
+
+/// Installs `\.requestForceQuit` for the page's row menus / inline buttons and presents the confirm dialog
+/// (DESIGN §2.26, copy §3.12) over the page. Force Quit always confirms.
+struct ForceQuitHost: ViewModifier {
+    @Environment(\.processActions) private var actions
+    @State private var pending: ProcessTarget?
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.requestForceQuit, { target in pending = target })
+            .overlay {
+                if let target = pending {
+                    ZStack(alignment: .top) {
+                        TTColor.bgScrim.ignoresSafeArea()
+                            .onTapGesture {}
+                        ForceQuitDialog(name: target.displayName, onConfirm: {
+                            pending = nil
+                            Task { _ = await actions.forceQuit(target) }
+                        }, onCancel: { pending = nil })
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: pending != nil)
+    }
+}
+
+extension View {
+    func forceQuitHost() -> some View { modifier(ForceQuitHost()) }
+}
+
+// TODO(W3): replace with `TTConfirmDialog` once W3 lands it (the W0b stub draws nothing).
+/// DESIGN §2.26: 380 wide, top just under the header, `bgElevated`, 1-pt `borderPopover`, radius 12,
+/// `shadowDialog`, padding 20, VStack gap 12: title `dialogTitle`, body `body12Para` `textSecondary`, right-aligned
+/// [Cancel][Force Quit] (gap 8, 4 top padding). Esc = Cancel; no default button.
+struct ForceQuitDialog: View {
+    let name: String
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: TTRadius.window, style: .continuous)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Force quit “\(name)”?").font(TTFont.dialogTitle).foregroundStyle(TTColor.textPrimary)
+            Text("Unsaved changes will be lost. The process ends immediately without cleanup.")
+                .font(TTFont.body12Para).lineSpacing(TTFont.body12ParaSpacing)
+                .foregroundStyle(TTColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel", action: onCancel).buttonStyle(TTButtonStyle(.regularSecondary))
+                    .keyboardShortcut(.cancelAction)
+                Button("Force Quit", action: onConfirm).buttonStyle(TTButtonStyle(.regularDestructive))
+            }
+            .padding(.top, 4)
+        }
+        .padding(20)
+        .frame(width: 380)
+        .background(shape.fill(TTColor.bgElevated))
+        .overlay(shape.strokeBorder(TTColor.borderPopover, lineWidth: 1))
+        .shadow(color: .black.opacity(0.55), radius: 30, y: 24)
+    }
+}
+
+/// DESIGN §2.20 170-wide actions cell (CPU, Power tables): a selected, controllable row shows [Quit][Force Quit]
+/// leading-aligned; otherwise the `…` row-action button, trailing-aligned.
+struct InlineActionsCell: View {
+    let target: ProcessTarget
+    let name: String
+    let selected: Bool
+    @Environment(\.processActions) private var actions
+    @Environment(\.requestForceQuit) private var requestForceQuit
+
+    var body: some View {
+        if selected && actions.canControl(target) {
+            HStack(spacing: 6) {
+                Button("Quit") { Task { _ = await actions.quit(target) } }
+                    .buttonStyle(TTButtonStyle(.smallSecondary))
+                Button("Force Quit") { requestForceQuit?(target) }
+                    .buttonStyle(TTButtonStyle(.smallDestructive))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            TTRowActionsButton(target: target, name: name)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
 /// Table name cell for an app group.
 struct AppNameCell: View {
     let app: AppSample
