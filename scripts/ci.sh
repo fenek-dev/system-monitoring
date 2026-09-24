@@ -26,4 +26,12 @@ if [[ -n "$hits" ]]; then
     fail "wrapping subtraction &- outside RateCalculator.swift"
 fi
 
+echo "== map(Double.init) grep"
+# On integer optionals this resolves to Double(bitPattern:) — use `.map { Double($0) }`.
+hits=$(grep -rn 'map(Double\.init)' MonitorCore/Sources --include='*.swift' || true)
+if [[ -n "$hits" ]]; then
+    echo "$hits" | head -20
+    fail "map(Double.init) is ambiguous (bitPattern); use .map { Double(\$0) }"
+fi
+
 echo "ci.sh: OK"
