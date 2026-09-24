@@ -82,7 +82,7 @@ public struct PageHeader: View {
             if let trailing = config.trailing {
                 trailing.view
             } else if page != .processes {
-                TTSegmented(selection: page == .history ? $nav.historyRange : $nav.range,
+                TTSegmented(selection: $nav.currentRange,
                             options: HistoryRange.allCases.map { ($0, $0.label) })
                     .accessibilityLabel("Range")
             }
