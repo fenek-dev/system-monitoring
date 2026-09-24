@@ -18,6 +18,8 @@ public struct AppSample: Sendable, Codable, Hashable, Identifiable {
     public var netRxSession: UInt64?, netTxSession: UInt64?
     public var threads: Int32?, connectionCount: Int?, preventsSleep: Bool
     public var metrics: AppMetrics
+    /// ICR-14: Σ members' disk bytes since Telltale started (live members).
+    public var diskReadSession: UInt64?, diskWriteSession: UInt64?
 
     public init(
         identity: AppIdentity = AppIdentity(),
@@ -41,8 +43,12 @@ public struct AppSample: Sendable, Codable, Hashable, Identifiable {
         threads: Int32? = nil,
         connectionCount: Int? = nil,
         preventsSleep: Bool = false,
-        metrics: AppMetrics = AppMetrics()
+        metrics: AppMetrics = AppMetrics(),
+        diskReadSession: UInt64? = nil,
+        diskWriteSession: UInt64? = nil
     ) {
+        self.diskReadSession = diskReadSession
+        self.diskWriteSession = diskWriteSession
         self.identity = identity
         self.processIDs = processIDs
         self.hiddenProcessCount = hiddenProcessCount

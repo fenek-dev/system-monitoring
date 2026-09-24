@@ -17,6 +17,8 @@ public struct ProcessSample: Sendable, Codable, Hashable, Identifiable {
     public var diskReadBps: Double?, diskWriteBps: Double?, diskReadTotal: UInt64?, diskWriteTotal: UInt64?
     public var energyWatts: Double?, energyEstimated: Bool
     public var preventsSleep: Bool
+    /// ICR-14: disk bytes since Telltale started (`diskReadTotal`/`diskWriteTotal` stay lifetime counters).
+    public var diskReadSession: UInt64?, diskWriteSession: UInt64?
 
     public init(
         id: ProcessID = ProcessID(),
@@ -47,8 +49,12 @@ public struct ProcessSample: Sendable, Codable, Hashable, Identifiable {
         diskWriteTotal: UInt64? = nil,
         energyWatts: Double? = nil,
         energyEstimated: Bool = false,
-        preventsSleep: Bool = false
+        preventsSleep: Bool = false,
+        diskReadSession: UInt64? = nil,
+        diskWriteSession: UInt64? = nil
     ) {
+        self.diskReadSession = diskReadSession
+        self.diskWriteSession = diskWriteSession
         self.id = id
         self.name = name
         self.path = path

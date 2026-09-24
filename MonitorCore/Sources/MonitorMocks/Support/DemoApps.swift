@@ -195,7 +195,9 @@ enum DemoApps {
             diskWriteTotal: UInt64(app.diskWriteBps) * UInt64(max(tick, 1)),
             energyWatts: app.energyWatts,
             energyEstimated: false,
-            preventsSleep: false
+            preventsSleep: false,
+            diskReadSession: UInt64(app.diskReadBps) * UInt64(max(tick, 1)),     // ICR-14: the mock session = its total
+            diskWriteSession: UInt64(app.diskWriteBps) * UInt64(max(tick, 1))
         )
     }
 
@@ -232,7 +234,9 @@ enum DemoApps {
                 netTxSession: members.compactMap(\.netTxTotal).reduce(0, +),
                 threads: members.compactMap(\.threads).reduce(0, +),
                 connectionCount: nil,
-                preventsSleep: members.contains(where: \.preventsSleep)
+                preventsSleep: members.contains(where: \.preventsSleep),
+                diskReadSession: members.compactMap(\.diskReadSession).reduce(0, +),     // ICR-14
+                diskWriteSession: members.compactMap(\.diskWriteSession).reduce(0, +)
             )
             return sample
         }

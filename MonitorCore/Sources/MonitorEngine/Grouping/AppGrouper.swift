@@ -75,6 +75,8 @@ public struct AppGrouper {
         a.netTxBps = sum(a.netTxBps, p.netTxBps)
         a.diskReadBps = sum(a.diskReadBps, p.diskReadBps)
         a.diskWriteBps = sum(a.diskWriteBps, p.diskWriteBps)
+        a.diskReadSession = sum(a.diskReadSession, p.diskReadSession)          // ICR-14
+        a.diskWriteSession = sum(a.diskWriteSession, p.diskWriteSession)
         a.energyWatts = sum(a.energyWatts, p.energyWatts)
         if p.energyEstimated, p.energyWatts != nil { a.energyEstimated = true }
         a.threads = sum(a.threads, p.threads)

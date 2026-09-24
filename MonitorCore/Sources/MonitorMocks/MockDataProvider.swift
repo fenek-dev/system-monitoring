@@ -156,6 +156,7 @@ public struct MockDataProvider: Sendable {
         p.cpuPercent = nil; p.gpuPercent = nil
         p.netRxBps = nil; p.netTxBps = nil; p.netRxTotal = nil; p.netTxTotal = nil
         p.diskReadBps = nil; p.diskWriteBps = nil; p.diskReadTotal = nil; p.diskWriteTotal = nil
+        p.diskReadSession = nil; p.diskWriteSession = nil
         p.energyWatts = nil
         return p
     }

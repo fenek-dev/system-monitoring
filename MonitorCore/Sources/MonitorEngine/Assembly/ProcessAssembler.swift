@@ -91,6 +91,8 @@ struct ProcessAssembler {
     /// Wall-clock µs (and uptime capturedNs) of the last process-table capture: a process whose start time is at or
     /// after it was born inside the current interval.
     private var lastCapture: (capturedNs: UInt64, wallUs: UInt64)?
+    /// ICR-14 disk session baselines; not cleared by `reset()` (the session spans sleep/wake).
+    private var diskSession = DiskSessionBaselines()
     private var gpuClock = CaptureClock()
     private var netClock = CaptureClock()
     /// NStat `ProcessID(pid, 0)` → the live process it was first matched to. Pins the loose id to that process, so a
@@ -132,6 +134,7 @@ struct ProcessAssembler {
             let captureWallUs = wallUs >= back ? wallUs - back : 0
             if clock.advanced, let last = lastCapture { bornAfterUs = last.wallUs }
             if lastCapture?.capturedNs != capturedNs { lastCapture = (capturedNs, captureWallUs) }
+            diskSession.start(atUs: captureWallUs)
         }
         let newbornSeconds = clock.advanced ? clock.seconds.flatMap { $0 > 0 ? $0 : nil } : nil
 
@@ -187,6 +190,7 @@ struct ProcessAssembler {
             if let b = r.diskWriteBytes {
                 s.diskWriteBps = diskWrite.rate(for: r.id, counter: b, capturedNs: capturedNs) ?? newborn.map { Double(b) / $0 }
             }
+            (s.diskReadSession, s.diskWriteSession) = diskSession.session(r)
 
             if let fp = r.footprint {
                 s.memory = fp
@@ -209,6 +213,7 @@ struct ProcessAssembler {
         energy.prune(keeping: live)
         diskRead.prune(keeping: live)
         diskWrite.prune(keeping: live)
+        diskSession.prune(keeping: live)
         resolver.prune(keeping: live)
         return out
     }
