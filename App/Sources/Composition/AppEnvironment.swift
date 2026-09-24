@@ -73,8 +73,16 @@ final class AppEnvironment {
     }
 
     static func defaultDataDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        applicationSupport.appendingPathComponent("dev.warden", isDirectory: true)   // ruling: never ~/Documents
+    }
+
+    /// Where the app kept its data as Telltale (moved once by `LegacyMigration`).
+    static func legacyDataDirectory() -> URL {
+        applicationSupport.appendingPathComponent("dev.telltale", isDirectory: true)
+    }
+
+    private static var applicationSupport: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("dev.telltale", isDirectory: true)      // ruling: never ~/Documents
     }
 }

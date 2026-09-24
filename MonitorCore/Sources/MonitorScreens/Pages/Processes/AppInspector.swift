@@ -119,7 +119,7 @@ struct AppInspector: View {
             .disabled(!availability.canSample || samplingPID != nil)
             .help("Sample \(row.name) for 3 seconds")
             .disabledTooltip(availability.canSample || samplingPID != nil ? nil
-                             : (availability.isSelf ? "Telltale can’t sample itself"
+                             : (availability.isSelf ? "Warden can’t sample itself"
                                 : availability.disabledHelp ?? "Only your own processes can be sampled"))
             Button("Quit") { if let t = row.target { onQuit(t) } }
                 .buttonStyle(.tt(.regularSecondary))

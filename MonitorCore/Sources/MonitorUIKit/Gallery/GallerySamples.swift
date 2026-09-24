@@ -120,7 +120,7 @@ private struct ControlsSample: View {
                 HStack(spacing: 8) {
                     Button("Open Dashboard") {}.buttonStyle(.tt(.popoverPrimary)).frame(width: 220)
                     Button("History") {}.buttonStyle(.tt(.popoverSecondary))
-                    TTIconButton(.quit, label: "Quit Telltale", variant: .footer) {}
+                    TTIconButton(.quit, label: "Quit Warden", variant: .footer) {}
                 }
             }
             .padding(10)

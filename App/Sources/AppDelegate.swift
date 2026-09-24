@@ -73,6 +73,7 @@ import os
         if let cmd = options.loginItemCommand {
             runLoginItemCommand(cmd)                                // CLI check; never starts the runtime
         }
+        LegacyMigrationRunner.run(options)                          // Telltale → Warden, once; before any store opens
         claimSingleInstance(options)                                // exits if another instance owns the data dir
         DispatchQueue.global(qos: .utility).async { LiveProcessSampler.pruneReports() }   // [Sample] reports > 1 day
         // Dark per window (panel, dashboard, settings), never app-wide: the status bar button must keep the
@@ -292,7 +293,7 @@ import os
         menu.addItem(item(env.live.alert.paused ? "Resume Sampling" : "Pause Sampling", #selector(togglePauseAction), ""))
         menu.addItem(item("Settings…", #selector(openSettingsAction), ","))
         menu.addItem(.separator())
-        menu.addItem(item("Quit Telltale", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
+        menu.addItem(item("Quit Warden", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
         return menu
     }
 
@@ -301,12 +302,12 @@ import os
     private func mainMenu() -> NSMenu {
         let main = NSMenu()
         let appItem = NSMenuItem()
-        let app = NSMenu(title: "Telltale")
+        let app = NSMenu(title: "Warden")
         app.addItem(item("Open Dashboard", #selector(openDashboardAction), "d"))
         app.addItem(item("Settings…", #selector(openSettingsAction), ","))
         app.addItem(item("Pause/Resume Sampling", #selector(togglePauseAction), "p"))
         app.addItem(.separator())
-        app.addItem(item("Quit Telltale", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
+        app.addItem(item("Quit Warden", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
         appItem.submenu = app
         main.addItem(appItem)
 
@@ -371,7 +372,7 @@ import os
             env.commands.openDashboard(.cpu)
             try? await Task.sleep(for: step)
             log.notice("drill: miniaturize")
-            NSApp.windows.first { $0.title == "Telltale" }?.miniaturize(nil)
+            NSApp.windows.first { $0.title == "Warden" }?.miniaturize(nil)
             try? await Task.sleep(for: step)
             log.notice("drill: deminiaturize")
             env.commands.openDashboard(nil)

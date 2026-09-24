@@ -71,7 +71,7 @@ final class PopoverPanelController: NSObject {
         panel.animationBehavior = .utilityWindow
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentViewController = host
-        panel.setAccessibilityLabel("Telltale")
+        panel.setAccessibilityLabel("Warden")
 
         self.panel = panel
         self.host = host

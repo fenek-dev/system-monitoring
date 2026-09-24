@@ -562,7 +562,7 @@ public final class HistoryModel {
     /// resolution. Status: rows written, or the error's description inline; cancel leaves it unchanged.
     @discardableResult
     public func export(to destination: any HistoryExportDestination) async -> ExportSummary? {
-        let name = "Telltale History \(range.label).csv"
+        let name = "Warden History \(range.label).csv"
         guard let url = await destination.chooseDestination(suggestedName: name) else { return nil }
         do {
             let summary = try await provider.exportCSV(range: range, end: window.end, to: url)

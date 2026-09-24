@@ -152,7 +152,7 @@ public struct SettingsView: View {
             if loginStatus == .requiresApproval {
                 Button("Open Login Items") { loginItem.openSystemSettings() }
                     .controlSize(.small)
-                    .help("Approve Telltale in System Settings › General › Login Items")
+                    .help("Approve Warden in System Settings › General › Login Items")
             }
             Toggle("", isOn: Binding(
                 get: { loginStatus == .enabled || loginStatus == .requiresApproval },
@@ -317,7 +317,7 @@ public struct SettingsView: View {
 
     @ViewBuilder private var aboutRows: some View {
         row(divider: false) {
-            Text("Telltale \(about.version) (\(about.build))")
+            Text("Warden \(about.version) (\(about.build))")
                 .font(ShellStyle.caption).foregroundStyle(ShellStyle.textSecondary).monospacedDigit()
             Spacer()
         }

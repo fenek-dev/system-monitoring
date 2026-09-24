@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Measure this worktree's Telltale (Debug build from scripts/build.sh) and append a section to docs/perf/<date>-<cp>.md.
+# Measure this worktree's Warden (Debug build from scripts/build.sh) and append a section to docs/perf/<date>-<cp>.md.
 # Usage: scripts/perf.sh <minutes> [--interactive] [--overlay] [--mock <scenario>] [--release] [--cp <name>]
 #                        [--warmup <s>] [--no-bench] [--keep]
 #   --overlay: launch with --overlay (stats overlay shown this run, 1-s overlay sampling mode; not persisted)
@@ -66,14 +66,14 @@ cleanup() {
 
 if [[ $release -eq 1 ]]; then
     # Release build in its own derived-data dir; launched and stopped by exact binary path (never other instances).
-    REL="$ROOT/.build/xcode-release/Build/Products/Release/Telltale.app"
-    REL_BIN="$REL/Contents/MacOS/Telltale"
+    REL="$ROOT/.build/xcode-release/Build/Products/Release/Warden.app"
+    REL_BIN="$REL/Contents/MacOS/Warden"
     scripts/gen.sh >/dev/null
-    xcodebuild -project Telltale.xcodeproj -scheme Telltale -configuration Release -derivedDataPath .build/xcode-release \
+    xcodebuild -project Warden.xcodeproj -scheme Warden -configuration Release -derivedDataPath .build/xcode-release \
         -destination 'platform=macOS,arch=arm64' build 2>&1 | grep -E 'error:|BUILD' | tail -3
     release_pids() {
         local p
-        for p in $(pgrep -x Telltale || true); do
+        for p in $(pgrep -x Warden || true); do
             if [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == "$REL_BIN" ]]; then echo "$p"; fi
         done
     }

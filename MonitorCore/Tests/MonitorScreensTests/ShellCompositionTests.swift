@@ -233,7 +233,11 @@ struct ShellSettingsStoreTests {
         let a = SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a/"))
         #expect(a == SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a")))
         #expect(a != SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/b")))
-        #expect(a.hasPrefix("dev.telltale.Telltale."))
+        #expect(a.hasPrefix("dev.warden.Warden.data-"))
+        // Warden rename: the legacy suite for the same dir keeps the old prefix and the same hash.
+        let legacy = SettingsStore.legacySuiteName(for: URL(fileURLWithPath: "/tmp/a"))
+        #expect(legacy.hasPrefix("dev.telltale.Telltale.data-"))
+        #expect(legacy.dropFirst("dev.telltale.Telltale.data-".count) == a.dropFirst("dev.warden.Warden.data-".count))
     }
 }
 

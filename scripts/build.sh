@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate the Xcode project and build the Telltale app (Debug, arm64).
+# Generate the Xcode project and build the Warden app (Debug, arm64).
 # Prints only error:/warning:/BUILD lines plus the app path.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -12,10 +12,10 @@ fi
 scripts/gen.sh
 
 DERIVED=.build/xcode
-APP="$DERIVED/Build/Products/Debug/Telltale.app"
+APP="$DERIVED/Build/Products/Debug/Warden.app"
 
 set +e
-xcodebuild -project Telltale.xcodeproj -scheme Telltale -configuration Debug \
+xcodebuild -project Warden.xcodeproj -scheme Warden -configuration Debug \
     -derivedDataPath "$DERIVED" -destination 'platform=macOS,arch=arm64' build 2>&1 \
     | grep -E 'error:|warning:|BUILD' | tail -40
 status=${PIPESTATUS[0]}

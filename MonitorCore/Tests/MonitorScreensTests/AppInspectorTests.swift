@@ -177,7 +177,7 @@ struct AppInspectorActionTests {
         #expect(!LiveProcessSampler.isFreshRegularFile(link.path, notBefore: .distantPast))
         #expect(!LiveProcessSampler.isFreshRegularFile(dir.appendingPathComponent("none").path, notBefore: .distantPast))
         let name = LiveProcessSampler.reportName(pid: 1842, name: "Final Cut/Pro", token: "ABCDEF12-3456")
-        #expect(name == "Telltale-Final-Cut-Pro-1842-ABCDEF12.txt")
+        #expect(name == "Warden-Final-Cut-Pro-1842-ABCDEF12.txt")
     }
 
     @Test func sampleEnablementByOwnerSelfAndSynthetic() {

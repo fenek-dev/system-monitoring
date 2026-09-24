@@ -90,12 +90,21 @@ public final class SettingsStore {
     }
 
     public static func suiteName(for dataDirectory: URL) -> String {
+        "dev.warden.Warden.data-" + dataDirectoryHash(dataDirectory)
+    }
+
+    /// The same suite under the app's old bundle id (Telltale), read once by `LegacyMigration`.
+    public static func legacySuiteName(for dataDirectory: URL) -> String {
+        "dev.telltale.Telltale.data-" + dataDirectoryHash(dataDirectory)
+    }
+
+    private static func dataDirectoryHash(_ dataDirectory: URL) -> String {
         var h: UInt64 = 0xcbf2_9ce4_8422_2325                        // FNV-1a, stable across launches
         for b in dataDirectory.standardizedFileURL.path.utf8 {
             h ^= UInt64(b)
             h = h &* 0x100_0000_01b3
         }
-        return "dev.telltale.Telltale.data-" + String(h, radix: 16)
+        return String(h, radix: 16)
     }
 
     // MARK: - Popover rows

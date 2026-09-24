@@ -51,7 +51,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
         w.contentViewController = host
-        w.title = "Telltale"
+        w.title = "Warden"
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.appearance = NSAppearance(named: .darkAqua)

@@ -27,7 +27,7 @@ enum StatusIconRenderer {
             return true
         }
         img.isTemplate = spec.isTemplate
-        img.accessibilityDescription = "Telltale"
+        img.accessibilityDescription = "Warden"
         if cache.count > 64 { cache.removeAll() }
         cache[spec] = img
         return img
