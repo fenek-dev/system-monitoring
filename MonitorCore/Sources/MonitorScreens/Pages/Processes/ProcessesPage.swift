@@ -58,9 +58,9 @@ public struct ProcessesPage: View {
                          },
                          onForceQuit: { forceQuit($0) },
                          samplingPID: coordinator.samplingPID,
-                         onSample: { pid, name in
+                         onSample: { id, name in
                              coordinator.sampler = sampler
-                             Task { await coordinator.sample(pid: pid, name: name) }
+                             Task { await coordinator.sample(id, name: name) }
                          },
                          model: inspector)
                 .layoutPriority(1)

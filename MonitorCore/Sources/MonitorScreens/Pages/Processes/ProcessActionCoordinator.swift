@@ -34,12 +34,19 @@ public final class ProcessActionCoordinator {
         self.sampler = sampler
     }
 
-    /// [Sample] (DESIGN §3.12, §6.23): 3-s `sample` of the row's (responsible) pid through the injected sampler,
-    /// then reveals the report in Finder; failures toast. One sample at a time.
-    public func sample(pid: Int32, name: String) async {
+    /// [Sample] (DESIGN §3.12, §6.23): 3-s `sample` of the row's (responsible) process through the injected sampler,
+    /// then reveals the report in Finder; failures toast. One sample at a time. The process identity (pid + start
+    /// time) is re-verified right before spawning, so a reused pid is never sampled ("Process has exited").
+    public func sample(_ process: ProcessID, name: String) async {
         guard samplingPID == nil else { return }
-        samplingPID = pid
-        let result = await sampler.sample(pid: pid, name: name)
+        let started = sampler.startTimeUs(pid: process.pid)
+        guard let started, process.startTimeUs == 0 || started == process.startTimeUs else {
+            toastCounter += 1
+            toast = Toast(id: toastCounter, text: "Process has exited")
+            return
+        }
+        samplingPID = process.pid
+        let result = await sampler.sample(pid: process.pid, name: name)
         samplingPID = nil
         switch result {
         case .done(let url):

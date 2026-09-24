@@ -402,19 +402,37 @@ public struct HistoryBand: Equatable, Sendable {
     public static func layout(_ events: [HistoryEvent], memoryLevels: [Double?], window: HistoryWindow, width: CGFloat,
                               openEnd: Date) -> [HistoryBand] {
         let useSeries = memoryLevels.contains { $0 != nil }
-        var out: [HistoryBand] = events.compactMap { e in
-            guard let kind = HistoryBandKind.of(e) else { return nil }
-            // Memory: the level series wins, except for an ongoing episode (open end), which the stored buckets
-            // may not reflect yet.
-            if useSeries && (kind == .memory || kind == .memoryCritical) && e.end != nil { return nil }
+        var out: [HistoryBand] = []
+        let step = window.count > 1 ? width / CGFloat(window.count - 1) : width
+        for e in events {
+            guard let kind = HistoryBandKind.of(e) else { continue }
             let end = e.end ?? openEnd
-            guard end > window.start, e.start < window.end else { return nil }
+            guard end > window.start, e.start < window.end else { continue }
+            let isMemory = kind == .memory || kind == .memoryCritical
+            if useSeries && isMemory {
+                // The level series wins wherever it classifies a bucket; an ongoing episode only fills the
+                // buckets the store hasn't classified yet (nil), so nothing is drawn twice.
+                guard e.end == nil else { continue }
+                let a = window.index(of: e.start), b = window.index(of: end)
+                var i = a
+                while i <= b {
+                    guard i < memoryLevels.count, memoryLevels[i] != nil else {
+                        var j = i
+                        while j + 1 <= b && (j + 1 >= memoryLevels.count || memoryLevels[j + 1] == nil) { j += 1 }
+                        let x0 = max(0, CGFloat(i) * step - step / 2), x1 = min(width, CGFloat(j) * step + step / 2)
+                        out.append(HistoryBand(kind: kind, x0: x0, x1: max(x1, x0 + 1)))
+                        i = j + 1
+                        continue
+                    }
+                    i += 1
+                }
+                continue
+            }
             let x0 = CGFloat(window.fraction(of: e.start)) * width
             let x1 = CGFloat(window.fraction(of: end)) * width
-            return HistoryBand(kind: kind, x0: x0, x1: max(x1, x0 + 1))
+            out.append(HistoryBand(kind: kind, x0: x0, x1: max(x1, x0 + 1)))
         }
         if useSeries, window.count > 1 {
-            let step = width / CGFloat(window.count - 1)
             var runStart: Int?
             var runKind: HistoryBandKind?
             func close(_ end: Int) {

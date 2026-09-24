@@ -15,7 +15,7 @@ struct AppInspector: View {
     let onQuit: (ProcessTarget) -> Void
     let onForceQuit: (ProcessTarget) -> Void
     var samplingPID: Int32? = nil
-    var onSample: (Int32, String) -> Void = { _, _ in }
+    var onSample: (ProcessID, String) -> Void = { _, _ in }
     let model: AppInspectorModel
 
     static let collapsedHeight: CGFloat = 78
@@ -106,9 +106,9 @@ struct AppInspector: View {
 
     private func buttons(_ row: ProcessRow) -> some View {
         HStack(spacing: TTSpace.x8) {
-            let sampling = samplingPID != nil && samplingPID == row.pid
+            let sampling = samplingPID != nil && samplingPID == row.sampleID?.pid
             Button {
-                if let pid = row.pid, availability.canSample { onSample(pid, row.name) }
+                if let id = row.sampleID, availability.canSample { onSample(id, row.name) }
             } label: {
                 HStack(spacing: TTSpace.x6) {
                     if sampling { ProgressView().controlSize(.mini) }
@@ -136,8 +136,7 @@ struct AppInspector: View {
             if let target = row.target {
                 // W3's NSMenu-backed button (a SwiftUI `Menu` label keeps only Image/Text, so the drawn ellipsis
                 // vanished — live and in snapshots); 28-pt header slot (DESIGN §2.25/§3.12).
-                TTRowActionsButton(target: target, name: row.name)
-                    .frame(width: 28, height: 28)
+                TTRowActionsButton(target: target, name: row.name, side: 28)   // whole 28×28 slot is the target
             }
             TTIconButton(detailExpanded ? .chevronDown : .chevronRight,
                          label: detailExpanded ? "Hide details" : "Show details", variant: .header) {
