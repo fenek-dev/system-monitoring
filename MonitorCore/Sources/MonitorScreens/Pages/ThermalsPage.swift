@@ -149,7 +149,9 @@ private struct TemperaturesCard: View {
     var body: some View {
         let range = nav.range
         let end = fixedNow ?? live.lastUpdate ?? Date()
-        let points = { (m: HistoryMetric) in SystemRangeSeries.points(m, range: range, live: live, stored: stored) }
+        let points = { (m: HistoryMetric) in
+            ThermalChartData.sanitized(SystemRangeSeries.points(m, range: range, live: live, stored: stored))
+        }
         let series = [
             ChartSeries(id: "p", label: "P-cores", color: TTColor.thermal, points: points(.cpuPTemp),
                         fillOpacity: nil, lineWidth: TTStroke.sparkHeavy),
@@ -158,13 +160,11 @@ private struct TemperaturesCard: View {
             ChartSeries(id: "battery", label: "Battery", color: TTColor.thermalBattery, points: points(.batteryTemp),
                         fillOpacity: nil, lineWidth: TTStroke.spark),
         ]
-        let reason = unavailableReason(.cpuPTemp, health: live.sensorHealth)
-        let empty = series.allSatisfy { ChartSegments.sampleCount($0.points) < 2 }
         TTCard(spacing: TTSpace.x10) {
             TTCardHeader("Temperatures") { TTLegend(series) }
             Group {
-                if let reason, empty {
-                    TTEmptyState(.unavailable(reason))
+                if let reason = ThermalChartData.unavailableReason(series, health: live.sensorHealth) {
+                    SystemChartUnavailable(reason: reason)
                 } else {
                     TTLineChart(series, yDomain: Self.domain) { TTFormat.temperatureCompact($0, units: units) }
                 }
@@ -177,6 +177,28 @@ private struct TemperaturesCard: View {
             }
         }
         .rangeSeries(Self.metrics, range: range, end: end, into: $stored)
+    }
+}
+
+enum ThermalChartData {
+    /// Missing readings are gaps: nil, non-finite and ≤ 0 °C samples (a sensor that reports nothing) become nil,
+    /// so they are never drawn at 0 or clamped to the 40° floor.
+    static func sanitized(_ points: [SeriesPoint]) -> [SeriesPoint] {
+        points.map { p in
+            guard let v = p.value, v.isFinite, v > 0 else { return SeriesPoint(time: p.time, value: nil) }
+            return p
+        }
+    }
+
+    /// The chart's unavailable state: the SoC sensors (SMC/HID) behind the P-core and GPU series are down and
+    /// neither series has data. A battery-only reading (AppleSmartBattery, typically below the 40° floor) would
+    /// just be a flat line on the floor, so it doesn't keep the chart. nil → draw the chart.
+    static func unavailableReason(_ series: [ChartSeries], health: [SensorID: SensorStatus]) -> String? {
+        let soc = series.filter { $0.id != "battery" }
+        guard soc.allSatisfy({ ChartSegments.sampleCount($0.points) == 0 }) else { return nil }
+        // Groups come from the SMC catalog only (ruling), so its status is the reason.
+        return MonitorModel.unavailableReason(.cpuPTemp, health: health)
+            ?? MonitorModel.unavailableReason(.gpuTemp, health: health)
     }
 }
 
@@ -616,6 +638,24 @@ private struct ThermalSensorRow: View, Equatable {
 enum SystemPageCopy {
     /// Non-breaking space: keeps a stat cell's sub-line height when its value is unavailable.
     static let blankSub = "\u{00A0}"
+}
+
+/// A page chart whose sources are unavailable: "—" (`textTertiary`) over the sensor's reason, centered in the
+/// chart frame (DESIGN §3.15 unavailable value + reason, e.g. "Disabled after a crash").
+struct SystemChartUnavailable: View {
+    let reason: String
+
+    var body: some View {
+        VStack(spacing: TTSpace.x4) {
+            Text(TTFormat.unavailable).font(TTFont.stat).foregroundStyle(TTColor.textTertiary)
+            Text(reason).font(TTFont.body12).foregroundStyle(TTColor.textSecondary).lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .help(reason)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Unavailable, \(reason)")
+    }
 }
 
 enum SystemPageSort {
