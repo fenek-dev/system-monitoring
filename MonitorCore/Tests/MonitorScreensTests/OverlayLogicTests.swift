@@ -1,0 +1,175 @@
+import CoreGraphics
+import Foundation
+import MonitorLive
+import MonitorMocks
+import MonitorModel
+@testable import MonitorScreens
+import MonitorUIKit
+import Testing
+
+/// Overlay pure helpers (spec 2026-09-25 overlay §Stats, §Window): stats, placement, display choice.
+@Suite("OverlayLogicTests")
+struct OverlayLogicTests {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    private func points(_ values: [Double?], step: TimeInterval = 1) -> [SeriesPoint] {
+        values.enumerated().map { SeriesPoint(time: t0.addingTimeInterval(Double($0.offset) * step), value: $0.element) }
+    }
+
+    // MARK: - OverlayStats
+
+    @Test func statsNeedTwoSamples() {
+        #expect(OverlayStats.compute([], now: t0) == nil)
+        #expect(OverlayStats.compute(points([42]), now: t0) == nil)
+        #expect(OverlayStats.compute(points([nil, 5, nil]), now: t0.addingTimeInterval(2)) == nil)
+    }
+
+    @Test func statsSkipGapsAndWeighByTime() throws {
+        // 10 → 20: 1 s; 20 → 30 (nil between): 2 s; 30 is last: 1 s. (10 + 40 + 30) / 4 = 20.
+        let s = try #require(OverlayStats.compute(points([10, 20, nil, 30]), now: t0.addingTimeInterval(3)))
+        #expect(s.min == 10)
+        #expect(s.max == 30)
+        #expect(abs(s.avg - 20) < 1e-9)
+        // Uneven weights: 10 → 40 (2 s), 40 last (1 s): (20 + 40) / 3 = 20; unweighted would be 25.
+        let u = try #require(OverlayStats.compute(points([10, nil, 40]), now: t0.addingTimeInterval(2)))
+        #expect(abs(u.avg - 20) < 1e-9)
+    }
+
+    @Test func statsCapLongGapsAtFiveSeconds() throws {
+        // 10 held 20 s before 40 → weight 5 (cap); 40 last → 1. (50 + 40) / 6 = 15.
+        let pts = [SeriesPoint(time: t0, value: 10), SeriesPoint(time: t0.addingTimeInterval(20), value: 40)]
+        let s = try #require(OverlayStats.compute(pts, now: t0.addingTimeInterval(20)))
+        #expect(abs(s.avg - 15) < 1e-9)
+        #expect(s.min == 10 && s.max == 40)
+    }
+
+    @Test func statsExcludePointsOutsideWindow() throws {
+        // 0 s: 99 (older than 60 s at now = 70 s), then 1, 3 at 65 / 70 s.
+        let pts = [SeriesPoint(time: t0, value: 99), SeriesPoint(time: t0.addingTimeInterval(65), value: 1),
+                   SeriesPoint(time: t0.addingTimeInterval(70), value: 3),
+                   SeriesPoint(time: t0.addingTimeInterval(80), value: 500)]   // after now: excluded
+        let s = try #require(OverlayStats.compute(pts, now: t0.addingTimeInterval(70)))
+        #expect(s.min == 1 && s.max == 3)
+        // 1 held 5 s, 3 last 1 s: (5 + 3) / 6.
+        #expect(abs(s.avg - 8.0 / 6) < 1e-9)
+        #expect(OverlayStats.compute(pts, window: .seconds(4), now: t0.addingTimeInterval(70)) == nil)
+    }
+
+    @Test func statsAcrossCadenceChange() throws {
+        // 5-s cadence then 1-s: 10 @0, 20 @5, 30 @6, 40 @7. Weights 5, 1, 1, 1 → (50+20+30+40)/8 = 17.5.
+        let pts = [SeriesPoint(time: t0, value: 10), SeriesPoint(time: t0.addingTimeInterval(5), value: 20),
+                   SeriesPoint(time: t0.addingTimeInterval(6), value: 30), SeriesPoint(time: t0.addingTimeInterval(7), value: 40)]
+        let s = try #require(OverlayStats.compute(pts, now: t0.addingTimeInterval(7)))
+        #expect(abs(s.avg - 17.5) < 1e-9)
+    }
+
+    // MARK: - OverlayPlacement.frame
+
+    @Test func frameCorners() {
+        let vf = CGRect(x: 0, y: 0, width: 1512, height: 944)
+        let size = CGSize(width: 300, height: 44)
+        #expect(OverlayPlacement.frame(size: size, visibleFrame: vf, corner: .topRight).origin == CGPoint(x: 1204, y: 892))
+        #expect(OverlayPlacement.frame(size: size, visibleFrame: vf, corner: .topLeft).origin == CGPoint(x: 8, y: 892))
+        #expect(OverlayPlacement.frame(size: size, visibleFrame: vf, corner: .bottomLeft).origin == CGPoint(x: 8, y: 8))
+        #expect(OverlayPlacement.frame(size: size, visibleFrame: vf, corner: .bottomRight).origin == CGPoint(x: 1204, y: 8))
+        for c in OverlayCorner.allCases {
+            #expect(OverlayPlacement.frame(size: size, visibleFrame: vf, corner: c).size == size)
+        }
+    }
+
+    @Test func frameRespectsMenuBarInsetAndNegativeOrigin() {
+        // visibleFrame already excludes the menu bar / notch: top edge is visibleFrame.maxY.
+        let notch = CGRect(x: 0, y: 0, width: 1512, height: 982 - 38)
+        #expect(OverlayPlacement.frame(size: CGSize(width: 300, height: 44), visibleFrame: notch, corner: .topRight).maxY
+                == notch.maxY - 8)
+        let left = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+        let size = CGSize(width: 300, height: 44)
+        #expect(OverlayPlacement.frame(size: size, visibleFrame: left, corner: .topLeft).origin == CGPoint(x: -1912, y: 1028))
+        #expect(OverlayPlacement.frame(size: size, visibleFrame: left, corner: .bottomRight).origin == CGPoint(x: -308, y: 8))
+        #expect(OverlayPlacement.frame(size: size, visibleFrame: left, corner: .topRight, inset: 0).origin
+                == CGPoint(x: -300, y: 1036))
+    }
+
+    // MARK: - OverlayPlacement.screenIndex
+
+    @Test func screenIndexFollowsMouse() {
+        let screens = [CGRect(x: 0, y: 0, width: 1512, height: 982), CGRect(x: -1920, y: 0, width: 1920, height: 1080)]
+        #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: 700, y: 400), screenFrames: screens, mainIndex: 0) == 0)
+        #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: -500, y: 1000), screenFrames: screens, mainIndex: 0) == 1)
+        #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: 5000, y: 5000), screenFrames: screens, mainIndex: 0) == 0)
+        #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: 5000, y: 5000), screenFrames: screens, mainIndex: 1) == 1)
+        #expect(OverlayPlacement.screenIndex(mouse: .zero, screenFrames: [], mainIndex: 0) == 0)
+        // Edges follow NSMouseInRect (unflipped): minX and maxY belong to the screen, maxX and minY do not.
+        #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: 0, y: 400), screenFrames: screens, mainIndex: 1) == 0)
+        #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: 700, y: 982), screenFrames: screens, mainIndex: 1) == 0)
+        #expect(OverlayPlacement.screenIndex(mouse: CGPoint(x: -1, y: 1080), screenFrames: screens, mainIndex: 0) == 1)
+    }
+
+    // MARK: - OverlayView.metrics
+
+    @MainActor @Test func metricsCalm() {
+        let m = TTFormat.$locale.withValue(Locale(identifier: "en_US")) { OverlayView.metrics(live: ScreenFixture.live(.calm)) }
+        #expect(m.map(\.label) == ["CPU", "GPU", "MEM"])
+        #expect(m.map(\.labelColor) == [TTColor.cpu, TTColor.gpu, TTColor.mem])
+        for x in m {
+            #expect(x.value != "—")
+            #expect(x.tint == TTColor.textPrimary)
+            #expect(x.stats.hasPrefix("↓") && x.stats.contains(" ↑") && x.stats.contains(" ø"))
+        }
+        #expect(m[0].value.hasSuffix("%") && m[1].value.hasSuffix("%"))
+        #expect(m[2].value.hasSuffix(" GB"))
+        #expect(!m[0].stats.contains("%") && !m[2].stats.contains("GB"))
+    }
+
+    @MainActor @Test func metricsMemoryPressureTint() {
+        #expect(OverlayView.metrics(live: ScreenFixture.live(.memoryWarning))[2].tint == TTColor.statusElevated)
+        #expect(OverlayView.metrics(live: ScreenFixture.live(.memoryCritical))[2].tint == TTColor.statusCritical)
+    }
+
+    @MainActor @Test func metricsGPUUnavailable() {
+        let m = OverlayView.metrics(live: OverlayFixture.gpuUnavailableLive())
+        #expect(m[1].value == "—")
+        #expect(m[1].tint == TTColor.textTertiary)
+        #expect(m[1].stats == "— — —")
+        #expect(m[0].value != "—" && m[2].value != "—")
+    }
+
+    @MainActor @Test func metricsCollecting() {
+        let m = OverlayView.metrics(live: ScreenFixture.live(.collecting))
+        #expect(m.map(\.stats) == ["—", "—", "—"])
+        #expect(m[2].value != "—")   // memory is a level: shown from the first sample
+    }
+
+    @MainActor @Test func accessibilityLabels() {
+        let enUS = Locale(identifier: "en_US")
+        let calm = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: ScreenFixture.live(.calm)) }
+        #expect(calm.map(\.accessibilityLabel) == [
+            "CPU 37%, last minute low 29, high 48, average 35",
+            "GPU 16%, last minute low 6, high 28, average 18",
+            "Memory 15.1 GB, last minute low 14.9 GB, high 15.4 GB, average 15.2 GB",
+        ])
+        let gpuDown = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: OverlayFixture.gpuUnavailableLive()) }
+        #expect(gpuDown[1].accessibilityLabel == "GPU unavailable")
+        #expect(gpuDown[0].accessibilityLabel == calm[0].accessibilityLabel)
+        let collecting = TTFormat.$locale.withValue(enUS) { OverlayView.metrics(live: ScreenFixture.live(.collecting)) }
+        #expect(collecting.map(\.accessibilityLabel) == ["CPU collecting", "GPU collecting", "Memory 15.3 GB"])
+    }
+
+    @MainActor @Test func dimsWhilePaused() {
+        #expect(OverlayView.contentOpacity(live: ScreenFixture.live(.paused)) == 0.5)
+        #expect(OverlayView.contentOpacity(live: ScreenFixture.live(.calm)) == 1)
+        let live = ScreenFixture.live(.calm)
+        live.setPaused(true, at: MockDataProvider.referenceDate)
+        #expect(OverlayView.contentOpacity(live: live) == 0.5)
+        live.setPaused(false, at: MockDataProvider.referenceDate)
+        #expect(OverlayView.contentOpacity(live: live) == 1)
+    }
+
+    @MainActor @Test func statsRowFormats() {
+        TTFormat.$locale.withValue(Locale(identifier: "en_US")) {
+            #expect(OverlayView.percentStats(OverlayStats(min: 0.08, max: 0.912, avg: 0.2204)) == "↓8 ↑91 ø22")
+            #expect(OverlayView.memoryStats(OverlayStats(min: 15_891_378_585, max: 17_287_070_106, avg: 16_428_249_907))
+                    == "↓14.8 ↑16.1 ø15.3")
+        }
+    }
+}
