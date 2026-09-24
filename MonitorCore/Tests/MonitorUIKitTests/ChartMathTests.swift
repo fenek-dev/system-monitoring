@@ -30,4 +30,21 @@ import Testing
         let layers = TTStackedArea.cumulative([p([1, 2, 3]), p([10, nil, 30]), p([100, 200, 300])])
         #expect(layers.map { $0.map(\.value) } == [[1, 2, 3], [11, nil, 33], [111, nil, 333]])
     }
+
+    /// ICR (W5b): `yTicks` puts labels and inner gridlines at explicit values; nil keeps quarters.
+    @Test @MainActor func lineChartYTicks() {
+        let fmt: (Double) -> String = { TTFormat.temperatureCompact($0, units: UnitPreferences()) }
+        let quarters = TTLineChart([], yDomain: 40...105, yFormat: fmt)
+        #expect(quarters.labels == ["105°", "89°", "72°", "56°", "40°"])
+        #expect(quarters.yTicks == nil)
+        #expect(TTLineChart.gridFractions(yTicks: nil, domain: 40...105) == [0.25, 0.5, 0.75])
+
+        let ticked = TTLineChart([], yDomain: 20...105, yTicks: [100, 80, 60, 40, 20], yFormat: fmt)
+        #expect(ticked.labels == ["100°", "80°", "60°", "40°", "20°"])
+        // Gridlines only strictly inside the domain (20 is the bottom edge).
+        let grid = TTLineChart.gridFractions(yTicks: [100, 80, 60, 40, 20], domain: 20...105)
+        #expect(grid.count == 4)
+        #expect(abs(grid[0] - 5.0 / 85) < 1e-12 && abs(grid[3] - 65.0 / 85) < 1e-12)
+        #expect(TTLineChart.fraction(105, in: 20...105) == 0 && TTLineChart.fraction(20, in: 20...105) == 1)
+    }
 }
