@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import MonitorModel
 @testable import MonitorSensors
@@ -149,6 +150,30 @@ struct IOReportSmokeTests {
         // IOReportCreateSubscription). Balanced → only our local `dict` + the call's argument temporary remain
         // (rc == 2). Calibrated: the old takeUnretainedValue() version reads 3 here (one leaked dict per prepare).
         #expect(rc <= 2, "subscribed dictionary retain count after invalidate: \(rc)")
+    }
+
+    /// Wake: a sleep since the baseline (continuous time jumps, uptime doesn't) drops that baseline; the reading
+    /// covers a fresh ≥ 100 ms window instead of the pre-sleep one, so power can't be overstated.
+    @Test func rebaselinesAfterSleep() throws {
+        let slept = OSAllocatedUnfairLock(initialState: UInt64(0))
+        let sensor = IOReportSensor(model: w6bHWModel, continuousNs: {
+            clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + slept.withLock { $0 }
+        })
+        try sensor.prepare()
+        try #require(sensor.waitUntilReady())
+        W6bFixture.sleep(0.15)
+        _ = try sensor.sample(SampleContext())
+        W6bFixture.sleep(0.6)
+        let normal = try sensor.sample(SampleContext()).reading
+        #expect(sensor.rebaselines == 0)
+        #expect(normal.interval >= .milliseconds(550))
+        W6bFixture.sleep(0.6)
+        slept.withLock { $0 = 3_600_000_000_000 }             // "slept" an hour
+        let afterWake = try sensor.sample(SampleContext()).reading
+        #expect(sensor.rebaselines == 1)
+        #expect(afterWake.interval >= .milliseconds(90) && afterWake.interval < .milliseconds(400),
+                "post-wake window \(afterWake.interval)")
+        #expect(afterWake.cpuWatts != nil)
     }
 
     @Test func bench() throws {

@@ -14,20 +14,46 @@ public final class IOReportSensor: Sensor {
     /// Deltas shorter than this are noise: the first sample waits (once, ≤ this), later ones return the last reading.
     static let minInterval: UInt64 = 100_000_000
 
+    /// A baseline older than this (uptime) is stale: sampling was paused, so the next delta would be an average over
+    /// the pause rather than current power.
+    static let maxBaselineAgeNs: UInt64 = 15_000_000_000
+    /// Continuous time (includes sleep) running ahead of uptime by more than this → the Mac slept since the baseline.
+    static let sleepSlackNs: UInt64 = 1_000_000_000
+
     private var subscription: IOReportSubscription?
     private var subscribed: CFMutableDictionary?
-    private var previous: (sample: CFDictionary, ns: UInt64)?
+    /// `ns` = uptime (CLOCK_UPTIME_RAW, excludes sleep), `continuousNs` = CLOCK_MONOTONIC_RAW (includes sleep).
+    private var previous: (sample: CFDictionary, ns: UInt64, continuousNs: UInt64)?
     private var last: (reading: SoCPowerReading, ns: UInt64)?
     private var pstates: PStateTables?
     private let model: String
+    private let uptimeNs: () -> UInt64
+    private let continuousNs: () -> UInt64
     /// Decoded channels of the last delta (fixture capture / diagnostics).
     private(set) var lastChannels: [IOReportChannelSample] = []
+    /// Times the baseline was dropped after sleep / a long pause (diagnostics, tests).
+    private(set) var rebaselines = 0
 
     /// Pending off-queue setup (channel discovery costs 0.45–0.5 s even in release: `IOReportCopyChannelsInGroup`).
     private var setup: IOReportSetupBox?
 
-    public init() { model = w6bHWModel }
-    init(model: String) { self.model = model }
+    public convenience init() { self.init(model: w6bHWModel) }
+
+    /// Test seam: injected clocks (a jump in `continuousNs` alone simulates a sleep).
+    init(model: String, uptimeNs: @escaping () -> UInt64 = w6bUptimeNs,
+         continuousNs: @escaping () -> UInt64 = { clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) }) {
+        self.model = model
+        self.uptimeNs = uptimeNs
+        self.continuousNs = continuousNs
+    }
+
+    /// True when the previous IOReport sample can't be the baseline of the next delta: the Mac slept since (energy
+    /// and residency counters may keep moving while the interval, on uptime, excludes the sleep → overstated power),
+    /// or it is older than `maxBaselineAgeNs` (paused).
+    static func baselineIsStale(uptimeDeltaNs: UInt64, continuousDeltaNs: UInt64) -> Bool {
+        let slept = continuousDeltaNs > uptimeDeltaNs && continuousDeltaNs - uptimeDeltaNs > sleepSlackNs
+        return slept || uptimeDeltaNs > maxBaselineAgeNs
+    }
 
     /// Cheap: checks the weak symbols, loads the P-state table and starts channel discovery + subscription on a
     /// utility queue. Until that finishes, `sample()` throws `.transient("warming up")`.
@@ -60,7 +86,7 @@ public final class IOReportSensor: Sensor {
         guard let setup, let ready = setup.take() else { return false }
         subscription = ready.subscription
         subscribed = ready.subscribed
-        previous = (ready.first, ready.ns)
+        previous = (ready.first, ready.ns, ready.continuousNs)
         self.setup = nil
         return true
     }
@@ -75,23 +101,38 @@ public final class IOReportSensor: Sensor {
             // .transient, not .unavailable: .unavailable makes the slot invalidate() and retry only every 5 min (§6.2).
             throw .transient("warming up")
         }
-        guard let sub = subscription, let subDict = subscribed, let prev = previous else {
+        guard let sub = subscription, let subDict = subscribed, var prev = previous else {
             throw .unavailable("IOReport not prepared")
         }
-        var now = w6bUptimeNs()
-        if now - prev.ns < Self.minInterval {
+        var now = uptimeNs()
+        let continuous = continuousNs()
+        if Self.baselineIsStale(uptimeDeltaNs: now >= prev.ns ? now - prev.ns : 0,
+                                continuousDeltaNs: continuous >= prev.continuousNs ? continuous - prev.continuousNs : 0) {
+            // Re-baseline (wake / unpause): the first delta after it is dropped, and this call measures a fresh
+            // ≥ minInterval window instead, like the first sample after setup.
+            // On failure the stale baseline stays, so the next call re-baselines again.
+            guard let base = IOReportCreateSamples(sub, subDict, nil) else { throw .transient("IOReportCreateSamples failed") }
+            now = uptimeNs()
+            prev = (base, now, continuousNs())
+            previous = prev
+            last = nil
+            rebaselines += 1
+        }
+        let age = now >= prev.ns ? now - prev.ns : 0
+        if age < Self.minInterval {
             if let last { return (last.reading, last.ns) }
-            usleep(useconds_t((Self.minInterval - (now - prev.ns)) / 1000))
+            usleep(useconds_t((Self.minInterval - age) / 1000))
         }
         guard let cur = IOReportCreateSamples(sub, subDict, nil) else { throw .transient("IOReportCreateSamples failed") }
-        now = w6bUptimeNs()
-        previous = (cur, now)
+        now = uptimeNs()
+        previous = (cur, now, continuousNs())
         guard let delta = IOReportCreateSamplesDelta(prev.sample, cur, nil) else {
             throw .transient("IOReportCreateSamplesDelta failed")
         }
         let channels = Self.decode(delta)
         lastChannels = channels
-        let reading = IOReportParse.reading(channels: channels, interval: .nanoseconds(Int64(now - prev.ns)), pstates: pstates)
+        let span = now >= prev.ns ? now - prev.ns : 0
+        let reading = IOReportParse.reading(channels: channels, interval: .nanoseconds(Int64(span)), pstates: pstates)
         last = (reading, now)
         return (reading, now)
     }
@@ -129,7 +170,8 @@ public final class IOReportSensor: Sensor {
         guard let first = IOReportCreateSamples(sub, subDict, nil) else {
             return .failure(.transient("IOReportCreateSamples failed"))
         }
-        return .success(.init(subscription: sub, subscribed: subDict, first: first, ns: w6bUptimeNs()))
+        return .success(.init(subscription: sub, subscribed: subDict, first: first, ns: w6bUptimeNs(),
+                              continuousNs: clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)))
     }
 
     // MARK: - FFI helpers
@@ -195,6 +237,7 @@ final class IOReportSetupBox: Sendable {
         var subscribed: CFMutableDictionary
         var first: CFDictionary
         var ns: UInt64
+        var continuousNs: UInt64
     }
 
     private enum Phase {
