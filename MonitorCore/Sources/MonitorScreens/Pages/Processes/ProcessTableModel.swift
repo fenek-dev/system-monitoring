@@ -189,7 +189,9 @@ public final class ProcessTableModel {
     public var descending = true { didSet { if descending != oldValue { rebuild() } } }
     public var query = "" { didSet { if query != oldValue { rebuild() } } }
     public private(set) var expanded: Set<AppKey> = []
-    public private(set) var output = ProcessTableOutput()
+    /// Not observed: views call `update(from:mode:)` in `body` (it reads the tracked `appsVersion`), so the
+    /// rebuild happens lazily once per frame without invalidating the view that triggered it.
+    @ObservationIgnored public private(set) var output = ProcessTableOutput()
     /// Rebuild counter (tests; ARCHITECTURE §7 "sort/filter once per frame").
     @ObservationIgnored public private(set) var buildCount = 0
 
