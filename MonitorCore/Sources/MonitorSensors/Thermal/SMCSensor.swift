@@ -82,8 +82,9 @@ public final class SMCSensor: Sensor {
             if v == nil { failures += 1 }
             return v
         }
-        r.fans = fans.map { f in
-            RawFan(index: f.index, rpm: max(0, value(f.actual) ?? 0), minRPM: f.minRPM, maxRPM: f.maxRPM)
+        // A failed fan read drops that fan for this tick (never a fake 0 rpm).
+        r.fans = fans.compactMap { f in
+            value(f.actual).map { RawFan(index: f.index, rpm: max(0, $0), minRPM: f.minRPM, maxRPM: f.maxRPM) }
         }
         r.systemWatts = value(systemPower)
         r.adapterWatts = value(adapterPower)

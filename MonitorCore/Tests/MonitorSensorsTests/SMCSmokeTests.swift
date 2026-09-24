@@ -12,8 +12,11 @@ extension SMCKeySweep.Phase {
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh SMCSmokeTests`. The E-core experiment (~3 min) additionally needs
 /// `TELLTALE_W6B_ECORE=1`.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
 struct SMCSmokeTests {
+    /// The M1 Max 14" the catalog and these reference values were measured on.
+    static let verifiedModel = "MacBookPro18,4"
+
     private func tempDir() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("w6b-smc-\(UUID().uuidString)", isDirectory: true)
     }
@@ -32,27 +35,38 @@ struct SMCSmokeTests {
     @Test func prepareReadsCatalogKeysAndSweepCaches() throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stale = dir.appendingPathComponent("smc-keys-\(SMCKeySweep.safe(w6bHWModel))-OLD1.json")
+        let other = dir.appendingPathComponent("smc-keys-Mac99,9-\(SMCKeySweep.safe(w6bOSBuild)).json")
+        try Data("{}".utf8).write(to: stale)
+        try Data("{}".utf8).write(to: other)
         let sensor = SMCSensor(hwModel: w6bHWModel, osBuild: w6bOSBuild, cacheDirectory: dir)
         let t0 = w6bUptimeNs()
         try sensor.prepare()
         let prepNs = w6bUptimeNs() - t0
         let r = try sensor.sample(SampleContext()).reading
         print("W6b smc: prepare=\(String(format: "%.1f", Double(prepNs) / 1e6))ms matched=\(r.catalogMatched) \(describe(r))")
-        #expect(r.catalogMatched == (w6bHWModel.hasPrefix("MacBookPro18,")))
-        #expect(r.fans.count == 2)
+        #expect(r.catalogMatched == (try TemperatureCatalog.bundled().model(for: w6bHWModel) != nil))
         for f in r.fans { #expect(f.maxRPM > f.minRPM && f.minRPM > 0 && f.rpm >= 0 && f.rpm <= f.maxRPM * 1.1) }
-        #expect(r.fans.first?.maxRPM == 5779)
         #expect(r.systemWatts.map { $0 > 1 && $0 < 200 } == true)
         #expect(r.adapterWatts != nil)
-        #expect(r.temperatures.filter { $0.group == .cpuPerformance }.count == 12)
-        #expect(r.temperatures.filter { $0.group == .cpuEfficiency }.count == 8)
-        #expect(r.temperatures.filter { $0.group == .gpu }.count == 8)
-        #expect(r.temperatures.contains { $0.name == "TAOL" && $0.group == .airflow })
+        if w6bHWModel == Self.verifiedModel {        // values of the machine the catalog was verified on
+            #expect(r.fans.count == 2)
+            #expect(r.fans.first?.maxRPM == 5779)
+            #expect(r.temperatures.filter { $0.group == .cpuPerformance }.count == 12)
+            #expect(r.temperatures.filter { $0.group == .cpuEfficiency }.count == 8)
+            #expect(r.temperatures.filter { $0.group == .gpu }.count == 8)
+            #expect(r.temperatures.contains { $0.name == "TAOL" && $0.group == .airflow })
+        } else {
+            print("W6b smc: \(w6bHWModel) is not \(Self.verifiedModel); machine-specific checks skipped")
+        }
 
         guard case let .done(keys, fromCache, ns) = sensor.sweep.wait() else { Issue.record("sweep failed"); return }
         print("W6b smc sweep: \(keys.count) T-keys in \(String(format: "%.0f", Double(ns) / 1e6))ms cache=\(fromCache)")
         #expect(!fromCache && keys.count > 100)
         #expect(FileManager.default.fileExists(atPath: sensor.sweep.cacheURL.path))
+        #expect(!FileManager.default.fileExists(atPath: stale.path))      // this model, old build: pruned
+        #expect(FileManager.default.fileExists(atPath: other.path))       // other model: kept
         let raw = try sensor.sample(SampleContext(demand: .rawTemperatures)).reading
         #expect(raw.temperatures.count > r.temperatures.count + 50)
         #expect(Set(raw.temperatures.map(\.name)).count == raw.temperatures.count)   // mapped keys not duplicated
@@ -124,6 +138,7 @@ struct SMCSmokeTests {
         guard let keys = smc.sweep.wait().keysIfDone else { Issue.record("sweep"); return }
         let soc = IOReportSensor()
         try soc.prepare()
+        try #require(soc.waitUntilReady())
         _ = try soc.sample(SampleContext())
         let raw = SampleContext(demand: .rawTemperatures)
         let names = keys.map(\.key).filter { $0.hasPrefix("TC") || $0.hasPrefix("Tp") }

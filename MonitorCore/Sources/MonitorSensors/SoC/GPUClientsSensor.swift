@@ -4,6 +4,10 @@ import MonitorModel
 
 /// Per-client GPU time from `AGXAccelerator` children (`AGXDeviceUserClient`), public IOKit only.
 /// The accelerator service is acquired once in `prepare()` and released once in `invalidate()`.
+///
+/// Side effect: reading `PerformanceStatistics` RESETS the driver's "Device Utilization %" window for every
+/// reader on the system (Activity Monitor, `ioreg`, other monitors): a tool that reads it right after us sees ~0.
+/// Our own value is therefore a fallback only (system GPU % = IOReport GPUPH residency; ruling 2026-09-24).
 public final class GPUClientsSensor: Sensor {
     public typealias Reading = GPUClientsReading
     public let id: SensorID = .gpuClients

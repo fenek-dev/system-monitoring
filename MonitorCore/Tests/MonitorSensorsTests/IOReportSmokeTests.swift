@@ -10,7 +10,7 @@ struct IOReportFixture: Codable {
 }
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh IOReportSmokeTests`. Shared machine: loads other agents run add noise.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
 struct IOReportSmokeTests {
     private func window(_ sensor: IOReportSensor, seconds: Double) throws -> SoCPowerReading {
         _ = try sensor.sample(SampleContext())
@@ -42,6 +42,7 @@ struct IOReportSmokeTests {
     @Test func idleVsEightYes() throws {
         let sensor = IOReportSensor()
         try sensor.prepare()
+        try #require(sensor.waitUntilReady())
         var idle = try window(sensor, seconds: 1)
         var idleChannels = sensor.lastChannels
         for _ in 0..<4 {
@@ -65,7 +66,11 @@ struct IOReportSmokeTests {
         print("W6b ioreport idle: \(describe(idle))")
         print("W6b ioreport 8×yes: \(describe(load))")
         let dCPU = (load.cpuWatts ?? 0) - (idle.cpuWatts ?? 0)
-        print("W6b ioreport ΔCPU=+\(String(format: "%.2f", dCPU)) W (bar +\(bar) W\(busyBaseline ? ", busy baseline" : ""))")
+        print("W6b ioreport ΔCPU=+\(String(format: "%.2f", dCPU)) W (bar +\(bar) W)")
+        if busyBaseline {
+            print("W6b WARNING ioreport: busy baseline (P clusters \(idleP.map { Int($0 * 100) })% active) — "
+                  + "FALLBACK bar +2 W used instead of +4 W; rerun on a quiet machine for the full check")
+        }
         #expect(dCPU >= bar, "CPU watts idle→8×yes +\(dCPU) W")
         let p = load.clusters.filter { $0.kind == .performance }
         #expect(p.count >= 1)
@@ -81,6 +86,7 @@ struct IOReportSmokeTests {
     @Test func gpuLoadRaisesGPUActivity() throws {
         let sensor = IOReportSensor()
         try sensor.prepare()
+        try #require(sensor.waitUntilReady())
         let idle = try window(sensor, seconds: 2)
         let idleGPU = sensor.lastChannels.first { $0.name == "GPUPH" }
         let load = try #require(W6bGPULoad.start())
@@ -102,9 +108,55 @@ struct IOReportSmokeTests {
         #expect(busy.gpuMaxFrequencyMHz == 1296)
     }
 
+    /// §5.4 prepare contract: cheap prepare, first samples throw .transient("warming up") until the off-queue
+    /// subscription is ready; prepare/invalidate cycles (sleep/wake) must not leak the subscribed dictionary.
+    @Test func prepareIsCheapAndWarmsUpOffQueue() throws {
+        func footprintKB() -> UInt64 {
+            var info = task_vm_info_data_t()
+            var n = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+            _ = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(n)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &n) }
+            }
+            return info.phys_footprint / 1024
+        }
+        let sensor = IOReportSensor()
+        let t0 = w6bUptimeNs()
+        try sensor.prepare()
+        let prepareMs = Double(w6bUptimeNs() - t0) / 1e6
+        var warm = false
+        do { _ = try sensor.sample(SampleContext()) } catch { warm = error == .transient("warming up") }
+        let t1 = w6bUptimeNs()
+        try #require(sensor.waitUntilReady())
+        let readyMs = Double(w6bUptimeNs() - t0) / 1e6
+        _ = t1
+        #expect(prepareMs < 50, "prepare \(prepareMs) ms")
+        #expect(warm, "first sample before setup finished should be .transient(\"warming up\")")
+        W6bFixture.sleep(0.15)
+        #expect(try sensor.sample(SampleContext()).reading.cpuWatts != nil)
+
+        let fp0 = footprintKB()
+        for _ in 0..<8 {
+            sensor.invalidate()
+            try sensor.prepare()
+            try #require(sensor.waitUntilReady())
+        }
+        let fp1 = footprintKB()
+        _ = try sensor.sample(SampleContext())
+        let dict = try #require(sensor.subscribedDictionary)
+        sensor.invalidate()
+        let rc = CFGetRetainCount(dict)       // after invalidate only `dict` (+ the call's temporary) may own it
+        print(String(format: "W6b ioreport prepare=%.2fms ready=%.0fms warmingUp=%@ subscribedRC=%d footprint Δ8 cycles=%lldKB (informational: libIOReport itself grows ~20 KB/cycle)",
+                     prepareMs, readyMs, warm ? "yes" : "no", rc, Int64(fp1) - Int64(fp0)))
+        // Ownership check: the +1 out-param is taken retained (C probe: rc == 1 right after
+        // IOReportCreateSubscription). Balanced → only our local `dict` + the call's argument temporary remain
+        // (rc == 2). Calibrated: the old takeUnretainedValue() version reads 3 here (one leaked dict per prepare).
+        #expect(rc <= 2, "subscribed dictionary retain count after invalidate: \(rc)")
+    }
+
     @Test func bench() throws {
         let sensor = IOReportSensor()
         try sensor.prepare()
+        try #require(sensor.waitUntilReady())
         _ = try sensor.sample(SampleContext())
         var ns: [UInt64] = []
         for _ in 0..<30 {

@@ -36,8 +36,7 @@ final class SMCKeySweep: Sendable {
         self.osBuild = osBuild
         let dir = cacheDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("dev.telltale", isDirectory: true)
-        let safe = { (s: String) in s.map { $0.isLetter || $0.isNumber || $0 == "," || $0 == "." ? $0 : "_" } }
-        cacheURL = dir.appendingPathComponent("smc-keys-\(String(safe(hwModel)))-\(String(safe(osBuild))).json")
+        cacheURL = dir.appendingPathComponent("smc-keys-\(Self.safe(hwModel))-\(Self.safe(osBuild)).json")
     }
 
     var current: Phase { phase.withLock { $0 } }
@@ -98,7 +97,26 @@ final class SMCKeySweep: Sendable {
         }
         let file = CacheFile(hwModel: hwModel, osBuild: osBuild, keyCount: Int(count), keys: out)
         try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(file) { try? data.write(to: cacheURL, options: .atomic) }
+        if let data = try? JSONEncoder().encode(file), (try? data.write(to: cacheURL, options: .atomic)) != nil {
+            pruneStaleCaches()
+        }
         return .done(out, fromCache: false, durationNs: w6bUptimeNs() - t0)
+    }
+
+    /// Removes this model's caches for other OS builds (`smc-keys-<model>-<oldBuild>.json`).
+    private func pruneStaleCaches() {
+        let dir = cacheURL.deletingLastPathComponent()
+        let current = cacheURL.lastPathComponent
+        let prefix = String(current.prefix(current.count - "\(osBuildComponent).json".count))
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names where name != current && name.hasPrefix(prefix) && name.hasSuffix(".json") {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        }
+    }
+
+    private var osBuildComponent: String { Self.safe(osBuild) }
+
+    static func safe(_ s: String) -> String {
+        String(s.map { $0.isLetter || $0.isNumber || $0 == "," || $0 == "." ? $0 : "_" })
     }
 }

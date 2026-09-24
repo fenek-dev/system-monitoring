@@ -4,7 +4,7 @@ import Testing
 @testable import MonitorSensors
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh HIDSmokeTests`.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
 struct HIDSmokeTests {
     @Test func rawListVsSmartctlAndBatteryAndSMC() throws {
         if W6bFixture.capture, case let .success(samples) = HIDTemperatureBox.readAll() {
@@ -13,8 +13,20 @@ struct HIDSmokeTests {
         let sensor = HIDTemperatureSensor()
         try sensor.prepare()
         let t0 = w6bUptimeNs()
-        let first = try sensor.sample(SampleContext(demand: .rawTemperatures))
-        let firstMs = Double(w6bUptimeNs() - t0) / 1e6
+        var first: (reading: TemperatureReading, capturedNs: UInt64)
+        var timedOut = false
+        do {
+            first = try sensor.sample(SampleContext(demand: .rawTemperatures))
+        } catch {
+            guard error == .timeout else { throw error }
+            // Contract: never block > 250 ms. A loaded machine can make the first full read slower than that;
+            // the read keeps running off-queue and the next sample returns it.
+            timedOut = true
+            W6bFixture.sleep(0.5)
+            first = try sensor.sample(SampleContext(demand: .rawTemperatures))
+        }
+        let firstMs = Double(w6bUptimeNs() - t0) / 1e6 - (timedOut ? 500 : 0)
+        if timedOut { print("W6b hid: first sample hit the 240 ms wait (.timeout); retried") }
         let t1 = w6bUptimeNs()
         _ = try sensor.sample(SampleContext(demand: .rawTemperatures))
         let secondMs = Double(w6bUptimeNs() - t1) / 1e6

@@ -1,6 +1,7 @@
 import CPrivate
 import Foundation
 import MonitorModel
+import os
 
 /// SoC power, cluster residency and MHz from libIOReport (weak-linked; docs/findings/ioreport.md).
 /// One subscription (Energy Model + CPU Complex + GPU Performance States + SoC Cluster Power States),
@@ -22,41 +23,58 @@ public final class IOReportSensor: Sensor {
     /// Decoded channels of the last delta (fixture capture / diagnostics).
     private(set) var lastChannels: [IOReportChannelSample] = []
 
+    /// Pending off-queue setup (channel discovery costs 0.45–0.5 s even in release: `IOReportCopyChannelsInGroup`).
+    private var setup: IOReportSetupBox?
+
     public init() { model = w6bHWModel }
     init(model: String) { self.model = model }
 
+    /// Cheap: checks the weak symbols, loads the P-state table and starts channel discovery + subscription on a
+    /// utility queue. Until that finishes, `sample()` throws `.transient("warming up")`.
     public func prepare() throws(SensorError) {
-        guard subscription == nil else { return }
+        guard subscription == nil, setup == nil else { return }
         guard tt_ioreport_available() else { throw .unavailable("libIOReport symbols missing") }
         pstates = (try? PStateCatalog.bundled())?.tables(forModel: model)
+        let box = IOReportSetupBox()
+        box.start()
+        setup = box
+    }
 
-        guard let desired = Self.channels(IOReportParse.energyGroup, nil, keep: Self.keepEnergy) else {
-            throw .unavailable("IOReport: no Energy Model channels")
+    /// Diagnostics (ownership test): the subscribed-channels dictionary.
+    var subscribedDictionary: CFMutableDictionary? { subscribed }
+
+    /// Tests / probes: blocks until the off-queue setup finished (or `timeout`). True when ready.
+    @discardableResult
+    func waitUntilReady(timeout: Duration = .seconds(15)) -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if subscription != nil || adoptSetup() { return true }
+            if let setup, setup.failure != nil { return false }
+            Thread.sleep(forTimeInterval: 0.01)
         }
-        for (group, subgroup, keep) in [
-            (IOReportParse.cpuStatsGroup, IOReportParse.clusterSubgroup, Self.keepCluster),
-            (IOReportParse.gpuStatsGroup, IOReportParse.gpuSubgroup, { $0 == "GPUPH" }),
-            (IOReportParse.socStatsGroup, IOReportParse.clusterPowerSubgroup, { IOReportParse.mediaChannels[$0] != nil }),
-        ] as [(String, String, (String) -> Bool)] {
-            if let more = Self.channels(group, subgroup, keep: keep) { IOReportMergeChannels(desired, more, nil) }
-        }
-        var subscribedRef: Unmanaged<CFMutableDictionary>?
-        guard let sub = IOReportCreateSubscription(nil, desired, &subscribedRef, 0, nil),
-              // Ownership of the out-param is undocumented: take it unretained (at worst one leak per prepare).
-              let subDict = subscribedRef?.takeUnretainedValue() else {
-            throw .unavailable("IOReportCreateSubscription failed")
-        }
-        subscription = sub
-        subscribed = subDict
-        guard let first = IOReportCreateSamples(sub, subDict, nil) else {
-            invalidate()
-            throw .transient("IOReportCreateSamples failed")
-        }
-        previous = (first, w6bUptimeNs())
+        return subscription != nil
+    }
+
+    /// Moves a finished setup into the sensor (sampler executor only). True when a subscription is now held.
+    private func adoptSetup() -> Bool {
+        guard let setup, let ready = setup.take() else { return false }
+        subscription = ready.subscription
+        subscribed = ready.subscribed
+        previous = (ready.first, ready.ns)
+        self.setup = nil
+        return true
     }
 
     public func sample(_ ctx: SampleContext) throws(SensorError) -> (reading: SoCPowerReading, capturedNs: UInt64) {
-        if subscription == nil { try prepare() }
+        if subscription == nil && setup == nil { try prepare() }
+        if subscription == nil && !adoptSetup() {
+            if let error = setup?.failure {
+                setup = nil
+                throw error
+            }
+            // .transient, not .unavailable: .unavailable makes the slot invalidate() and retry only every 5 min (§6.2).
+            throw .transient("warming up")
+        }
         guard let sub = subscription, let subDict = subscribed, let prev = previous else {
             throw .unavailable("IOReport not prepared")
         }
@@ -79,10 +97,39 @@ public final class IOReportSensor: Sensor {
     }
 
     public func invalidate() {
+        setup = nil                      // a setup still running finishes into its own (dropped) box
         subscription = nil
         subscribed = nil
         previous = nil
         last = nil
+    }
+
+    /// Channel discovery + subscription (slow part of setup). Runs on the setup queue.
+    static func subscribe() -> Result<IOReportSetupBox.Ready, SensorError> {
+        guard let desired = channels(IOReportParse.energyGroup, nil, keep: keepEnergy) else {
+            return .failure(.unavailable("IOReport: no Energy Model channels"))
+        }
+        for (group, subgroup, keep) in [
+            (IOReportParse.cpuStatsGroup, IOReportParse.clusterSubgroup, keepCluster),
+            (IOReportParse.gpuStatsGroup, IOReportParse.gpuSubgroup, { $0 == "GPUPH" }),
+            (IOReportParse.socStatsGroup, IOReportParse.clusterPowerSubgroup, { IOReportParse.mediaChannels[$0] != nil }),
+        ] as [(String, String, (String) -> Bool)] {
+            if let more = channels(group, subgroup, keep: keep) { IOReportMergeChannels(desired, more, nil) }
+        }
+        var subscribedRef: Unmanaged<CFMutableDictionary>?
+        guard let sub = IOReportCreateSubscription(nil, desired, &subscribedRef, 0, nil) else {
+            subscribedRef?.release()
+            return .failure(.unavailable("IOReportCreateSubscription failed"))
+        }
+        // The out-param is +1 (Create rule; CFGetRetainCount == 1 right after the call, and footprint grows
+        // ~65 KB per unreleased subscribe/drop cycle): take it retained so ARC balances it.
+        guard let subDict = subscribedRef?.takeRetainedValue() else {
+            return .failure(.unavailable("IOReportCreateSubscription returned no channels"))
+        }
+        guard let first = IOReportCreateSamples(sub, subDict, nil) else {
+            return .failure(.transient("IOReportCreateSamples failed"))
+        }
+        return .success(.init(subscription: sub, subscribed: subDict, first: first, ns: w6bUptimeNs()))
     }
 
     // MARK: - FFI helpers
@@ -137,5 +184,57 @@ public final class IOReportSensor: Sensor {
             out.append(s)
         }
         return out
+    }
+}
+
+/// Off-queue IOReport setup. The CF results are created on the setup queue and handed over exactly once
+/// (`take()`) to the sampler executor; the lock holds them via `uncheckedState` because CF types aren't Sendable.
+final class IOReportSetupBox: Sendable {
+    struct Ready {
+        var subscription: IOReportSubscription
+        var subscribed: CFMutableDictionary
+        var first: CFDictionary
+        var ns: UInt64
+    }
+
+    private enum Phase {
+        case running
+        case ready(Ready)
+        case taken
+        case failed(SensorError)
+    }
+
+    private let phase = OSAllocatedUnfairLock<Phase>(uncheckedState: .running)
+    private static let queue = DispatchQueue(label: "dev.telltale.ioreport-setup", qos: .utility)
+
+    func start() {
+        Self.queue.async { [self] in
+            let t0 = w6bUptimeNs()
+            let result = IOReportSensor.subscribe()
+            Logger(subsystem: "dev.telltale", category: "MonitorSensors")
+                .debug("IOReport setup \((w6bUptimeNs() - t0) / 1_000_000, privacy: .public) ms")
+            phase.withLockUnchecked { p in
+                switch result {
+                case let .success(r): p = .ready(r)
+                case let .failure(e): p = .failed(e)
+                }
+            }
+        }
+    }
+
+    /// The finished subscription, once; nil while running / after a failure / when already taken.
+    func take() -> Ready? {
+        phase.withLockUnchecked { p in
+            guard case let .ready(r) = p else { return nil }
+            p = .taken
+            return r
+        }
+    }
+
+    var failure: SensorError? {
+        phase.withLockUnchecked { p in
+            if case let .failed(e) = p { return e }
+            return nil
+        }
     }
 }
