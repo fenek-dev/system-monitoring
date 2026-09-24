@@ -261,16 +261,7 @@ struct MemoryConsumersCard: View {
 
     /// App groups by memory descending (stable; nil last); pre-sorted, the table does not re-sort.
     nonisolated static func rank(_ apps: [AppSample]) -> [AppSample] {
-        apps.enumerated().filter { $0.element.identity.key != .other }
-            .sorted { a, b in
-                switch (a.element.memory, b.element.memory) {
-                case let (x?, y?): x != y ? x > y : a.offset < b.offset
-                case (.some, nil): true
-                case (nil, .some): false
-                case (nil, nil): a.offset < b.offset
-                }
-            }
-            .map(\.element)
+        TTSort.stable(apps.filter { $0.identity.key != .other }) { $0.memory.map { Double($0) } }
     }
 
     static func rows(_ live: LiveModel) -> [AppSample] { rank(live.apps) }

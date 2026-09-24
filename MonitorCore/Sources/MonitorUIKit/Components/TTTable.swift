@@ -91,17 +91,7 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
 
     nonisolated static func sorted(_ rows: [Row], key: ((Row) -> Double?)?, descending: Bool) -> [Row] {
         guard let key else { return rows }
-        let keyed = rows.enumerated().map { (i: $0.offset, k: key($0.element).flatMap { $0.isFinite ? $0 : nil }, r: $0.element) }
-        return keyed.sorted { a, b in
-            switch (a.k, b.k) {
-            case let (x?, y?):
-                if x != y { return descending ? x > y : x < y }
-                return a.i < b.i
-            case (.some, nil): return true
-            case (nil, .some): return false
-            case (nil, nil): return a.i < b.i
-            }
-        }.map(\.r)
+        return TTSort.stable(rows, descending: descending, by: key)
     }
 
     /// `hasChildren`: cheap test; when given, `children` is called only for expanded rows (M11).
@@ -359,6 +349,23 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
             .contextMenu { if active, let rowMenu { rowMenu(line.row) } }
             .accessibilityElement(children: .combine)
         }
+    }
+}
+
+/// The one table sort (M10): by `key`, stable (ties keep input order), nil and non-finite keys last in both directions.
+public enum TTSort {
+    public static func stable<T>(_ items: [T], descending: Bool = true, by key: (T) -> Double?) -> [T] {
+        items.enumerated()
+            .map { (i: $0.offset, k: key($0.element).flatMap { $0.isFinite ? $0 : nil }, v: $0.element) }
+            .sorted { a, b in
+                switch (a.k, b.k) {
+                case let (x?, y?): x != y ? (descending ? x > y : x < y) : a.i < b.i
+                case (.some, nil): true
+                case (nil, .some): false
+                case (nil, nil): a.i < b.i
+                }
+            }
+            .map(\.v)
     }
 }
 

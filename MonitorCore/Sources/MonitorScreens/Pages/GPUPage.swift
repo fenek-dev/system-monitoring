@@ -200,13 +200,9 @@ struct GPUClientsCard: View {
 
     /// GPU clients by % GPU descending (stable); pre-sorted, the table does not re-sort.
     nonisolated static func rank(_ apps: [AppSample]) -> [AppSample] {
-        apps.enumerated()
-            .filter { $0.element.identity.key != .other && (($0.element.gpuPercent ?? 0) > 0 || ($0.element.gpuTimeNs ?? 0) > 0) }
-            .sorted { a, b in
-                let x = a.element.gpuPercent ?? 0, y = b.element.gpuPercent ?? 0
-                return x != y ? x > y : a.offset < b.offset
-            }
-            .map(\.element)
+        TTSort.stable(apps.filter { $0.identity.key != .other && (($0.gpuPercent ?? 0) > 0 || ($0.gpuTimeNs ?? 0) > 0) }) {
+            $0.gpuPercent ?? 0
+        }
     }
 
     static func rows(_ live: LiveModel) -> [AppSample] { rank(live.apps) }

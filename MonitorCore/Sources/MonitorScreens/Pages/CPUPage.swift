@@ -169,15 +169,7 @@ struct CPUConsumersCard: View {
 
     /// Top 50 by % CPU, descending, nil last, stable — sorted before the cap (the table does not re-sort).
     nonisolated static func rank(_ processes: [ProcessSample]) -> [ProcessSample] {
-        let keyed = processes.enumerated().map { (i: $0.offset, v: $0.element.cpuPercent, p: $0.element) }
-        return Array(keyed.sorted { a, b in
-            switch (a.v, b.v) {
-            case let (x?, y?): x != y ? x > y : a.i < b.i
-            case (.some, nil): true
-            case (nil, .some): false
-            case (nil, nil): a.i < b.i
-            }
-        }.prefix(cap).map(\.p))
+        Array(TTSort.stable(processes) { $0.cpuPercent }.prefix(cap))
     }
 
     static func rows(_ live: LiveModel) -> [ProcessSample] { rank(live.processes) }

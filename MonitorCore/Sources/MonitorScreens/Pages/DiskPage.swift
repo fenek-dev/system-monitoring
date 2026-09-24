@@ -350,7 +350,7 @@ enum DiskRows {
     /// Processes with disk I/O this tick (restricted pids are counted in their coalition rows), by read + write.
     static func rows(_ processes: [ProcessSample], identity: (AppKey) -> AppIdentity?) -> [DiskRow] {
         let active = processes.filter { ($0.diskReadBps ?? 0) + ($0.diskWriteBps ?? 0) > 0 }
-        return SystemPageSort.descending(active.map { p in
+        return TTSort.stable(active.map { p in
             let exited = p.id.isExitedResidual
             return DiskRow(id: "pid:\(p.id.pid):\(p.id.startTimeUs)", name: exited ? exitedName : p.name,
                            identity: exited ? nil : identity(p.app),

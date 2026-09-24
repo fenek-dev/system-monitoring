@@ -336,8 +336,7 @@ struct OverviewTopProcessesCard: View {
 
     /// App groups by CPU, descending — sorted here, before the "as many as fit" prefix.
     static func rows(_ live: LiveModel) -> [AppSample] {
-        live.apps.filter { $0.identity.key != .other }
-            .sorted { ($0.cpuPercent ?? -1) > ($1.cpuPercent ?? -1) }
+        TTSort.stable(live.apps.filter { $0.identity.key != .other }) { $0.cpuPercent }
     }
 
     private func open(_ app: AppSample) {

@@ -682,23 +682,6 @@ struct SystemChartUnavailable: View {
     }
 }
 
-enum SystemPageSort {
-    /// Stable descending sort by `key`, nil/non-finite last (the tables' fixed headline sort).
-    static func descending<T>(_ items: [T], by key: (T) -> Double?) -> [T] {
-        items.enumerated()
-            .map { (i: $0.offset, k: key($0.element).flatMap { $0.isFinite ? $0 : nil }, v: $0.element) }
-            .sorted { a, b in
-                switch (a.k, b.k) {
-                case let (x?, y?): x != y ? x > y : a.i < b.i
-                case (.some, nil): true
-                case (nil, .some): false
-                case (nil, nil): a.i < b.i
-                }
-            }
-            .map(\.v)
-    }
-}
-
 /// Bottom table cards: snapshot renders show only whole rows (no clipped sliver of a last row); live tables pass
 /// every row and scroll. `content(limit)` receives the row budget for the height it is given.
 struct SystemFittedRows<Content: View>: View {

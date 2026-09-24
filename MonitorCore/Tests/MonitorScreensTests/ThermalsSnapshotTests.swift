@@ -195,7 +195,8 @@ struct ThermalsPageLogicTests {
         // header 26 + 4 top padding, then whole 32-pt rows only.
         #expect(SystemFittedRows<EmptyView>.limit(height: 30 + 32 * 6 + 31, rowHeight: 32, headerHeight: 26) == 6)
         #expect(SystemFittedRows<EmptyView>.limit(height: 10, rowHeight: 32, headerHeight: 26) == 0)
-        #expect(SystemPageSort.descending([1.0, nil, 3.0, 3.0], by: { $0 }).map { $0 } == [3.0, 3.0, 1.0, nil])
+        #expect(TTSort.stable([1.0, nil, 3.0, 3.0], by: { $0 }).map { $0 } == [3.0, 3.0, 1.0, nil])
+        #expect(TTSort.stable([1.0, nil, 3.0, .nan], descending: false, by: { $0 }).map { $0?.isNaN } == [false, false, nil, true])
     }
 
     @Test func rawModeNestsSensorsHottestFirstAndCollectsOrphans() {

@@ -324,7 +324,7 @@ enum EnergyRows {
     /// App groups with energy > 0 or a sleep assertion (or an unavailable value to explain), excluding "Other";
     /// sorted by energy, descending (nil last, stable).
     static func apps(_ apps: [AppSample], averages: [AppKey: Double], health: [SensorID: SensorStatus]) -> [EnergyRow] {
-        SystemPageSort.descending(rows(apps, averages: averages, health: health)) { $0.watts }
+        TTSort.stable(rows(apps, averages: averages, health: health)) { $0.watts }
     }
 
     private static func rows(_ apps: [AppSample], averages: [AppKey: Double],
