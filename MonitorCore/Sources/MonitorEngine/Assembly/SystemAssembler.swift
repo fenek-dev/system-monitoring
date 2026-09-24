@@ -17,7 +17,8 @@ struct SystemSnapshots: Sendable {
 ///
 /// Units (W6a, controller 2026-09-24): `MemoryReading` page-class fields (free … anonymous), `total`, compressor and
 /// swap fields are bytes; `pageins/pageouts/swapins/swapouts` are cumulative page counts (→ pages/s, DESIGN).
-/// `GPUClientsReading.deviceUtilization` is AGX "Device Utilization %" (0–100).
+/// `GPUClientsReading.deviceUtilization` is AGX "Device Utilization %" (0–100). It resets on every read by any
+/// reader (W6b ruling), so system GPU % comes from IOReport residency; AGX is only the fallback without IOReport.
 struct SystemAssembler {
     private enum Counter: Hashable, Sendable {
         case pageins, pageouts, swapins, swapouts
