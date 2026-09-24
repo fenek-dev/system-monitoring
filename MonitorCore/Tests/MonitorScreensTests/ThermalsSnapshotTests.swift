@@ -118,6 +118,26 @@ struct ThermalsPageLogicTests {
         #expect(ThermalChartData.unavailableReason(withP, health: down) == nil)
     }
 
+    /// Ruling: y-domain lower bound = min(40, floor(min sample) − 5) rounded down to 10; upper stays 105.
+    @Test func temperatureDomainExtendsBelowFloor() {
+        let t = Date(timeIntervalSince1970: 0)
+        func s(_ id: String, _ v: [Double?]) -> ChartSeries {
+            ChartSeries(id: id, label: id, color: .red,
+                        points: v.enumerated().map { SeriesPoint(time: t + Double($0.offset), value: $0.element) })
+        }
+        // Battery 31 °C with P-cores 55 °C → starts at 20.
+        #expect(ThermalChartData.domain([s("p", [55, 56]), s("battery", [31, 31.4])]) == 20...105)
+        // Everything ≥ 45 → the design's 40.
+        #expect(ThermalChartData.domain([s("p", [62, 66]), s("gpu", [45, nil])]) == 40...105)
+        #expect(ThermalChartData.domain([s("p", [44.9])]) == 30...105)          // floor(44.9) − 5 = 39 → 30
+        #expect(ThermalChartData.domain([s("p", [nil])]) == 40...105)
+        #expect(ThermalChartData.domain([s("battery", [8])]) == 0...105)
+        // No visible sample falls below the axis.
+        let series = [s("p", [55]), s("battery", [31, 25.2])]
+        let lowest = series.flatMap(\.points).compactMap(\.value).min()!
+        #expect(ThermalChartData.domain(series).lowerBound <= lowest)
+    }
+
     /// Clicking toggles a raw row's strip; group rows ignore clicks.
     @Test func rawStripToggle() {
         let lines = SensorsCardLines.lines(thermals(), showRaw: true)
