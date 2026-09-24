@@ -381,15 +381,9 @@ private struct HistoryChipsLayer: View {
                 }
             }
             .fixedSize()
-            .position(x: Self.groupCenter(chip, width: width), y: TTSpace.x4 + HistoryChip.height / 2)
+            // The layout already settled the groups as a sequence inside the width (HistoryChip.settle).
+            .position(x: chip.left + chip.groupWidth / 2, y: TTSpace.x4 + HistoryChip.height / 2)
         }
-    }
-
-    /// Center of chip + "+n" kept inside the chart width.
-    static func groupCenter(_ chip: HistoryChip, width: CGFloat) -> CGFloat {
-        let extra = chip.hidden > 0 ? chip.pillWidth + HistoryChip.gap : 0
-        let total = chip.width + extra
-        return min(max(chip.x + extra / 2, total / 2), max(width - total / 2, total / 2))
     }
 }
 

@@ -260,6 +260,40 @@ struct HistoryWindowTests {
         #expect(chips.contains { $0.hidden > 0 && $0.pillWidth > 0 })
     }
 
+    /// Two big-pill clusters at the right edge: after settling, every group (chip + pill, as drawn) is inside the
+    /// width and clear of its neighbours.
+    @Test func settledGroupsStayInsideAndApartAtTheEdges() {
+        let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        let width: CGFloat = 810
+        var events: [HistoryEvent] = []
+        for k in 0..<40 { events.append(HistoryEvent(start: w.time(at: w.count - 1 - k % 2), level: .calm, label: "Edge \(k)")) }
+        // A lone chip that clears the edge chip before settling but not once its pill is pulled inside.
+        events.append(HistoryEvent(start: w.time(at: w.count - 40), level: .calm, label: "Near"))
+        for k in 0..<40 { events.append(HistoryEvent(start: w.time(at: k % 2), level: .calm, label: "Start \(k)")) }
+        let chips = HistoryChip.layout(events, window: w, width: width, label: { $0.label },
+                                       measure: { CGFloat($0.count) * 6 })
+        #expect(chips.reduce(0) { $0 + 1 + $1.hidden } == events.count)
+        let near = chips.first { $0.text == "Near" }
+        #expect(near?.hidden == 0)                                          // still its own chip …
+        #expect((near?.x ?? 0) < CGFloat(w.fraction(of: w.time(at: w.count - 40))) * width)   // … pulled left
+        for c in chips {
+            #expect(c.left >= 0)
+            #expect(c.left + c.groupWidth <= width + 0.001)                   // drawn extent (chip + pill)
+        }
+        for (a, b) in zip(chips, chips.dropFirst()) {
+            #expect(a.left + a.groupWidth + HistoryChip.gap <= b.left + 0.001)
+        }
+    }
+
+    @Test func formatterCacheIsCapped() {
+        for i in 0..<100 {
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = TimeZone(secondsFromGMT: (i % 50) * 900)!
+            _ = HistoryText.moment(HT.now, range: .day, calendar: cal)
+        }
+        #expect(HistoryText.cachedFormatterCount <= HistoryText.formatterCacheCap)
+    }
+
     @Test func notPersistentBanner() {
         #expect(HistoryText.persistenceBanner(persistent: true) == nil)
         #expect(HistoryText.persistenceBanner(persistent: false)?.hasPrefix("History isn’t being saved — ") == true)
