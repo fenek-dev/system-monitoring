@@ -1,5 +1,6 @@
 import Foundation
 import MonitorUIKit
+import SnapshotProcessSetup
 import SwiftUI
 import Testing
 
@@ -29,6 +30,12 @@ enum SnapshotMode {
 @MainActor func verifySnapshot<V: View>(_ view: V, size: CGSize, named: String, path: SnapshotRenderer.Path,
                                         tolerance: Double, record: Bool, strict: Bool = false,
                                         sourceLocation: SourceLocation) {
+    // Font smoothing latches at the process's first text layout, so it must be off before any test runs.
+    guard tt_snapshot_text_rendering_configured_at_load() else {
+        Issue.record("snapshot \(named): SnapshotProcessSetup constructor did not run (font smoothing not fixed)",
+                     sourceLocation: sourceLocation)
+        return
+    }
     guard let actual = SnapshotRenderer.render(view, size: size, path: path) else {
         Issue.record("snapshot \(named): renderer unavailable / render failed", sourceLocation: sourceLocation)
         return

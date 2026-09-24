@@ -18,9 +18,8 @@ enum ScreenFixture {
     /// `LiveModel.mock(scenario)` (frames 0…60, presenting).
     static func live(_ scenario: MockScenario, ticks: Int = 60) -> LiveModel { .mock(scenario, ticks: ticks) }
 
-    /// Shared test-process setup: AppKit reads font smoothing once, at the first text layout in the process, so it
-    /// must be configured before ANY `NSHostingView`/controller lays out (not only before snapshot renders);
-    /// otherwise goldens rendered later in the same process drift 1–2 % in antialiasing. Every fixture calls it.
+    /// Font smoothing latches at the process's first text layout. The guarantee is the `SnapshotProcessSetup`
+    /// load-time constructor (runs before any test); this call is redundant belt-and-braces.
     static func prepareTextRendering() { SnapshotRenderer.configureTextRendering() }
 
     /// Full deterministic environment (ARCHITECTURE §8): mock live/history/actions, default settings on a scratch
