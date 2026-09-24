@@ -329,6 +329,12 @@ public final class HistoryModel {
         requestShares(force: false)
     }
 
+    /// Restores a cursor moment (e.g. `nav.historyScrub` when the page reappears) before `load()`; no query.
+    public func restoreCursor(to date: Date) {
+        guard range != .live, date >= window.start, date < window.end else { return }
+        cursor = window.index(of: date)
+    }
+
     public func endScrub() {
         isScrubbing = false
     }

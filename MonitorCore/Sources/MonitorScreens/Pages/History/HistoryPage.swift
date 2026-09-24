@@ -56,6 +56,7 @@ public struct HistoryPage: View {
 
     private func select(_ range: HistoryRange) {
         model.select(range, now: now)
+        if let t = nav.historyScrub { model.restoreCursor(to: t) }
         if range == .live {
             tickLive()
         } else if isSnapshot {
@@ -298,7 +299,8 @@ private struct HistoryScrubber: View {
         let window = model.window
         let binding = Binding<Double>(get: { Double(model.cursor) },
                                       set: { model.scrub(to: Int($0.rounded())) })
-        Slider(value: binding, in: 0...Double(max(window.count - 1, 1)), step: 1) { editing in
+        // Continuous NSSlider (a `step` would draw 288 tick marks); the binding snaps to whole buckets.
+        Slider(value: binding, in: 0...Double(max(window.count - 1, 1))) { editing in
             if !editing { model.endScrub() }
         }
         .labelsHidden()
