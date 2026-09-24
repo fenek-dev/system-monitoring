@@ -127,6 +127,18 @@ struct ShellSettingsStoreTests {
         #expect(SettingsStore(defaults: d).disabledSensors == [.soc, .smc])
     }
 
+    @Test func inMemoryDefaultsNeverReachThePersistentDomains() {
+        let key = "units.temperature"
+        let before = UserDefaults.standard.object(forKey: key) as? String
+        let (s, d) = ScreenFixture.settings()
+        s.units.temperature = .fahrenheit
+        s.setVisible(.gpu, false)
+        #expect(d.string(forKey: key) == "fahrenheit")
+        #expect(UserDefaults.standard.object(forKey: key) as? String == before)   // nothing leaked to .standard
+        #expect(SettingsStore(defaults: d).popoverLayout.hidden == [.gpu])
+        #expect(ScreenCatalog.snapshotSettings().defaults is InMemoryDefaults)
+    }
+
     @Test func suitePerDataDirectoryIsStable() {
         let a = SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a/"))
         #expect(a == SettingsStore.suiteName(for: URL(fileURLWithPath: "/tmp/a")))
@@ -146,9 +158,13 @@ struct ShellScreenCatalogTests {
         #expect(ScreenCatalog.entry("overview")?.size == CGSize(width: 1280, height: 860))
     }
 
-    @Test func everyEntryBuildsForEveryScenario() {
+    /// Yields between builds so this long main-actor loop doesn't starve timing-sensitive suites.
+    @Test func everyEntryBuildsForEveryScenario() async {
         for e in ScreenCatalog.entries {
-            for s in MockScenario.allCases { _ = e.make(s) }
+            for s in MockScenario.allCases {
+                _ = e.make(s)
+                await Task.yield()
+            }
         }
     }
 
