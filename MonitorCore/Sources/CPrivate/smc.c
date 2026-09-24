@@ -57,6 +57,27 @@ int32_t smc_read(io_connect_t c, const char *key, uint32_t *type, uint8_t *bytes
     return 0;
 }
 
+int32_t smc_key_info(io_connect_t c, const char *key, uint32_t *type, uint32_t *size) {
+    SMCParam in = {0}, out = {0};
+    in.key = fourcc(key);
+    in.data8 = kSMCGetKeyInfo;
+    if (call(c, &in, &out) != KERN_SUCCESS || out.result != 0) return -1;
+    *type = out.keyInfo.dataType;
+    *size = out.keyInfo.dataSize;
+    return 0;
+}
+
+int32_t smc_read_sized(io_connect_t c, const char *key, uint32_t size, uint8_t *bytes) {
+    if (size == 0 || size > 32) return -2;
+    SMCParam in = {0}, out = {0};
+    in.key = fourcc(key);
+    in.keyInfo.dataSize = size;
+    in.data8 = kSMCReadKey;
+    if (call(c, &in, &out) != KERN_SUCCESS || out.result != 0) return -2;
+    memcpy(bytes, out.bytes, size);
+    return 0;
+}
+
 int32_t smc_key_at(io_connect_t c, uint32_t index, char *outKey) {
     SMCParam in = {0}, out = {0};
     in.data8 = kSMCGetKeyFromIndex;
