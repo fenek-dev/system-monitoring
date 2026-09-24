@@ -28,6 +28,20 @@ struct OverviewSnapshotTests {
         #expect(c.domain("net", range: .live, 0...0.5) == 0...1)
     }
 
+    /// N3: the coalition-member set is built in one pass (once per processes change), and the "Estimated" CPU rule
+    /// reads it instead of regrouping `live.processes` per cell.
+    @Test func estimatedCPUUsesPrecomputedCoalitionSet() {
+        let live = ScreenFixture.live(.restricted)
+        let coalition = AppSample.coalitionApps(live.processes)
+        let expected = Set(live.processes.filter { $0.provenance == .coalition }.map(\.app))
+        #expect(coalition == expected)
+        for a in live.apps {
+            let slow = a.isExitedResidualOnly || a.exitedResidual != nil
+                || live.processes(of: a.identity.key).contains { $0.provenance == .coalition }
+            #expect(a.cpuIsEstimated(coalitionApps: coalition) == slow)
+        }
+    }
+
     /// M3: a missing headline value always has a reason; only a down sensor turns "Collecting…" off.
     @Test func headlineReasonFallbacks() {
         let live = ScreenFixture.live(.calm)

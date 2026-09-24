@@ -183,7 +183,8 @@ struct CPUConsumersCard: View {
                         sort: $sort, rowMenu: { p in
                             p.isExitedResidualRow ? AnyView(EmptyView()) : AnyView(TTRowActionsMenu(target: p.target))
                         }, children: nil,
-                        style: TTTableStyle(sortsRows: false, emptyMessage: "No processes"), onDoubleClick: open)
+                        style: TTTableStyle(sortsRows: false, emptyMessage: "No processes"), onDoubleClick: open,
+                        columnsVersion: tableColumnsVersion(live))   // cells capture health (M2)
             }
         }
     }

@@ -90,6 +90,49 @@ import Testing
         #expect(!bridged)
     }
 
+    /// Ruling N2 (Live 1-s grid): gaps of up to 6 slots between samples are bridged (5-s background cadence = 4 empty
+    /// slots); a longer gap (a real pause) still breaks the line; bridging is off by default (stored ranges).
+    @Test func liveGridBridgesShortGapsOnly() {
+        let b = ChartSegments.liveBridgeSlots
+        #expect(b == 6)
+        // 5-s cadence then 1-s points: one run.
+        let cadence: [Double?] = [1, nil, nil, nil, nil, 2, nil, nil, nil, nil, 3, 4, 5]
+        #expect(ChartSegments.runs(pts(cadence), bridge: b) == [0..<13])
+        #expect(ChartSegments.runs(pts(cadence)) == [0..<1, 5..<6, 10..<13])   // strict rule: two lone points
+        // 6 empty slots bridge, 7 break.
+        #expect(ChartSegments.runs(pts([1] + Array(repeating: nil, count: 6) + [2]), bridge: b) == [0..<8])
+        #expect(ChartSegments.runs(pts([1] + Array(repeating: nil, count: 7) + [2]), bridge: b) == [0..<1, 8..<9])
+        // Leading/trailing nils are not part of a run.
+        #expect(ChartSegments.runs(pts([nil, 1, nil, 2, nil]), bridge: b) == [1..<4])
+
+        var line = Path()
+        var area: Path? = Path()
+        ChartSegments.addSeries(pts(cadence), domain: 0...10, in: CGSize(width: 120, height: 50), line: &line,
+                                area: &area, bridge: b)
+        let l = stats(line, baseline: 50)
+        #expect(l.moves == 1 && l.lines == 4)        // 5 samples, one subpath
+        #expect(stats(area!, baseline: 50).closes == 1)
+
+        var paused = Path()
+        var none: Path?
+        let pause: [Double?] = [1, 2] + Array(repeating: nil, count: 20) + [3, 4]
+        ChartSegments.addSeries(pts(pause), domain: 0...10, in: CGSize(width: 120, height: 50), line: &paused,
+                                area: &none, bridge: b)
+        #expect(stats(paused, baseline: 50).moves == 2)
+    }
+
+    /// Ruling N2: a sample that is a run of its own draws as a dot (it has no segment).
+    @Test func loneSamplesDrawAsDots() {
+        let p = pts([nil, 5, nil, nil, nil, nil, nil, nil, nil, 6, 7, nil])
+        #expect(ChartSegments.loneSamples(p) == [1])
+        #expect(ChartSegments.loneSamples(p, bridge: 6) == [1])            // 7 empty slots: still alone
+        #expect(ChartSegments.loneSamples(pts([nil, 5, nil, nil, 6]), bridge: 6) == [])
+        let dots = ChartSegments.loneDots(p, domain: 0...10, in: CGSize(width: 110, height: 50), radius: 2)
+        #expect(dots.boundingRect == CGRect(x: 10 - 2, y: 25 - 2, width: 4, height: 4))
+        // "Collecting…" stays until the window holds 2 samples.
+        #expect(ChartSegments.sampleCount(pts([nil, 5, nil])) < 2)
+    }
+
     @Test func flippedAreaHangsFromTheTop() {
         var line = Path()
         var area: Path? = Path()

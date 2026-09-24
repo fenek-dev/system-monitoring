@@ -62,12 +62,24 @@ public struct TTAreaChart: View, Equatable {
             }
         } else {
             let chart = self
-            TTChartCanvas { ctx, size in chart.draw(&ctx, size: size) }
+            let bridge = gapBridge
+            TTChartCanvas { ctx, size in chart.draw(&ctx, size: size, bridge: bridge) }
                 .accessibilityHidden(true)
         }
     }
 
-    func draw(_ ctx: inout GraphicsContext, size: CGSize) {
+    /// `\.ttChartGapBridge` (Live 1-s grid): short nil runs between samples are spanned; lone samples draw as dots.
+    @Environment(\.ttChartGapBridge) private var gapBridge
+
+    /// Data equality (the environment is tracked by SwiftUI separately).
+    public nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.points == b.points && a.color == b.color && a.yDomain == b.yDomain && a.fillOpacity == b.fillOpacity
+            && a.lineOnly == b.lineOnly && a.lineWidth == b.lineWidth && a.flipped == b.flipped && a.dash == b.dash
+            && a.grid == b.grid && a.bands == b.bands && a.showsCollecting == b.showsCollecting
+            && a.partialHistory == b.partialHistory
+    }
+
+    func draw(_ ctx: inout GraphicsContext, size: CGSize, bridge: Int = 0) {
         for band in bands {
             let y0 = ChartSegments.y(value: band.range.upperBound, domain: yDomain, height: size.height)
             let y1 = ChartSegments.y(value: band.range.lowerBound, domain: yDomain, height: size.height)
@@ -86,10 +98,15 @@ public struct TTAreaChart: View, Equatable {
         let drawn = points.count > limit ? ChartSegments.decimate(points, maxPoints: limit) : points
         var line = Path()
         var area: Path? = lineOnly ? nil : Path()
-        ChartSegments.addSeries(drawn, domain: yDomain, in: size, line: &line, area: &area, flipped: flipped)
+        // Decimated series (N > 2 × width) are not grid data: no bridging there.
+        let b = drawn.count == points.count ? bridge : 0
+        ChartSegments.addSeries(drawn, domain: yDomain, in: size, line: &line, area: &area, flipped: flipped, bridge: b)
         if let area { ctx.fill(area, with: .color(color.opacity(fillOpacity))) }
         ctx.stroke(line, with: .color(color),
                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt, lineJoin: .round, dash: dash))
+        ctx.fill(ChartSegments.loneDots(drawn, domain: yDomain, in: size, radius: max(1.5, lineWidth),
+                                        flipped: flipped, bridge: b),
+                 with: .color(color))
     }
 }
 

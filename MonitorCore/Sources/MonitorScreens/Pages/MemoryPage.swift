@@ -302,7 +302,7 @@ struct MemoryConsumersCard: View {
                 children: nil, style: TTTableStyle(sortsRows: false, emptyMessage: "No processes"), onDoubleClick: { app in
                     nav.selection = .app(app.identity.key)
                     nav.page = .processes
-                })
+                }, columnsVersion: tableColumnsVersion(live))   // cells capture health (M2)
             }
         }
     }

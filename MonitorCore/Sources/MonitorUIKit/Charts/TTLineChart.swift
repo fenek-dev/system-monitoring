@@ -20,6 +20,8 @@ public struct TTLineChart: View, Equatable {
         let time: Date
         let value: Double
         let seriesIndex: Int
+        /// The only sample of its run: drawn as a dot (ruling N2).
+        var lone = false
     }
 
     static let maxTotalPoints = 600
@@ -36,7 +38,9 @@ public struct TTLineChart: View, Equatable {
 
     /// - Parameter yTicks: explicit tick values (labels at each, gridlines at those strictly inside the domain),
     ///   e.g. `[100, 80, 60, 40, 20]` for a 20…105 domain. nil keeps the quarter labels and gridlines.
-    public init(_ series: [ChartSeries], yDomain: ClosedRange<Double>, yTicks: [Double]? = nil,
+    /// - Parameter bridge: nil runs of up to this many points between samples are spanned
+    ///   (`ChartSegments.liveBridgeSlots` for the Live 1-s grid; 0 for stored ranges).
+    public init(_ series: [ChartSeries], yDomain: ClosedRange<Double>, yTicks: [Double]? = nil, bridge: Int = 0,
                 yFormat: @escaping (Double) -> String) {
         self.yDomain = yDomain
         self.yTicks = yTicks
@@ -48,10 +52,12 @@ public struct TTLineChart: View, Equatable {
             let pts = ChartSegments.decimate(s.points, maxPoints: perSeries)
             if let f = pts.first?.time { minT = min(minT ?? f, f) }
             if let l = pts.last?.time { maxT = max(maxT ?? l, l) }
-            for (ri, run) in ChartSegments.runs(pts).enumerated() {
+            let b = pts.count == s.points.count ? bridge : 0          // no bridging over decimated buckets
+            for (ri, run) in ChartSegments.runs(pts, bridge: b).enumerated() {
                 for i in run {
+                    guard let v = pts[i].value, v.isFinite else { continue }   // bridged slot
                     marks.append(Mark(id: marks.count, run: si << 20 | ri, time: pts[i].time,
-                                      value: pts[i].value!, seriesIndex: si))
+                                      value: v, seriesIndex: si, lone: run.count == 1))
                 }
             }
             samples = max(samples, ChartSegments.sampleCount(pts))
@@ -133,11 +139,17 @@ public struct TTLineChart: View, Equatable {
     private var chart: some View {
         Chart(marks) { m in
             let style = styles[m.seriesIndex]
-            LineMark(x: .value("t", m.time), y: .value("v", min(max(m.value, yDomain.lowerBound), yDomain.upperBound)),
-                     series: .value("run", m.run))
-                .foregroundStyle(style.color)
-                .lineStyle(StrokeStyle(lineWidth: style.width, lineCap: .butt, lineJoin: .round, dash: style.dash))
-                .interpolationMethod(.linear)
+            let y = min(max(m.value, yDomain.lowerBound), yDomain.upperBound)
+            if m.lone {
+                PointMark(x: .value("t", m.time), y: .value("v", y))
+                    .foregroundStyle(style.color)
+                    .symbolSize(max(9, style.width * style.width * 4))
+            } else {
+                LineMark(x: .value("t", m.time), y: .value("v", y), series: .value("run", m.run))
+                    .foregroundStyle(style.color)
+                    .lineStyle(StrokeStyle(lineWidth: style.width, lineCap: .butt, lineJoin: .round, dash: style.dash))
+                    .interpolationMethod(.linear)
+            }
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)

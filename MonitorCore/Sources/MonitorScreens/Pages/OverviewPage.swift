@@ -315,23 +315,38 @@ struct OverviewTopProcessesCard: View {
     @State private var selection: AppKey?
     @State private var sort: (column: String, descending: Bool) = ("cpu", true)
     @State private var cache = RankCache<AppSample>()
+    @State private var coalitionCache = RankCache<AppKey>()
 
     var body: some View {
         let health = live.sensorHealth
-        // Ranked once per apps change (`appsVersion`), not on every body evaluation (U-M1).
+        // Ranked once per apps change (`appsVersion`), not on every body evaluation (U-M1). The coalition-member
+        // apps ("Estimated" CPU) are computed here once per processes change too, so cells never read `live` (N3).
         let rows = cache.rows(version: live.appsVersion) { Self.rows(live) }
+        let coalition = Set(coalitionCache.rows(version: live.appsVersion) {
+            Array(AppSample.coalitionApps(live.processes))
+        })
+        let columnsVersion = Self.columnsVersion(tableColumnsVersion(live, units: units), coalition: coalition)
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Top processes") { PageLink("All processes", to: .processes) }
             FitRows { n in   // "as many as fit (≈4 at the default size)"
-                TTTable(rows: Array(rows.prefix(n)), columns: columns(health), selection: $selection, sort: $sort,
+                TTTable(rows: Array(rows.prefix(n)), columns: columns(health, coalition: coalition),
+                        selection: $selection, sort: $sort,
                         rowMenu: { a in
                             a.isExitedResidualOnly ? AnyView(EmptyView()) : AnyView(TTRowActionsMenu(target: a.target))
                         }, children: nil,
                         // Pre-sorted by CPU before the prefix; the table must not re-sort (header sorting is off).
                         style: TTTableStyle(sortsRows: false, scrolls: false, emptyMessage: "No processes"),
-                        onDoubleClick: open, columnsVersion: tableColumnsVersion(live, units: units))
+                        onDoubleClick: open, columnsVersion: columnsVersion)
             }
         }
+    }
+
+    /// Health/units version plus the coalition set the "Estimated" cells capture.
+    static func columnsVersion(_ base: Int, coalition: Set<AppKey>) -> Int {
+        var h = Hasher()
+        h.combine(base)
+        h.combine(coalition)
+        return h.finalize()
     }
 
     /// App groups by CPU, descending — sorted here, before the "as many as fit" prefix.
@@ -344,9 +359,10 @@ struct OverviewTopProcessesCard: View {
         nav.page = .processes
     }
 
-    private func columns(_ health: [SensorID: SensorStatus]) -> [TTTable<AppSample>.Column] {
+    /// Cells capture plain values only (health, units, the coalition set) — no `live` reads, so a row observes
+    /// nothing beyond its own `AppSample` (N3).
+    private func columns(_ health: [SensorID: SensorStatus], coalition: Set<AppKey>) -> [TTTable<AppSample>.Column] {
         let units = units
-        let live = live
         return [
             .init(id: "name", title: "Process", width: .fraction(2.2, min: 0)) { a in
                 a.isExitedResidualOnly ? AnyView(ExitedNameCell(identity: a.identity, name: a.name))
@@ -354,7 +370,7 @@ struct OverviewTopProcessesCard: View {
             },
             .init(id: "cpu", title: "CPU", width: .fraction(1, min: 0), alignment: .trailing, sortKey: \.cpuPercent) {
                 metricCell(TTFormat.cpuPercent($0.cpuPercent), reason: unavailableReason(.cpu, $0, health: health),
-                           estimated: $0.cpuIsEstimated(live))
+                           estimated: $0.cpuIsEstimated(coalitionApps: coalition))
             },
             .init(id: "gpu", title: "GPU", width: .fraction(1, min: 0), alignment: .trailing) {
                 metricCell(TTFormat.cpuPercent($0.gpuPercent), reason: unavailableReason(.gpu, $0, health: health))

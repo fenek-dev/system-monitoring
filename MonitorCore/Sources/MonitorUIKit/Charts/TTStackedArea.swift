@@ -60,24 +60,36 @@ public struct TTStackedArea: View, Equatable {
             }
         } else {
             let chart = self
-            TTChartCanvas { ctx, size in chart.draw(&ctx, size: size) }
+            let bridge = gapBridge
+            TTChartCanvas { ctx, size in chart.draw(&ctx, size: size, bridge: bridge) }
                 .accessibilityElement()
                 .accessibilityLabel(summary)
         }
     }
 
-    func draw(_ ctx: inout GraphicsContext, size: CGSize) {
+    /// `\.ttChartGapBridge` (Live 1-s grid): short nil runs are spanned; a lone sample draws as a dot (ruling N2).
+    @Environment(\.ttChartGapBridge) private var gapBridge
+
+    /// Data equality (the environment is tracked by SwiftUI separately).
+    public nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.layers == b.layers && a.colors == b.colors && a.yDomain == b.yDomain && a.outline == b.outline
+            && a.outlineWidth == b.outlineWidth && a.grid == b.grid && a.summary == b.summary
+    }
+
+    func draw(_ ctx: inout GraphicsContext, size: CGSize, bridge: Int = 0) {
         ChartGrid.draw(&ctx, size: size, divisions: grid)
         for i in layers.indices.reversed() {
             var line = Path()
             var area: Path? = Path()
-            ChartSegments.addSeries(layers[i], domain: yDomain, in: size, line: &line, area: &area)
+            ChartSegments.addSeries(layers[i], domain: yDomain, in: size, line: &line, area: &area, bridge: bridge)
             if let area { ctx.fill(area, with: .color(colors[i])) }
+            ctx.fill(ChartSegments.loneDots(layers[i], domain: yDomain, in: size, radius: 1.5, bridge: bridge),
+                     with: .color(colors[i]))
         }
         if let outline, let top = layers.last {
             var line = Path()
             var none: Path?
-            ChartSegments.addSeries(top, domain: yDomain, in: size, line: &line, area: &none)
+            ChartSegments.addSeries(top, domain: yDomain, in: size, line: &line, area: &none, bridge: bridge)
             ctx.stroke(line, with: .color(outline),
                        style: StrokeStyle(lineWidth: outlineWidth, lineCap: .butt, lineJoin: .round))
         }

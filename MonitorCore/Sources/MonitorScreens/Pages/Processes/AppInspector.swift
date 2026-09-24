@@ -192,6 +192,7 @@ private struct AppDetailBody: View {
                     }
                 }
                 .frame(height: 6 * 34 + 5 * TTSpace.x4)
+                .environment(\.ttChartGapBridge, model.range == .live ? ChartSegments.liveBridgeSlots : 0)
                 TTTimeAxis(range: model.range, end: end)
                     .padding(.leading, 96)
                     .padding(.trailing, Self.valueWidth + TTSpace.x12)

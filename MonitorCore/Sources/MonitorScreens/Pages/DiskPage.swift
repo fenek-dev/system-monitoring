@@ -267,6 +267,7 @@ private struct ThroughputCard: View {
                         upScale: scale, downScale: scale)
                 }
             }
+            .environment(\.ttChartGapBridge, range == .live ? ChartSegments.liveBridgeSlots : 0)
             .frame(minHeight: 161, maxHeight: .infinity)
             TTTimeAxis(range: range, end: end)
         }
@@ -389,7 +390,8 @@ private struct DiskActivityCard: View {
                 TTTable(rows: Array(rows.prefix(limit)), columns: Self.columns, selection: $selection,
                         sort: .constant((column: "read", descending: true)),
                         rowMenu: { $0.isExited ? AnyView(EmptyView()) : AnyView(TTRowActionsMenu(target: $0.target)) },
-                        style: TTTableStyle(rowHeight: 32, emptyMessage: "No disk activity"))
+                        style: TTTableStyle(rowHeight: 32, emptyMessage: "No disk activity"),
+                        columnsVersion: tableColumnsVersion(live))   // uniform M2 keying (cells are row-derived today)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)

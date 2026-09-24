@@ -235,7 +235,7 @@ struct GPUClientsCard: View {
                 children: nil, style: TTTableStyle(sortsRows: false, emptyMessage: "No GPU clients"), onDoubleClick: { app in
                     nav.selection = .app(app.identity.key)
                     nav.page = .processes
-                })
+                }, columnsVersion: tableColumnsVersion(live))   // cells capture health (M2)
             }
         }
     }
