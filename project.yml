@@ -12,7 +12,7 @@ settings:
     CODE_SIGN_STYLE: Manual
     ENABLE_HARDENED_RUNTIME: NO
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
     # Debug otherwise splits the code into Telltale.debug.dylib (previews); keep one binary so
     # `otool -l Contents/MacOS/Telltale` shows the weak private-library loads.
     ENABLE_DEBUG_DYLIB: NO
@@ -24,6 +24,9 @@ targets:
     type: application
     platform: macOS
     sources: [App/Sources, App/Resources]
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
       properties:
