@@ -4,7 +4,9 @@ import MonitorModel
 
 /// Live process/volume actions (ARCHITECTURE §5.13). Lives in Shell (not App) so `swift test` covers it.
 /// - `canControl`: every pid > 1 is owned by `getuid()`, none is synthetic (pid < 0), and the target is not Telltale
-///   itself (`ProcessTarget.isSelf`, the same rule as the row menu). Quit/Force Quit answer `.notPermitted` otherwise.
+///   itself (`ProcessTarget.isSelf`, the same rule as the row menu). Quit/Force Quit use `gate`: the same rules,
+///   but exited members are dropped before the owner check (all gone → `.exited`, a live foreign one →
+///   `.notPermitted`).
 /// - Every pid is re-verified (pid + start time, `KERN_PROC_PID`) right before it is signalled; a pid that has
 ///   exited or been reused is never signalled. When no target process is left the result is `.exited`.
 /// - Quit (DESIGN §2.25 ruling): a `.process` gets `terminate()` (LS app) or SIGTERM. An `.app` group asks only
@@ -21,12 +23,18 @@ public enum ProcessActionsLive {
         ProcessActions(
             canControl: { canControl($0, uid: uid, owner: owner) },
             quit: { target in
-                guard canControl(target, uid: uid, owner: owner) else { return .notPermitted }
-                return await signal(target, force: false, startTime: startTime, quitWait: quitWait)
+                switch gate(target, uid: uid, owner: owner, startTime: startTime) {
+                case .notPermitted: .notPermitted
+                case .exited: .exited
+                case .proceed(let live): await signal(live, force: false, startTime: startTime, quitWait: quitWait)
+                }
             },
             forceQuit: { target in
-                guard canControl(target, uid: uid, owner: owner) else { return .notPermitted }
-                return await signal(target, force: true, startTime: startTime, quitWait: quitWait)
+                switch gate(target, uid: uid, owner: owner, startTime: startTime) {
+                case .notPermitted: .notPermitted
+                case .exited: .exited
+                case .proceed(let live): await signal(live, force: true, startTime: startTime, quitWait: quitWait)
+                }
             },
             revealInFinder: { target in
                 guard let url = path(of: target) else { return }
@@ -58,6 +66,37 @@ public enum ProcessActionsLive {
         }
         if case .process(_, _, _, let declared) = t, declared != uid { return false }
         return p.allSatisfy { owner($0) == uid }
+    }
+
+    enum Gate: Equatable {
+        /// Act on this target, reduced to its still-running members.
+        case proceed(ProcessTarget)
+        case exited
+        case notPermitted
+    }
+
+    /// Action gate: the static rules (no synthetic/launchd pid, not Telltale, declared uid) apply to the whole
+    /// target; members that have exited (start time no longer matches) are dropped first, so a helper that quit
+    /// while the confirm dialog was open never blocks the action; none left → `.exited`. The owner check runs on
+    /// the live members only (a member that exits during the check is dropped too).
+    static func gate(_ t: ProcessTarget, uid: uid_t, owner: (Int32) -> uid_t?, startTime: (Int32) -> UInt64?,
+                     ownPID: Int32 = getpid(), ownBundleID: String? = Bundle.main.bundleIdentifier) -> Gate {
+        let p = t.pids
+        guard !p.isEmpty, p.allSatisfy({ $0 > 1 }), !t.isSelf(ownPID: ownPID, ownBundleID: ownBundleID) else {
+            return .notPermitted
+        }
+        if case .process(_, _, _, let declared) = t, declared != uid { return .notPermitted }
+        var live = t.processIDs.filter { isAlive($0, startTime: startTime) }
+        guard !live.isEmpty else { return .exited }
+        for id in live where owner(id.pid) != uid {
+            if isAlive(id, startTime: startTime) { return .notPermitted }       // another user's live process
+        }
+        live = live.filter { owner($0.pid) == uid && isAlive($0, startTime: startTime) }
+        guard !live.isEmpty else { return .exited }
+        switch t {
+        case .app(let identity, _): return .proceed(.app(identity, processes: live))
+        case .process: return .proceed(t)
+        }
     }
 
     /// Who receives the signal (pure, unit-tested; see the type comment for the rule).
