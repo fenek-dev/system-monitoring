@@ -242,7 +242,7 @@ extension HistoryMetric {
         switch self {
         case .cpuUsage, .cpuUser, .cpuSystem, .cpuPCluster, .cpuECluster, .loadAvg1: .cpu
         case .gpuUsage, .gpuFrequency: .gpu
-        case .memUsed, .memApp, .memWired, .memCompressed, .memPressure, .swapUsed: .memory
+        case .memUsed, .memApp, .memWired, .memCompressed, .memPressure, .swapUsed, .memPressureLevel: .memory
         case .netRx, .netTx, .netLatency: .network
         case .diskRead, .diskWrite, .diskReadIOPS, .diskWriteIOPS: .disk
         case .socTemp, .cpuPTemp, .cpuETemp, .gpuTemp, .ssdTemp, .batteryTemp, .fan1RPM, .fan2RPM, .thermalPressure:

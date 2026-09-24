@@ -69,11 +69,10 @@ func ttMediaInfo(ofFirstChildOf driver: io_service_t) -> TTDriverMediaInfo {
 /// Verified live: this machine's mounted `.dmg`s all report a parent class containing "DiskImage";
 /// the internal NVMe SSD and an SD card reader both report an unrelated class.
 ///
-/// **Not yet wired into `DiskIOReading`** — `BlockDriverCounter` has no `isDiskImage` field (it's a
-/// locked `MonitorModel` interface, ARCHITECTURE §9); see `docs/icr/001-w6d-diskio-isdiskimage.md`
-/// for the proposed additive field. This is the "local extension" the plan's change-control process
-/// asks for meanwhile: the detection logic, tested against real hardware, ready to wire in as soon
-/// as the field lands.
+/// Wired into `DiskIOReading` via `BlockDriverCounter.isDiskImage` (ICR 001/11,
+/// `docs/icr/001-w6d-diskio-isdiskimage.md`, approved) — `DiskIOSensor.sample()` passes this straight
+/// through so a future disk-total aggregator (W1/W7) can exclude disk images from system disk-I/O
+/// totals without double-counting the backing file's I/O on the physical drive underneath.
 func ttIsDiskImageDriver(_ driver: io_service_t) -> Bool {
     var parent: io_registry_entry_t = 0
     guard IORegistryEntryGetParentEntry(driver, kIOServicePlane, &parent) == KERN_SUCCESS, parent != 0 else {

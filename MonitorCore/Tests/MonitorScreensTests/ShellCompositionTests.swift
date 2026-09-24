@@ -1,8 +1,10 @@
+import AppKit
 import Foundation
 import MonitorLive
 import MonitorMocks
 import MonitorModel
 @testable import MonitorScreens
+import SwiftUI
 import Testing
 
 @Suite("Shell launch options")
@@ -176,5 +178,37 @@ struct ShellScreenCatalogTests {
         #expect(ctx.now == MockDataProvider.referenceDate)
         #expect(ctx.navigation.page == .cpu)
         #expect(ctx.settings.units == UnitPreferences())
+    }
+}
+
+/// Reads `\.historyPersistent` into a box when its body is evaluated.
+@MainActor final class EnvProbeBox { var historyPersistent: Bool? }
+
+struct HistoryPersistentProbe: View {
+    let box: EnvProbeBox
+    @Environment(\.historyPersistent) private var persistent
+    var body: some View {
+        box.historyPersistent = persistent
+        return Color.clear
+    }
+}
+
+@Suite("Shell environment") @MainActor
+struct ShellEnvironmentTests {
+    private func read(_ ctx: ShellContext) -> Bool? {
+        let box = EnvProbeBox()
+        let host = NSHostingView(rootView: HistoryPersistentProbe(box: box).telltaleEnvironment(ctx))
+        host.frame = CGRect(x: 0, y: 0, width: 10, height: 10)
+        host.layoutSubtreeIfNeeded()
+        return box.historyPersistent
+    }
+
+    @Test func historyPersistentReachesViews() {
+        let ctx = ScreenFixture.context(.calm)
+        #expect(ctx.historyPersistent)                          // default
+        #expect(read(ctx) == true)
+        var mem = ctx
+        mem.historyPersistent = false                           // store fell back to memory
+        #expect(read(mem) == false)
     }
 }
