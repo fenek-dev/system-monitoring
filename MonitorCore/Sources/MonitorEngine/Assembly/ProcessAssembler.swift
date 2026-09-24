@@ -35,6 +35,8 @@ struct ProcessAssembly {
     var interval: Double?
     /// The process table's capturedNs advanced this tick (fresh deltas).
     var advanced = false
+    /// NStat-reported `ProcessID` → live owner (connections for the inspected app).
+    var flowOwners: [ProcessID: ProcessID] = [:]
 }
 
 /// Interval between successive readings of one sensor, by `capturedNs` (same semantics as `RateCalculator`).
@@ -235,6 +237,7 @@ struct ProcessAssembler {
             if let owner = resolve(id, live: live, rawByPID: rawByPID) { owners[id] = owner }
         }
         looseOwners = looseOwners.filter { cumulative[ProcessID(pid: $0.key, startTimeUs: 0)] != nil }
+        out.flowOwners = owners
 
         var flowCount: [ProcessID: Int] = [:]
         for f in reading.flows { if let owner = owners[f.process] { flowCount[owner, default: 0] += 1 } }
