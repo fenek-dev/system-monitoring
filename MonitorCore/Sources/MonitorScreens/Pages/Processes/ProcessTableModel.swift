@@ -559,7 +559,7 @@ public extension ProcessTableModel {
         let owned = !synthetic && p.provenance == .measured ? p.isCurrentUser : false
         let target: ProcessTarget? = synthetic ? nil
             : .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid)
-        let exited = isExitedResidual(p.id)
+        let exited = p.id.isExitedResidual                                   // ICR-13 (`ProcessID.exitedResidual`)
         let rawKind = exited ? (p.name.isEmpty ? nil : exitedName) : processKind(p, responsibleID: responsibleID)
         // Never "Exited processes · Exited processes": a kind equal to the name is dropped.
         let kind = rawKind == p.name ? nil : rawKind
@@ -590,9 +590,6 @@ public extension ProcessTableModel {
         return row
     }
 
-    /// ICR-13: `ProcessID.exitedResidual` rows carry pid −2 (coalition residual rows are −1, so the pid alone
-    /// separates them; switch to `ProcessID.exitedResidual` once W7 makes it public).
-    nonisolated static func isExitedResidual(_ id: ProcessID) -> Bool { id.pid == -2 }
     nonisolated static let exitedName = "Exited processes"
 
     /// Keeps each "Exited processes" row directly after the last row of its app (ICR-13), whatever the sort.
@@ -617,8 +614,8 @@ public extension ProcessTableModel {
         let coalitionOnly = !members.isEmpty && members.allSatisfy { $0.provenance != .measured }
         let base = coalitionOnly ? "System" : baseKind(key: key, representative: responsible ?? members.first)
         // The ICR-13 "Exited processes" pseudo-row is not a process.
-        let count = max(app.processIDs.filter { !isExitedResidual($0) }.count,
-                        members.filter { !isExitedResidual($0.id) }.count)
+        let count = max(app.processIDs.filter { !$0.isExitedResidual }.count,
+                        members.filter { !$0.id.isExitedResidual }.count)
         let real = members.filter { !$0.id.isSynthetic }
         let foreign = members.first { !$0.isCurrentUser || $0.provenance != .measured }
         let owned = !real.isEmpty && foreign == nil
@@ -650,7 +647,10 @@ public extension ProcessTableModel {
             cpu: app.cpuPercent, gpu: app.gpuPercent, memory: app.memory,
             network: sum(app.netRxBps, app.netTxBps), disk: sum(app.diskReadBps, app.diskWriteBps),
             energy: app.energyWatts, reasons: reasons,
-            cpuEstimated: members.contains { $0.provenance == .coalition }, energyEstimated: app.energyEstimated,
+            // Group values that include an ICR-13 exited share (`AppSample.exitedResidual`) are estimated too; the
+            // "Estimated" tooltip never talks about hidden processes.
+            cpuEstimated: members.contains { $0.provenance == .coalition } || app.exitedResidual != nil,
+            energyEstimated: app.energyEstimated || app.exitedResidual != nil,
             hasChildren: false, isExpanded: false, processCount: count, threads: app.threads, path: path,
             appKey: key, ownedByCurrentUser: owned,
             foreignOwner: owned ? nil : (foreign?.user ?? responsible?.user ?? "another user"),

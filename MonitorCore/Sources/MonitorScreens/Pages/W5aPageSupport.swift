@@ -369,20 +369,14 @@ extension View {
 // MARK: - Exited-processes rows (ICR-13)
 
 extension ProcessSample {
-    /// ICR-13 synthetic row (`ProcessID.exitedResidual`, pid −2): no PID, no row actions, italic secondary,
-    /// estimated. Coalition residual rows (pid −1) are NOT exited rows. TODO(W7): use `ProcessID.exitedResidual`
-    /// once it is public on dev.
-    var isExitedResidualRow: Bool { id.pid == W5a.exitedResidualPID }
-}
-
-extension W5a {
-    /// ICR-13 synthetic pid of the "Exited processes" row (local until W7 publishes `ProcessID.exitedResidual`).
-    static let exitedResidualPID: Int32 = -2
+    /// ICR-13 synthetic row (`ProcessID.exitedResidual`): no PID, no row actions, italic secondary, estimated.
+    /// Coalition residual rows are NOT exited rows.
+    var isExitedResidualRow: Bool { id.isExitedResidual }
 }
 
 extension AppSample {
-    /// An app group made only of synthetic rows (the ICR-13 exited-processes row).
-    var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy { $0.pid == W5a.exitedResidualPID } }
+    /// An app group made only of the ICR-13 exited-processes row.
+    var isExitedResidualOnly: Bool { !processIDs.isEmpty && processIDs.allSatisfy(\.isExitedResidual) }
 }
 
 /// Name cell for an ICR-13 row: tile + italic `textSecondary` name.
