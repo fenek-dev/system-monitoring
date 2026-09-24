@@ -106,3 +106,25 @@ We can **name** every process, root or not, via `SHORTBSDINFO`, `proc_pidpath` o
 - Coalitions are the source for foreign-uid processes and for per-app energy only. The app key stays the responsible pid, because a coalition can hold several apps.
 - **Can we get memory for root-owned processes without root? No,** except by spawning setuid `ps` for RSS. Footprint needs a privileged helper.
 - Drop libsysmon from the plan. It is gated by a restricted entitlement that AMFI enforces.
+
+### Production verification (W6a, 2026-09-24, M1 Max, macOS 26.5)
+**Coalition `energy` [11] EXCLUDES GPU energy**, as rusage v6 `ri_energy_nj` does. Measured with
+`ProcessTableGPUEnergySmokeTests` (`TELLTALE_HW_TESTS=1`, run on its own). In one process, window A spins a CPU
+thread for 3 s. That gives a CPU-only rate of ≈ 2.7 J per CPU-second from `ri_energy_nj`. Window B runs a Metal
+compute busy-loop for about 3 s, with the GPU busy per Metal `gpuEndTime − gpuStartTime`. Our resource coalition
+is read in the same windows. It also contains other processes of the test runner's session, so its CPU-only
+expectation is the coalition's Δ`cpu_time` × 2.7 J/s.
+
+| run | GPU busy | coalition Δenergy[11] | coalition Δcpu | CPU-only expectation | excess | own Δ`ri_energy_nj` |
+|---|---|---|---|---|---|---|
+| 1 | 3.13 s / 3.14 s | 9.84 J | 2.99 s | 8.11 J | +1.73 J (0.55 W) | 0.028 J |
+| 2 (quietest) | 2.23 s / 3.18 s | 0.33 J | 1.01 s | 2.72 J | −2.39 J | 0.013 J |
+| 3 (busy coalition) | 2.70 s / 3.26 s | 6.97 J | 9.27 s | 21.2 J | −14.3 J | 0.010 J |
+
+If word [11] counted GPU energy, it would add at least 5 W × busy time: ≥ 11–16 J at a conservative 5 W, and
+~45–64 J for a saturated ~20 W GPU. The observed excess is ≤ 1.7 J, and in run 2 the coalition's whole
+Δenergy was 0.33 J. The no-GPU window A shows the same size of excess (−0.5 to −2.1 J), which is estimation noise.
+Other members' work is cheaper per CPU-second than our P-core spin.
+**Consequence for W1:** coalition-energy residuals and `ri_energy_nj` are both CPU-only. The ICR 008
+`gpuW × gpu share` term can be added to either one without double-counting GPU energy.
+The smoke test pins this with a load-aware bound: excess < 2.5 W × busy + |window-A excess| + 25 % of the expectation.

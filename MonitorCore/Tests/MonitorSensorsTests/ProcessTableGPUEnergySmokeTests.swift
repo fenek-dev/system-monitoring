@@ -1,3 +1,4 @@
+import CPrivate
 import Darwin
 import Foundation
 import IOKit
@@ -15,7 +16,11 @@ import Testing
 /// `TELLTALE_HW_TESTS=1 swift test --no-parallel --filter ProcessTableGPUEnergySmokeTests`.
 @Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
 struct ProcessTableGPUEnergySmokeTests {
-    struct Sample { var energyNJ: UInt64; var penergyNJ: UInt64; var cpuNs: UInt64; var gpuNs: UInt64; var t: UInt64 }
+    struct Sample {
+        var energyNJ: UInt64; var penergyNJ: UInt64; var cpuNs: UInt64; var gpuNs: UInt64; var t: UInt64
+        /// Our resource coalition: energy word [11] (nJ) and cpu_time (ns).
+        var coalEnergyNJ: UInt64 = 0; var coalCPUNs: UInt64 = 0
+    }
 
     static func sample() -> Sample? {
         var ri = rusage_info_v6()
@@ -24,9 +29,24 @@ struct ProcessTableGPUEnergySmokeTests {
         }
         guard rc == 0 else { return nil }
         let tb = MachTimebase.current
-        return Sample(energyNJ: ri.ri_energy_nj, penergyNJ: ri.ri_penergy_nj,
-                      cpuNs: tb.nanoseconds(ri.ri_user_time) + tb.nanoseconds(ri.ri_system_time),
-                      gpuNs: agxGPUNs(getpid()), t: w6aUptimeNs())
+        var s = Sample(energyNJ: ri.ri_energy_nj, penergyNJ: ri.ri_penergy_nj,
+                       cpuNs: tb.nanoseconds(ri.ri_user_time) + tb.nanoseconds(ri.ri_system_time),
+                       gpuNs: agxGPUNs(getpid()), t: w6aUptimeNs())
+        if let cid = CoalitionFFI.resourceCoalition(of: getpid()) {
+            var cru = coalition_resource_usage()
+            if coalition_info_resource_usage(cid, &cru, CoalitionLayout.structSize) == 0 {
+                s.coalEnergyNJ = cru.energy
+                s.coalCPUNs = tb.nanoseconds(cru.cpu_time)
+            }
+        }
+        return s
+    }
+
+    /// Coalition window delta: (energy J, cpu s).
+    static func coalDelta(_ a: Sample, _ b: Sample) -> (joules: Double, cpuS: Double)? {
+        guard a.coalEnergyNJ > 0, let e = w6aCounterDelta(b.coalEnergyNJ, a.coalEnergyNJ),
+              let c = w6aCounterDelta(b.coalCPUNs, a.coalCPUNs) else { return nil }
+        return (Double(e) / 1e9, Double(c) / 1e9)
     }
 
     /// Σ AGX `AppUsage.accumulatedGPUTime` (ns) for clients created by `pid` (findings/gpu-apps.md).
@@ -129,5 +149,22 @@ struct ProcessTableGPUEnergySmokeTests {
         // excess is ≤ 0 J.
         let bound = 2.5 * busy + 2 * expectedCPUOnly
         #expect(gpu.joules - expectedCPUOnly < bound)
+
+        // Coalition energy word [11], same windows (our coalition also holds swift-test's other processes, so
+        // its CPU-only expectation uses the coalition's own Δcpu_time × the same J per CPU-second).
+        let cA = try #require(Self.coalDelta(a0, a1)), cB = try #require(Self.coalDelta(b0, b1))
+        let coalExpected = cB.cpuS * jPerCPUs
+        let coalExcess = cB.joules - coalExpected
+        // Baseline: the other members' energy per CPU-second differs from our spin loop, so window A (no GPU) shows
+        // the coalition's "normal" excess over the same estimate.
+        let baseExcess = cA.joules - cA.cpuS * jPerCPUs
+        print("W6a T8 coalition cpu-window: E=\(f(cA.joules))J cpu=\(f(cA.cpuS))s (own ri_energy_nj \(f(cpu.joules))J) " +
+              "→ baseline excess \(f(baseExcess))J")
+        print("W6a T8 coalition gpu-window: E=\(f(cB.joules))J cpu=\(f(cB.cpuS))s; own ri_energy_nj \(f(gpu.joules))J; " +
+              "CPU-only expectation \(f(coalExpected))J → excess \(f(coalExcess))J (\(f(coalExcess / gpu.wallS))W) gpuBusy=\(f(busy))s")
+        // Pins: word [11] EXCLUDES GPU energy. Inclusion would add ≥ 5 W × busy (≈ 16 J; ~64 J at a saturated
+        // ~20 W GPU). Bound: half that floor + the no-GPU baseline excess + 25 % slack on the CPU-only estimate
+        // (other members' load varies between windows).
+        #expect(coalExcess < 2.5 * busy + abs(baseExcess) + 0.25 * coalExpected)
     }
 }
