@@ -77,6 +77,38 @@ import Testing
         #expect(TTPopoverRow.metricValue(a, .memory) == 4_294_967_296)
     }
 
+    @Test func popoverRowTapLogic() {
+        var t = RowTapTracker()
+        // Single click toggles immediately.
+        var expanded = t.singleTap(expanded: false, at: 10, interval: 0.5)
+        #expect(expanded)
+        // Later single click (outside the interval) toggles back.
+        expanded = t.singleTap(expanded: expanded, at: 12, interval: 0.5)
+        #expect(!expanded)
+
+        // Double-click where the count-1 recognizer fires on both clicks: net unchanged.
+        var d = RowTapTracker()
+        var s = false
+        s = d.singleTap(expanded: s, at: 20, interval: 0.5)
+        s = d.singleTap(expanded: s, at: 20.2, interval: 0.5)
+        var opened = 0
+        s = d.doubleTap(current: s) { opened += 1 }
+        #expect(s == false && opened == 1)
+
+        // Double-click where it fires only once: still restored to the pre-click state.
+        var e = RowTapTracker()
+        var x = true
+        x = e.singleTap(expanded: x, at: 30, interval: 0.5)
+        #expect(!x)
+        x = e.doubleTap(current: x) { opened += 1 }
+        #expect(x && opened == 2)
+        // After a double-click, the next single click starts a new sequence.
+        x = e.singleTap(expanded: x, at: 30.3, interval: 0.5)
+        #expect(!x)
+        let restored = e.doubleTap(current: x) { opened += 1 }
+        #expect(restored && opened == 3)
+    }
+
     @Test func sidebarValues() {
         #expect(!TTSidebarItem.hasValue(.overview) && !TTSidebarItem.hasValue(.processes) && !TTSidebarItem.hasValue(.history))
         #expect(TTSidebarItem.hasValue(.cpu) && TTSidebarItem.hasValue(.disk))

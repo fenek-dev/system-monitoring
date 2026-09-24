@@ -1,6 +1,28 @@
 import MonitorModel
 import SwiftUI
 
+/// Click logic of a popover row (pure, tested). A single click toggles at once; the expansion state before the first
+/// click of a click sequence (clicks closer than the double-click interval) is remembered, and a double-click restores
+/// it — whether the count-1 recognizer fired once or twice during the double-click.
+struct RowTapTracker: Equatable {
+    private(set) var anchor: Bool?
+    private(set) var lastTap: TimeInterval = -.infinity
+
+    /// Returns the new expansion state (toggled).
+    mutating func singleTap(expanded: Bool, at time: TimeInterval, interval: TimeInterval) -> Bool {
+        if time - lastTap > interval || anchor == nil { anchor = expanded }
+        lastTap = time
+        return !expanded
+    }
+
+    /// Calls `open` (the dashboard page) and returns the state to restore (the state before the sequence's first click).
+    mutating func doubleTap(current: Bool, open: () -> Void) -> Bool {
+        defer { anchor = nil; lastTap = -.infinity }
+        open()
+        return anchor ?? current
+    }
+}
+
 /// DESIGN §3.1 popover divider: 1-pt `separator`, margin 4 vertical × 10 horizontal.
 public struct TTPopoverDivider: View {
     public init() {}
@@ -34,6 +56,7 @@ public struct TTPopoverRow: View {
     @Environment(\.unitPreferences) private var units
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var hovering = false
+    @State private var taps = RowTapTracker()
 
     public init(category: MonitorModel.Category, subtitle: String?, value: String?, points: [SeriesPoint],
                 compact: Bool, expanded: Binding<Bool>, topApps: [AppSample]) {
@@ -134,11 +157,10 @@ public struct TTPopoverRow: View {
         VStack(alignment: .leading, spacing: 0) {
             (compact ? AnyView(compactRow) : AnyView(fullRow))
                 .contentShape(Rectangle())
-                // Double-click wins exclusively (opens the page, no expansion toggle); a single click toggles.
-                .gesture(
-                    TapGesture(count: 2).onEnded { commands.openDashboard(Self.page(category)) }
-                        .exclusively(before: TapGesture(count: 1).onEnded { toggle() })
-                )
+                // Ruling: a single click toggles immediately; a double-click opens the page and restores the
+                // expansion to its state before the first click (no animation) — net: no toggle.
+                .onTapGesture(count: 1) { singleTap() }
+                .simultaneousGesture(TapGesture(count: 2).onEnded { doubleTap() })
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction(named: expanded ? "Collapse" : "Expand") { toggle() }
             if expanded { expansion }
@@ -150,6 +172,20 @@ public struct TTPopoverRow: View {
 
     private func toggle() {
         withAnimation(isSnapshot ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
+    }
+
+    private func singleTap() {
+        let next = taps.singleTap(expanded: expanded, at: ProcessInfo.processInfo.systemUptime,
+                                  interval: NSEvent.doubleClickInterval)
+        withAnimation(isSnapshot ? nil : .easeInOut(duration: 0.18)) { expanded = next }
+    }
+
+    private func doubleTap() {
+        let page = Self.page(category), commands = commands
+        let restored = taps.doubleTap(current: expanded) { commands.openDashboard(page) }
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { expanded = restored }
     }
 
     private var valueColor: Color { stressed ? TTColor.level(level) : TTColor.textPrimary }
