@@ -220,7 +220,8 @@ final class FlyoutPanelController {
 
     /// VoiceOver: move to the flyout and read its header plus the top 3 lines.
     private func announce(_ category: MonitorModel.Category) {
-        guard let host else { return }
+        // Only for VoiceOver users: otherwise every hover switch would post an announcement for nothing.
+        guard let host, NSWorkspace.shared.isVoiceOverEnabled else { return }
         NSAccessibility.post(element: host, notification: .layoutChanged, userInfo: [.uiElements: [host]])
         let text = FlyoutView.announcement(category, live: env.live, units: env.settings.units)
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
