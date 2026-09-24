@@ -13,6 +13,8 @@ final class AppEnvironment {
     let dataDirectory: URL
     let settings: SettingsStore
     let runtime: TelltaleRuntime
+    /// Crash-canary `UserDefaults` suite (nil = `.standard`).
+    let canarySuite: String?
     let navigation = NavigationModel()
     /// Set by `AppDelegate` once the controllers exist.
     var commands: AppCommands = .noop
@@ -35,11 +37,17 @@ final class AppEnvironment {
         #else
         let crash: SensorID? = nil
         #endif
+        // Crash-canary markers: per-data-dir suite in dev (TELLTALE_DATA_DIR, one per worktree: a crash drill in one
+        // Debug instance must not disable sensors in the others, which share the bundle id); `.standard` in prod.
+        let canarySuite = options.dataDirectory.map(SettingsStore.suiteName(for:))
+        self.canarySuite = canarySuite
         runtime = TelltaleRuntime.make(mode: mode, dataDirectory: dataDirectory, disabledSensors: disabled,
-                                       crashSensor: crash)
+                                       crashSensor: crash, canarySuite: canarySuite)
+        settings.reenableCrashedSensors = { TelltaleRuntime.reenableCrashedSensors(canarySuite: canarySuite) }
         Self.log.info("""
             launch mode=\(String(describing: mode), privacy: .public) data=\(self.dataDirectory.path, privacy: .public) \
-            disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ","), privacy: .public)
+            disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ","), privacy: .public) \
+            canary=\(canarySuite ?? "standard", privacy: .public)
             """)
     }
 
