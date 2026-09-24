@@ -102,6 +102,12 @@ public enum TTFormat {
         }
     }
 
+    /// `memory(_:style: .headline)` without the unit (overlay stats row, ruling R6): "15.2". nil → "—".
+    public static func memoryNumber(_ b: UInt64?) -> String {
+        guard let b else { return unavailable }
+        return scaledParts(Double(b), base: 1024, gbDigits: 1, tbDigits: 2).number
+    }
+
     /// Storage and network totals (decimal units).
     public static func storage(_ b: UInt64?, style: StorageStyle) -> String {
         guard let b else { return unavailable }
@@ -124,6 +130,11 @@ public enum TTFormat {
 
     /// KB/MB integer, GB/TB with decimals; a value that rounds up to the next unit is promoted.
     private static func scaled(_ v: Double, base: Double, gbDigits: Int, tbDigits: Int) -> String {
+        let p = scaledParts(v, base: base, gbDigits: gbDigits, tbDigits: tbDigits)
+        return p.number + " " + p.unit
+    }
+
+    private static func scaledParts(_ v: Double, base: Double, gbDigits: Int, tbDigits: Int) -> (number: String, unit: String) {
         let units: [(String, Int)] = [("KB", 0), ("MB", 0), ("GB", gbDigits), ("TB", tbDigits)]
         var i = 0
         var x = v / base
@@ -131,7 +142,7 @@ public enum TTFormat {
             x /= base
             i += 1
         }
-        return number(x, digits: units[i].1) + " " + units[i].0
+        return (number(x, digits: units[i].1), units[i].0)
     }
 
     // MARK: - §5.4 Rates
