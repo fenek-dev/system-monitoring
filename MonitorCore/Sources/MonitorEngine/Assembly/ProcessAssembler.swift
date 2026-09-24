@@ -146,8 +146,17 @@ struct ProcessAssembler {
             guard let parent = rawByPID[ppid], parent.ppid != ppid else { break }
             ppid = parent.ppid
         }
-        if let resp = r.responsiblePID, resp != r.id.pid, let c = map[resp] { return c }
+        if let resp = responsibleProcess(of: r, rawByPID: rawByPID), let c = map[resp.id.pid] { return c }
         return nil
+    }
+
+    /// The live responsible process of `r` (not `r` itself). The cached `responsiblePID` outlives the responsible
+    /// process, so its pid may since belong to a newer, unrelated process: only a process started at or before `r`
+    /// can be responsible for it (pid-reuse guard). A pid missing from the table is gone (→ nil).
+    static func responsibleProcess(of r: RawProcess, rawByPID: [Int32: RawProcess]) -> RawProcess? {
+        guard let pid = r.responsiblePID, pid != r.id.pid, let resp = rawByPID[pid],
+              resp.id.startTimeUs <= r.id.startTimeUs else { return nil }
+        return resp
     }
 
     /// Disk rate (B/s) for one counter: the calculator's rate when it has a baseline; on explicit first sight the
@@ -194,7 +203,7 @@ struct ProcessAssembler {
         let assertions = input.assertions.value?.byPID
 
         for r in raws {
-            let responsible = r.responsiblePID.flatMap { $0 == r.id.pid ? nil : rawByPID[$0] }
+            let responsible = Self.responsibleProcess(of: r, rawByPID: rawByPID)
             let identity = resolver.identity(for: r, responsible: responsible)
             out.identities[identity.key] = identity
             out.identityByPID[r.id.pid] = identity
@@ -307,8 +316,13 @@ struct ProcessAssembler {
         }
         guard let seconds = clock.seconds, seconds > 0 else { return }
         for i in out.samples.indices { out.samples[i].gpuPercent = 0 }
+        // Ruling (progress.md "per-app shares from AGX client deltas normalized by Σ"), read like ICR-8's energy
+        // term: each client's time is a share of the whole GPU, g / max(100, Σg) — Σ apps never exceeds 100 %.
+        var totalDelta: UInt64 = 0
+        for d in deltaByPID.values { totalDelta = Self.saturatingAdd(totalDelta, d) }
+        let scale = 100 / max(100, Double(totalDelta) / seconds / 1e7)
         for (pid, delta) in deltaByPID {
-            let percent = Double(delta) / seconds / 1e7
+            let percent = Double(delta) / seconds / 1e7 * scale
             if let id = rawByPID[pid]?.id, let i = index[id] {
                 out.samples[i].gpuPercent = percent
                 if clock.advanced { out.deltas[id, default: ProcessDelta()].gpuNs = delta }
