@@ -30,6 +30,12 @@ public struct HistoryWindow: Equatable, Sendable {
     /// End of the newest bucket: the stored ranges' "now" (never the ticking clock).
     public var dataEnd: Date { start.addingTimeInterval(bucket * Double(latest + 1)) }
 
+    /// First local day of a calendar-aligned window (`start` may sit up to one bucket before local midnight
+    /// after snapping to the store grid).
+    public func firstDay(_ calendar: Calendar) -> Date {
+        calendar.startOfDay(for: start.addingTimeInterval(bucket))
+    }
+
     public func time(at index: Int) -> Date { start.addingTimeInterval(bucket * Double(clamp(index))) }
 
     /// Bucket containing `date` (clamped to the window).
@@ -57,7 +63,10 @@ public struct HistoryWindow: Equatable, Sendable {
         case .day, .week, .month:
             let days = range == .day ? 1 : (range == .week ? 7 : 30)
             let today = calendar.startOfDay(for: now)
-            let start = calendar.date(byAdding: .day, value: -(days - 1), to: today) ?? today
+            let midnight = calendar.date(byAdding: .day, value: -(days - 1), to: today) ?? today
+            // Snap to the store's epoch-aligned bucket grid (30D: 2-h buckets vs. an odd UTC offset would put the
+            // newest local bucket between two stored ones and leave it empty); at most one bucket earlier.
+            let start = Date(timeIntervalSince1970: (midnight.timeIntervalSince1970 / bucket).rounded(.down) * bucket)
             let count = Int((Double(days) * 86_400 / bucket).rounded())
             var w = HistoryWindow(range: range, start: start, bucket: bucket, count: count, latest: 0)
             w.latest = w.index(of: now)
@@ -359,7 +368,8 @@ public final class HistoryModel {
 
     /// Moves the cursor (slider, lane drag, ←/→, chip click). Live re-pins on the newest bucket. Same bucket → no-op.
     public func scrub(to index: Int, interactive: Bool = true) {
-        let i = window.clamp(index)
+        // Never past the newest bucket: later ones are the future on the calendar-aligned ranges.
+        let i = min(window.clamp(index), window.latest)
         if interactive, !isScrubbing { isScrubbing = true }
         guard i != cursor else { return }
         cursor = i
@@ -400,14 +410,26 @@ public final class HistoryModel {
         return bands
     }
 
-    public func chips(width: CGFloat, timeZone: TimeZone, measure: (String) -> CGFloat) -> [HistoryChip] {
+    /// Band kinds present in the range (legend), width-independent — never touches the layout cache.
+    public var legendKinds: [HistoryBandKind] {
+        let present = Set(HistoryBand.layout(events, memoryLevels: lanes[.memPressureLevel] ?? [], window: window,
+                                             width: 1, openEnd: window.dataEnd).map(\.kind))
+        return HistoryBandKind.allCases.filter(present.contains)
+    }
+
+    public func chips(width: CGFloat, measure: (String) -> CGFloat) -> [HistoryChip] {
         let key = LayoutKey(events: events, memory: [], window: window, width: width)
-        if let c = chipCache, c.key == key, c.label == timeZone.identifier { return c.chips }
+        if let c = chipCache, c.key == key { return c.chips }
+        let (range, calendar) = (range, calendar)
         let chips = HistoryChip.layout(events, window: window, width: width,
-                                       label: { HistoryText.chipLabel($0, timeZone: timeZone) }, measure: measure)
-        chipCache = (key, timeZone.identifier, chips)
+                                       label: { HistoryText.chipLabel($0, range: range, calendar: calendar) },
+                                       measure: measure)
+        chipCache = (key, "", chips)
         return chips
     }
+
+    /// Cursor time for the "At" card: "14:35", or "Tue 09:10" on 7D/30D (ruling: day-less times are ambiguous there).
+    public var cursorLabel: String { HistoryText.moment(cursorTime, range: range, calendar: calendar) }
 
     /// The "At" note for the cursor bucket (DESIGN §3.13), with the SoC peak over each thermal episode.
     public func note(units: UnitPreferences) -> String {

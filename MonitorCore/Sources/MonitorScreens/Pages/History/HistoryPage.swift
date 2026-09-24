@@ -18,6 +18,7 @@ public struct HistoryPage: View {
     @Environment(\.historyProvider) private var provider
     @Environment(\.now) private var fixedNow
     @Environment(\.timeZone) private var timeZone
+    @Environment(\.locale) private var locale
     @Environment(\.historyPersistent) private var historyPersistent
     @Environment(\.historyModelSeed) private var seed
     @Environment(\.historyExportDestination) private var exportDestination
@@ -35,7 +36,13 @@ public struct HistoryPage: View {
                 HistoryTimelineCard(model: model)
                 HistoryAtCard(model: model, onExport: { export(model) }, onSelectApp: { nav.inspect($0) })
                     .frame(maxHeight: .infinity)
-                if model.range == .live { HistoryLiveFeed(model: model) }
+            }
+        }
+        .background {
+            // Zero-size observers: the page body itself reads neither the cursor nor the model's window.
+            if let model {
+                HistoryScrubPublisher(model: model)
+                if nav.historyRange == .live { HistoryLiveFeed(model: model) }
             }
         }
         .padding(TTSpace.pagePadding)
@@ -47,7 +54,6 @@ public struct HistoryPage: View {
         .onKeyPress(.rightArrow) { model?.step(1); return .handled }
         .onAppear(perform: configure)
         .onChange(of: nav.historyRange) { _, new in select(new, restoring: nil) }
-        .onChange(of: model?.cursor) { publishScrub() }
     }
 
     /// The clock for (re)building windows — read in actions only, never in `body`.
@@ -62,8 +68,10 @@ public struct HistoryPage: View {
                 model = seed                                                // tests: pre-loaded
                 return
             }
+            // The one calendar of the page (environment time zone + locale); everything reads `model.calendar`.
             var cal = Calendar(identifier: .gregorian)
             cal.timeZone = timeZone
+            cal.locale = locale
             model = HistoryModel(range: nav.historyRange, now: currentNow(), provider: provider, calendar: cal)
             select(nav.historyRange, restoring: nav.historyScrub)          // restore only on the first appear
         }
@@ -73,13 +81,6 @@ public struct HistoryPage: View {
         guard let model else { return }
         model.select(range, now: currentNow(), restoring: restoring)
         if range != .live { model.startLoading() }
-        publishScrub()
-    }
-
-    private func publishScrub() {
-        guard let model else { return }
-        let value = model.isAtLatest ? nil : model.cursorTime
-        if nav.historyScrub != value { nav.historyScrub = value }
     }
 
     private func export(_ model: HistoryModel) {
@@ -109,6 +110,23 @@ public struct SavePanelExportDestination: HistoryExportDestination {
         }
         let response = await panel.beginSheetModal(for: window)
         return response == .OK ? panel.url : nil
+    }
+}
+
+/// Mirrors the cursor into `nav.historyScrub` (restored on the next first appear).
+private struct HistoryScrubPublisher: View {
+    let model: HistoryModel
+    @Environment(NavigationModel.self) private var nav
+
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .onChange(of: model.cursor, initial: true) { publish() }
+            .onChange(of: model.window) { publish() }
+    }
+
+    private func publish() {
+        let value = model.isAtLatest ? nil : model.cursorTime
+        if nav.historyScrub != value { nav.historyScrub = value }
     }
 }
 
@@ -142,14 +160,12 @@ private enum TimelineMetrics {
 
 private struct HistoryTimelineCard: View {
     let model: HistoryModel
-    @Environment(\.timeZone) private var timeZone
-    @Environment(\.locale) private var locale
 
     var body: some View {
         let window = model.window
         TTCard(spacing: TTSpace.x10) {
             HStack(spacing: TTSpace.x8) {
-                Text(HistoryText.title(window, now: window.time(at: window.latest), locale: locale, timeZone: timeZone))
+                Text(HistoryText.title(window, now: window.time(at: window.latest), calendar: model.calendar))
                     .font(TTFont.sectionTitle).foregroundStyle(TTColor.textPrimary).lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HistoryLegend(model: model)
@@ -164,7 +180,7 @@ private struct HistoryTimelineCard: View {
                     HistoryChartColumn(model: model)
                 }
             }
-            HistoryAxis(window: window)
+            HistoryAxis(window: window, calendar: model.calendar)
                 .padding(.leading, TimelineMetrics.labelWidth + TTSpace.x8)
             VStack(alignment: .leading, spacing: TTSpace.x4) {
                 Text("Scrub timeline").font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
@@ -180,8 +196,7 @@ private struct HistoryLegend: View {
     let model: HistoryModel
 
     var body: some View {
-        let present = Set(model.bands(width: 1_000).map(\.kind))
-        let kinds = HistoryBandKind.allCases.filter(present.contains)
+        let kinds = model.legendKinds
         if !kinds.isEmpty { TTLegend(items: kinds.map { ($0.legend, $0.swatch) }) }
     }
 }
@@ -328,11 +343,10 @@ private struct HistoryNoDataLayer: View {
 private struct HistoryChipsLayer: View {
     let model: HistoryModel
     let width: CGFloat
-    @Environment(\.timeZone) private var timeZone
     private static let font = NSFont.systemFont(ofSize: 11)
 
     var body: some View {
-        let chips = model.chips(width: width, timeZone: timeZone,
+        let chips = model.chips(width: width,
                                 measure: { ($0 as NSString).size(withAttributes: [.font: Self.font]).width })
         ForEach(chips) { chip in
             HStack(spacing: TTSpace.x4) {
@@ -381,13 +395,10 @@ private struct HistoryCursor: View {
 /// Stored ranges: labels at `window.fraction` of their moments (day starts on 7D/30D); Live/1H: relative axis.
 private struct HistoryAxis: View {
     let window: HistoryWindow
-    @Environment(\.timeZone) private var timeZone
-    @Environment(\.locale) private var locale
+    let calendar: Calendar
 
     var body: some View {
-        var cal = Calendar(identifier: .gregorian)
-        let _ = cal.timeZone = timeZone
-        if let labels = HistoryText.axisLabels(window, calendar: cal, locale: locale) {
+        if let labels = HistoryText.axisLabels(window, calendar: calendar) {
             GeometryReader { geo in
                 ForEach(labels.indices, id: \.self) { i in
                     let label = labels[i]
@@ -419,8 +430,8 @@ private struct HistoryScrubber: View {
 
     static let trackHeight: CGFloat = 8
     static let knob: CGFloat = 16
-    static let rest = Color(red: 0xED / 255, green: 0xED / 255, blue: 0xED / 255)
-    static let restEdge = Color(red: 0xB0 / 255, green: 0xB0 / 255, blue: 0xB0 / 255)
+    static let rest = TTColor.scrubberRest
+    static let restEdge = TTColor.scrubberRestEdge
 
     var body: some View {
         let window = model.window
@@ -451,7 +462,7 @@ private struct HistoryScrubber: View {
         .frame(height: Self.knob)
         .accessibilityElement()
         .accessibilityLabel("Scrub timeline")
-        .accessibilityValue(TTFormat.clock(model.cursorTime, timeZone: timeZone))
+        .accessibilityValue(model.cursorLabel)
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: model.step(1)
@@ -511,7 +522,7 @@ private struct HistoryAtReadout: View {
                         if model.showsLiveBadge { TTBadge("Live", level: .calm) }
                     }
                 } else {
-                    Text(TTFormat.clock(model.cursorTime, timeZone: timeZone))
+                    Text(model.cursorLabel)
                         .font(TTFont.title2).foregroundStyle(TTColor.textPrimary).monospacedDigit()
                 }
             }

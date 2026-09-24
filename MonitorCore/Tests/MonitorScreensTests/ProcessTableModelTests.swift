@@ -414,6 +414,13 @@ struct ProcessTableObservableTests {
         #expect(ProcessTableModel.inspectedApp(row: nil, detailExpanded: true) == nil)
     }
 
+    /// Regression: memory must convert by value (`Double.init` on UInt64 resolved to `Double(bitPattern:)`).
+    @Test func memoryValueIsNumeric() {
+        let out = ProcessTableModel.build(PT.input(mode: .processes))
+        let xcode = out.lines.first { $0.name == "Xcode" }!
+        #expect(xcode.value(.memory) == 4_000_000_000)
+    }
+
     @Test func mockCalmScenarioBuilds() {
         let live = LiveModel.mock(.calm)
         let m = ProcessTableModel()

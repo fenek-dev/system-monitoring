@@ -92,9 +92,13 @@ final class ManualClock: Sendable {
 
 enum HT {
     static let now = MockDataProvider.referenceDate
-    static var london: Calendar {
+    /// The snapshot calendar: Europe/London, en_US.
+    static var london: Calendar { london("en_US") }
+
+    static func london(_ locale: String) -> Calendar {
         var c = Calendar(identifier: .gregorian)
         c.timeZone = TimeZone(identifier: "Europe/London")!
+        c.locale = Locale(identifier: locale)
         return c
     }
 
@@ -136,7 +140,11 @@ struct HistoryWindowTests {
         let week = HistoryWindow.make(.week, now: HT.now, calendar: cal)
         #expect(week.count == 336 && week.start == cal.date(byAdding: .day, value: -6, to: day.start))
         let month = HistoryWindow.make(.month, now: HT.now, calendar: cal)
-        #expect(month.count == 360 && month.start == cal.date(byAdding: .day, value: -29, to: day.start))
+        // 30D snaps to the 2-h epoch grid (BST midnight = 23:00Z → 22:00Z).
+        let monthMidnight = cal.date(byAdding: .day, value: -29, to: day.start)!
+        #expect(month.count == 360 && month.start <= monthMidnight
+            && month.start > monthMidnight.addingTimeInterval(-7_200))
+        #expect(month.start.timeIntervalSince1970.truncatingRemainder(dividingBy: 7_200) == 0)
         let hour = HistoryWindow.make(.hour, now: HT.now, calendar: cal)
         #expect(hour.count == 240 && hour.latest == 239 && hour.end >= HT.now)
         let live = HistoryWindow.make(.live, now: HT.now, calendar: cal)
@@ -155,17 +163,16 @@ struct HistoryWindowTests {
     @Test func copy() {
         #expect(HistoryText.subtitle(.day) == "Stored locally · 5-minute resolution for 24 h · kept for 30 days")
         #expect(HistoryText.subtitle(.live) == "Stored locally · 1-second resolution for 60 s · kept for 30 days")
-        let tz = TimeZone(identifier: "Europe/London")!
-        let gb = Locale(identifier: "en_GB"), us = Locale(identifier: "en_US")
-        let day = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
-        #expect(HistoryText.title(day, now: HT.now, locale: gb, timeZone: tz) == "Thursday, 24 September")
-        #expect(HistoryText.title(day, now: HT.now, locale: us, timeZone: tz) == "Thursday, 24 September")
-        let week = HistoryWindow.make(.week, now: HT.now, calendar: HT.london)
-        #expect(HistoryText.title(week, now: HT.now, locale: us, timeZone: tz) == "18 – 24 September")
-        let month = HistoryWindow.make(.month, now: HT.now, calendar: HT.london)
-        #expect(HistoryText.title(month, now: HT.now, locale: us, timeZone: tz) == "26 August – 24 September")
-        let live = HistoryWindow.make(.live, now: HT.now, calendar: HT.london)
-        #expect(HistoryText.title(live, now: HT.now, locale: gb, timeZone: tz) == "Last 60 seconds")
+        let gb = HT.london("en_GB"), us = HT.london
+        let day = HistoryWindow.make(.day, now: HT.now, calendar: us)
+        #expect(HistoryText.title(day, now: HT.now, calendar: gb) == "Thursday, 24 September")
+        #expect(HistoryText.title(day, now: HT.now, calendar: us) == "Thursday, 24 September")
+        let week = HistoryWindow.make(.week, now: HT.now, calendar: us)
+        #expect(HistoryText.title(week, now: HT.now, calendar: us) == "18 – 24 September")
+        let month = HistoryWindow.make(.month, now: HT.now, calendar: us)
+        #expect(HistoryText.title(month, now: HT.now, calendar: us) == "26 August – 24 September")
+        let live = HistoryWindow.make(.live, now: HT.now, calendar: us)
+        #expect(HistoryText.title(live, now: HT.now, calendar: gb) == "Last 60 seconds")
         #expect(HistoryText.laneValue(.cpuUsage, 0.8, units: UnitPreferences()) == "80%")
         #expect(HistoryText.laneValue(.netRx, 6_000_000, units: UnitPreferences()) == "6.0 MB/s")
         #expect(HistoryText.laneValue(.socTemp, 76, units: UnitPreferences()) == "76°C")
@@ -175,21 +182,20 @@ struct HistoryWindowTests {
     }
 
     @Test func axisDayStartsSitAtTheirFraction() {
-        let us = Locale(identifier: "en_US")
         let week = HistoryWindow.make(.week, now: HT.now, calendar: HT.london)
-        let labels = HistoryText.axisLabels(week, calendar: HT.london, locale: us)!
+        let labels = HistoryText.axisLabels(week, calendar: HT.london)!
         #expect(labels.map(\.text) == ["Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu"])
         #expect(abs(labels.last!.fraction - 6.0 / 7.0) < 0.01)                // Thu ≈ 6/7, nothing at `now`
         #expect(labels.first!.fraction == 0)
         let month = HistoryWindow.make(.month, now: HT.now, calendar: HT.london)
-        let m = HistoryText.axisLabels(month, calendar: HT.london, locale: us)!
+        let m = HistoryText.axisLabels(month, calendar: HT.london)!
         #expect(m.map(\.text) == ["27 Aug", "3 Sep", "10 Sep", "17 Sep", "24 Sep"])
         #expect(abs(m.last!.fraction - 29.0 / 30.0) < 0.01)
         let day = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
-        let d = HistoryText.axisLabels(day, calendar: HT.london, locale: us)!
+        let d = HistoryText.axisLabels(day, calendar: HT.london)!
         #expect(d.first?.text == "00:00" && d.last?.text == "24:00" && d.last?.fraction == 1)
         #expect(HistoryText.axisLabels(HistoryWindow.make(.hour, now: HT.now, calendar: HT.london),
-                                       calendar: HT.london, locale: us) == nil)
+                                       calendar: HT.london) == nil)
     }
 
     @Test func notesMatchDesignCopy() {
@@ -206,8 +212,12 @@ struct HistoryWindowTests {
             == "CPU spike from Safari.")
         #expect(HistoryText.note([build], at: HT.now.addingTimeInterval(3_600), bucket: 300, openEnd: HT.now)
             == "Nothing unusual in this window.")
-        #expect(HistoryText.chipLabel(HistoryEvent(start: HT.now, label: "Xcode build"),
-                                      timeZone: TimeZone(identifier: "Europe/London")!) == "Xcode build · 14:32")
+        let chip = HistoryEvent(start: HT.now, label: "Xcode build")
+        #expect(HistoryText.chipLabel(chip, range: .day, calendar: HT.london) == "Xcode build · 14:32")
+        // Ruling: 7D/30D chips and the At time carry the weekday.
+        #expect(HistoryText.chipLabel(chip, range: .week, calendar: HT.london) == "Xcode build · Thu 14:32")
+        #expect(HistoryText.moment(HT.now, range: .month, calendar: HT.london) == "Thu 14:32")
+        #expect(HistoryText.moment(HT.now, range: .hour, calendar: HT.london) == "14:32")
     }
 
     @Test func notPersistentBanner() {
@@ -294,8 +304,9 @@ struct HistoryModelTests {
         #expect(m.cursor == m.window.latest - 1 && !m.pinned)
         m.step(1)
         m.step(1)                                                           // clamped at the newest bucket
-        #expect(m.cursor == m.window.latest + 1 || m.cursor == m.window.latest)
-        #expect(m.cursor <= m.window.count - 1)
+        #expect(m.cursor == m.window.latest)
+        #expect(m.cursorLabel == HistoryText.moment(m.window.time(at: m.window.latest), range: .day,
+                                                    calendar: HT.london))
     }
 
     @Test func arrowStepsOneBucketAndClamps() {
@@ -305,9 +316,10 @@ struct HistoryModelTests {
         #expect(m.cursor == 0)
         m.step(1)
         #expect(m.cursor == 1)
-        m.scrub(to: m.window.count - 1, interactive: false)
+        m.scrub(to: m.window.count - 1, interactive: false)                // future bucket requested
+        #expect(m.cursor == m.window.latest)
         m.step(1)
-        #expect(m.cursor == m.window.count - 1)
+        #expect(m.cursor == m.window.latest)
     }
 
     @Test func chipJumpMovesTheCursorToTheEvent() async {
@@ -463,16 +475,31 @@ struct HistoryModelTests {
     @Test func bandAndChipLayoutsAreCached() async {
         let m = HT.model(.day, provider: MockDataProvider(scenario: .calm).history())
         await m.load()
-        let tz = TimeZone(identifier: "Europe/London")!
         var measured = 0
-        _ = m.chips(width: 800, timeZone: tz) { _ in measured += 1; return 50 }
+        _ = m.chips(width: 800) { _ in measured += 1; return 50 }
         let first = measured
-        _ = m.chips(width: 800, timeZone: tz) { _ in measured += 1; return 50 }
+        _ = m.chips(width: 800) { _ in measured += 1; return 50 }
         #expect(measured == first)                                         // same events/window/width: cached
         m.scrub(to: 10, interactive: false)
-        _ = m.chips(width: 800, timeZone: tz) { _ in measured += 1; return 50 }
+        _ = m.chips(width: 800) { _ in measured += 1; return 50 }
         #expect(measured == first)                                         // scrubbing doesn't re-layout
-        _ = m.chips(width: 700, timeZone: tz) { _ in measured += 1; return 50 }
+        _ = m.legendKinds                                                  // width-free: doesn't evict the cache
+        _ = m.chips(width: 800) { _ in measured += 1; return 50 }
+        #expect(measured == first)
+        _ = m.chips(width: 700) { _ in measured += 1; return 50 }
         #expect(measured > first)
+    }
+
+    @Test func layoutCacheInvalidatesOnRangeChange() async {
+        let m = HT.model(.day, provider: MockDataProvider(scenario: .calm).history())
+        await m.load()
+        let dayChips = m.chips(width: 800) { _ in 50 }
+        #expect(!dayChips.isEmpty)
+        m.select(.week, now: HT.now)
+        #expect(m.chips(width: 800) { _ in 50 }.isEmpty)                  // new window, events not loaded yet
+        await m.load()
+        let weekChips = m.chips(width: 800) { _ in 50 }
+        #expect(!weekChips.isEmpty && weekChips != dayChips)
+        #expect(weekChips.allSatisfy { $0.text.contains(" · ") && $0.text.split(separator: " ").count >= 4 })
     }
 }

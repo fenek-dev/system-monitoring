@@ -17,34 +17,40 @@ public enum HistoryText {
         return "Stored locally · \(middle) · kept for 30 days"
     }
 
-    /// Timeline card title: "Last 60 seconds", "Last hour", "Thursday, 24 September" (locale-ordered
-    /// `EEEE d MMMM`, §5.8), "18 – 24 September", "26 August – 24 September".
-    public static func title(_ window: HistoryWindow, now: Date, locale: Locale, timeZone: TimeZone) -> String {
+    /// Timeline card title: "Last 60 seconds", "Last hour", "Thursday, 24 September" (reference copy, fixed
+    /// day-first order, names localized), "18 – 24 September", "26 August – 24 September". `calendar` is the
+    /// model's (one source of truth for time zone and locale).
+    public static func title(_ window: HistoryWindow, now: Date, calendar: Calendar) -> String {
         switch window.range {
         case .live: return "Last 60 seconds"
         case .hour: return "Last hour"
         case .day:
-            // Reference/DESIGN copy: "Thursday, 24 September" (fixed day-first order; names localized).
-            return formatter(fixed: "EEEE, d MMMM", locale, timeZone).string(from: now)
+            return formatter(fixed: "EEEE, d MMMM", calendar).string(from: now)
         case .week, .month:
-            let first = window.start
-            var cal = Calendar(identifier: .gregorian)
-            cal.timeZone = timeZone
-            let sameMonth = cal.component(.month, from: first) == cal.component(.month, from: now)
-            let dayOnly = formatter(fixed: "d", locale, timeZone)
-            let dayMonth = formatter(fixed: "d MMMM", locale, timeZone)
-            // "18 – 24 September" / "26 August – 24 September".
+            let first = window.firstDay(calendar)
+            let sameMonth = calendar.component(.month, from: first) == calendar.component(.month, from: now)
+            let dayOnly = formatter(fixed: "d", calendar)
+            let dayMonth = formatter(fixed: "d MMMM", calendar)
             let lhs = sameMonth ? dayOnly.string(from: first) : dayMonth.string(from: first)
             return "\(lhs) – \(dayMonth.string(from: now))"
         }
     }
 
-    private static func formatter(fixed format: String, _ locale: Locale, _ tz: TimeZone) -> DateFormatter {
+    static func formatter(fixed format: String, _ calendar: Calendar) -> DateFormatter {
         let f = DateFormatter()
-        f.locale = locale
-        f.timeZone = tz
+        f.calendar = calendar
+        f.locale = calendar.locale ?? Locale(identifier: "en_US_POSIX")
+        f.timeZone = calendar.timeZone
         f.dateFormat = format
         return f
+    }
+
+    /// A moment on the History page: "14:35"; on 7D/30D with the weekday, "Tue 09:10" (ruling).
+    public static func moment(_ date: Date, range: HistoryRange, calendar: Calendar) -> String {
+        switch range {
+        case .week, .month: formatter(fixed: "EEE HH:mm", calendar).string(from: date)
+        default: formatter(fixed: "HH:mm", calendar).string(from: date)
+        }
     }
 
     /// Lane value at the cursor (§5): integer %, rates by §5.4 bands, °C/°F, 1-decimal W.
@@ -73,9 +79,9 @@ public enum HistoryText {
         return "\(share.identity.displayName) · \(value)"
     }
 
-    /// Chip label "{title} · HH:mm".
-    public static func chipLabel(_ e: HistoryEvent, timeZone: TimeZone) -> String {
-        "\(eventTitle(e)) · \(TTFormat.clock(e.start, timeZone: timeZone))"
+    /// Chip label "{title} · HH:mm" ("{title} · Tue 09:10" on 7D/30D).
+    public static func chipLabel(_ e: HistoryEvent, range: HistoryRange, calendar: Calendar) -> String {
+        "\(eventTitle(e)) · \(moment(e.start, range: range, calendar: calendar))"
     }
 
     public static func eventTitle(_ e: HistoryEvent) -> String {
@@ -156,22 +162,16 @@ public enum HistoryText {
     /// Axis labels for stored ranges, positioned by `window.fraction` (DESIGN §2.12): 24H `00:00 … 24:00` every 4 h,
     /// 7D the 7 day starts as short weekdays (today last), 30D 5 day starts `d MMM` a week apart ending today.
     /// Live/1H: nil (relative `TTTimeAxis`).
-    public static func axisLabels(_ window: HistoryWindow, calendar: Calendar, locale: Locale)
-        -> [(text: String, fraction: Double)]? {
-        func f(_ format: String) -> DateFormatter {
-            let d = DateFormatter()
-            d.locale = locale
-            d.timeZone = calendar.timeZone
-            d.dateFormat = format
-            return d
-        }
-        func day(_ i: Int) -> Date { calendar.date(byAdding: .day, value: i, to: window.start) ?? window.start }
+    public static func axisLabels(_ window: HistoryWindow, calendar: Calendar) -> [(text: String, fraction: Double)]? {
+        func f(_ format: String) -> DateFormatter { formatter(fixed: format, calendar) }
+        let first = window.firstDay(calendar)
+        func day(_ i: Int) -> Date { calendar.date(byAdding: .day, value: i, to: first) ?? first }
         switch window.range {
         case .live, .hour:
             return nil
         case .day:
             return (0...6).map { k in
-                let t = window.start.addingTimeInterval(Double(k) * 4 * 3_600)
+                let t = first.addingTimeInterval(Double(k) * 4 * 3_600)
                 return (String(format: "%02d:00", k * 4), k == 6 ? 1 : window.fraction(of: t))
             }
         case .week:

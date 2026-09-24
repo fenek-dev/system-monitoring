@@ -144,7 +144,7 @@ public struct ProcessRow: Identifiable, Equatable, Sendable {
         switch c {
         case .cpu: cpu
         case .gpu: gpu
-        case .memory: memory.map(Double.init)
+        case .memory: memory.map { Double($0) }   // not `Double.init` (resolves to Double(bitPattern:))
         case .network: network
         case .disk: disk
         case .energy: energy
