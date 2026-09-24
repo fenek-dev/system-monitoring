@@ -75,7 +75,13 @@ struct CoalitionTracker: Sendable {
 /// interval. Exactly one restricted member → it gets the residual (provenance .coalition). Otherwise → one synthetic
 /// ProcessSample per coalition (leader p_comm, leader's app; no leader → .system "System"), emitted when the
 /// residual passes a threshold (CPU, energy) or any disk residual exists. No GPU: coalition gpu_time has an unknown
-/// unit; AGX is the only GPU source. Restricted members get `coalitionLeaderName` (ICR-4).
+/// unit; AGX is the only GPU source.
+///
+/// `ProcessSample.coalitionLeaderName` (ICR-4) on restricted members names the tooltip target
+/// "counted in the ‹name› coalition row": normally the leader's process name (= the residual row's name); when the
+/// residual is below the thresholds and no residual row exists, the leader's **app** display name instead.
+/// Session deltas: the frame assembler adds residual-row CPU only when the coalition reading advanced
+/// (`CoalitionDeltas` reuse the previous delta for a cached reading, like `RateCalculator`).
 public struct CoalitionAttributor: Sendable {
     public let minResidualCPUPercent: Double
     public let minResidualWatts: Double

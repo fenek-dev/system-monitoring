@@ -101,6 +101,21 @@ import Testing
         #expect((windowServerApp.cpuTimeNs ?? 0) >= 4 * sec * 3 / 5 - 10)  // synthetic row CPU counted in session
     }
 
+    @Test func cachedCoalitionReadingAddsNoSessionCPUForResidualRows() throws {
+        var fa = Self.assembler()
+        _ = fa.assemble(Self.tick(1), inspectedApp: nil)
+        let f2 = fa.assemble(Self.tick(2), inspectedApp: nil)
+        var t3 = Self.tick(3)
+        t3.coalitions = .cached(Self.tick(2).coalitions.value!, capturedNs: 2 * sec)   // coalition sensor not due
+        let f3 = fa.assemble(t3, inspectedApp: nil)
+        let sys2 = try #require(f2.apps.first { $0.identity.key == .system })
+        let sys3 = try #require(f3.apps.first { $0.identity.key == .system })
+        #expect(sys2.cpuTimeNs == 4 * sec / 5)                  // synthetic 0.6 s + filled mds 0.2 s
+        #expect(sys3.cpuTimeNs == sys2.cpuTimeNs)               // cached: rates reused, session unchanged
+        #expect(abs(f3.processes.first { $0.id == .coalitionResidual(7) }!.cpuPercent! - 60) < 1e-9)
+        #expect(abs(f3.processes[pid: 500]!.cpuPercent! - 20) < 1e-9)
+    }
+
     @Test func sensorHealthAndDevice() {
         var fa = Self.assembler()
         let f = fa.assemble(Self.tick(1, health: [.smc: .unavailable("no SMC")]), inspectedApp: nil)
