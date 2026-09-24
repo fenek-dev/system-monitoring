@@ -88,7 +88,7 @@ enum MemoryFFI {
 
     static func pageSize() -> UInt64 {
         var size: vm_size_t = 0
-        guard host_page_size(mach_host_self(), &size) == KERN_SUCCESS, size > 0 else { return UInt64(getpagesize()) }
+        guard host_page_size(w6aHostPort, &size) == KERN_SUCCESS, size > 0 else { return UInt64(getpagesize()) }
         return UInt64(size)
     }
 
@@ -97,7 +97,7 @@ enum MemoryFFI {
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
         let kr = withUnsafeMutablePointer(to: &stats) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+                host_statistics64(w6aHostPort, HOST_VM_INFO64, $0, &count)
             }
         }
         guard kr == KERN_SUCCESS else { throw w6aMachError(kr, "host_statistics64(HOST_VM_INFO64)") }

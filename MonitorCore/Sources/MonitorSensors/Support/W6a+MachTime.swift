@@ -36,6 +36,10 @@ struct MachTimebase: Sendable, Equatable {
 @inline(__always)
 func w6aUptimeNs() -> UInt64 { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
 
+/// The host port, taken once: every `mach_host_self()` call adds a user reference to the send right that nothing
+/// releases (S-M8), so per-tick callers share this one.
+let w6aHostPort: mach_port_t = mach_host_self()
+
 /// Guarded counter delta: nil when the counter went backwards (reset, pid reuse, recreated source).
 @inline(__always)
 func w6aCounterDelta(_ new: UInt64, _ old: UInt64) -> UInt64? { new >= old ? new - old : nil }
