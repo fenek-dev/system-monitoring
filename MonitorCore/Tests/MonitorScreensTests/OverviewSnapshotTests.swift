@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("Overview snapshots", .serialized)
+@Suite("Overview snapshots")
 @MainActor
 struct OverviewSnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted, .paused])
@@ -57,8 +57,21 @@ struct OverviewSnapshotTests {
         p.cpuWatts = nil
         p.gpuWatts = nil
         #expect(W5a.packageWatts(p) == nil)
-        #expect(W5a.loadAverage([27.5, 26.84, 25.1]) == "27.5 · 26.8 · 25.1")
-        #expect(W5a.loadAverage([3.21, 2.88, 2.54]) == "3.21 · 2.88 · 2.54")
+    }
+
+    /// Non-Live range: titles follow the range, the store end is the display-bucket end (no per-tick dependency),
+    /// and the page renders with the stored-range path (charts "Collecting…" until the async store read lands).
+    @Test func hourRange() {
+        let t = Date(timeIntervalSince1970: 1_000_007)
+        #expect(RangeSeriesReaderBucket.end(t, range: .hour) == Date(timeIntervalSince1970: 1_000_020))   // 15-s buckets
+        #expect(RangeSeriesReaderBucket.end(t, range: .day) == Date(timeIntervalSince1970: 1_000_200))    // 5-min
+        #expect(HistoryRange.hour.lastTitle == "Last hour")
+        let ctx = ScreenFixture.context(.calm, page: .overview)
+        ctx.navigation.range = .hour
+        let view = DashboardRoot()
+            .frame(width: ScreenSize.dashboard.width, height: ScreenSize.dashboard.height)
+            .telltaleEnvironment(ctx)
+        assertSnapshot(view, size: ScreenSize.dashboard, named: "overview-hour-calm")
     }
 
     @Test func tileSubtitles() {

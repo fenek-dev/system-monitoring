@@ -12,9 +12,11 @@ public struct TTStatStrip: View, Equatable {
         public var detail: String?
         public var tint: Color?
         public var unavailableReason: String?
+        /// Sub-line color; nil → `textTertiary` (Memory pressure level word: Warning amber, Critical red, §3.7.1).
+        public var detailTint: Color?
 
         public init(id: String, label: String, value: String?, unit: String? = nil, detail: String? = nil,
-                    tint: Color? = nil, unavailableReason: String? = nil) {
+                    tint: Color? = nil, unavailableReason: String? = nil, detailTint: Color? = nil) {
             self.id = id
             self.label = label
             self.value = value
@@ -22,7 +24,11 @@ public struct TTStatStrip: View, Equatable {
             self.detail = detail
             self.tint = tint
             self.unavailableReason = unavailableReason
+            self.detailTint = detailTint
         }
+
+        /// Resolved sub-line color.
+        var detailColor: Color { detailTint ?? TTColor.textTertiary }
 
         /// Value with its unit: "%" and "°…" attach directly, other units after a space. Unavailable drops the unit.
         var text: String? { TTUnit.join(value, unit) }
@@ -51,7 +57,7 @@ public struct TTStatStrip: View, Equatable {
                     if let detail = item.detail {
                         Text(detail)
                             .font(TTFont.caption)
-                            .foregroundStyle(TTColor.textTertiary)
+                            .foregroundStyle(item.detailColor)
                             .lineLimit(1)
                     }
                 }

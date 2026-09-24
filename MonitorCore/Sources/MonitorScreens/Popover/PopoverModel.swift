@@ -79,7 +79,7 @@ enum PopoverModel {
         case .disk:
             r.subtitle = TTFormat.ratePair(read: live.disk.readBps, write: live.disk.writeBps)
             if let v = live.disk.bootVolume {
-                r.value = TTFormat.storage(W5a.freeBytes(v), style: .capacity)
+                r.value = ShellFormat.freeSpace(v)   // one owner of the free-space rule (W4)
                 r.unavailableReason = nil
             } else {
                 r.unavailableReason = reason ?? "Boot volume not reported"
@@ -124,8 +124,9 @@ enum PopoverModel {
                          TTFormat.cpuPercentInteger(app.gpuPercent) + " GPU"]
             return Consumer(app: app, detail: parts.joined(separator: " · "))
         }
-        guard let app = live.topApps(.cpu, count: 4).first(where: { $0.identity.key.kind != .system })
-            ?? live.topConsumer else { return nil }
+        // The whole CPU ranking (cached per apply), first non-system group; no energy fallback (DESIGN §3.1).
+        guard let app = live.topApps(.cpu, count: Int.max).first(where: { $0.identity.key.kind != .system })
+        else { return nil }
         let parts = [TTFormat.cpuPercentInteger(app.cpuPercent) + " CPU",
                      TTFormat.memory(app.memory, style: .headline)]
         return Consumer(app: app, detail: parts.joined(separator: " · "))

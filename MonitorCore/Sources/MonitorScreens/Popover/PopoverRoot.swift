@@ -160,6 +160,7 @@ struct PopoverHeader: View {
                 .cssLine(11)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
             TTIconButton(paused ? .play : .pause, label: paused ? "Resume sampling" : "Pause sampling",
                          variant: .popover) { ops.setPaused(!paused) }
             TTIconButton(.settings, label: "Settings", variant: .popover) { ops.openSettings() }
@@ -188,15 +189,18 @@ struct TopConsumerView: View, Equatable {
         let app = consumer.app
         HStack(spacing: 10) {
             TTAppTile(identity: app.identity, name: app.name, size: 26)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Top consumer").font(TTFont.caption).foregroundStyle(TTColor.textSecondary).cssLine(11)
-                Text(app.name).font(TTFont.body13).foregroundStyle(TTColor.textPrimary).lineLimit(1).cssLine(13)
-                Text(consumer.detail).font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
-                    .monospacedDigit().lineLimit(1).cssLine(11)
+            Button(action: open) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Top consumer").font(TTFont.caption).foregroundStyle(TTColor.textSecondary).cssLine(11)
+                    Text(app.name).font(TTFont.body13).foregroundStyle(TTColor.textPrimary).lineLimit(1).cssLine(13)
+                    Text(consumer.detail).font(TTFont.caption).foregroundStyle(TTColor.textSecondary)
+                        .monospacedDigit().lineLimit(1).cssLine(11)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture(perform: open)
+            .buttonStyle(.plain)
+            .accessibilityHint("Show in Processes")
             Button("Quit", action: quit)
                 .buttonStyle(TTButtonStyle(.smallSecondary))
                 .disabled(!canQuit)

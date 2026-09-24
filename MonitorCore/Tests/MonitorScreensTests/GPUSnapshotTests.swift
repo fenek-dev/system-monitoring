@@ -8,7 +8,7 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("GPU snapshots", .serialized)
+@Suite("GPU snapshots")
 @MainActor
 struct GPUSnapshotTests {
     @Test(arguments: [MockScenario.calm, .sensorsUnavailable, .collecting, .restricted])
@@ -35,11 +35,24 @@ struct GPUSnapshotTests {
     }
 
     @Test func statStripBindings() {
-        let items = GPUPageContent.statItems(ScreenFixture.live(.calm))
+        let items = GPUStatStrip.statItems(ScreenFixture.live(.calm))
         #expect(items.map(\.label) == ["Utilization", "Frequency", "GPU power", "GPU memory", "Cores"])
         #expect(items[1].detail == "of 1,578 MHz")
         #expect(items[3].detail == "allocated from unified memory")
         #expect(items[4].value == "16")
+    }
+
+    /// C1: media engine "idle" under 0.5 %; GPU time tooltip keyed on the GPU time itself.
+    @Test func mediaValueAndGPUTimeReason() throws {
+        #expect(GPUMediaEnginesCard.valueText(0.004) == "idle")
+        #expect(GPUMediaEnginesCard.valueText(0.22) == "22%")
+        var app = try #require(ScreenFixture.live(.calm).apps.first)
+        app.gpuPercent = 3
+        app.gpuTimeNs = nil
+        #expect(GPUClientsCard.gpuTimeReason(app, health: [:]) != nil)
+        app.gpuTimeNs = 1_000_000_000
+        app.gpuPercent = nil
+        #expect(GPUClientsCard.gpuTimeReason(app, health: [:]) == nil)
     }
 
     @Test func clientsAreGPUActiveAppsByShare() {
