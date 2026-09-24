@@ -28,6 +28,8 @@ public actor SamplingEngine {
     private let interactiveInterval: Duration
     private let backgroundInterval: Duration
     private let overlayInterval: Duration
+    /// Sample clock for tick contexts (test seam); the loop's deadlines always use the real uptime.
+    private let uptime: @Sendable () -> UInt64
     private let recordBuilder: RecordBuilder
 
     private var slots: Slots?
@@ -54,11 +56,12 @@ public actor SamplingEngine {
                   overlayInterval: SamplingMode.overlay.interval!)
     }
 
-    /// Test/probe seam: resolver and loop intervals.
+    /// Test/probe seam: resolver, loop intervals and the sample clock.
     init(factory: SensorFactory, disabled: Set<SensorID> = [], alertConfig: AlertConfig = .init(),
          recordConfig: RecordConfig = .init(), canary: CrashCanary = .none,
          resolver: @escaping @Sendable () -> any AppResolving, interactiveInterval: Duration, backgroundInterval: Duration,
-         overlayInterval: Duration = .seconds(1)) {
+         overlayInterval: Duration = .seconds(1), uptime: @escaping @Sendable () -> UInt64 = { SamplingEngine.uptimeNs() }) {
+        self.uptime = uptime
         self.factory = factory
         self.disabled = disabled
         self.canary = canary
@@ -183,6 +186,12 @@ public actor SamplingEngine {
         return (tick, frame)
     }
 
+    /// Test hook: one tick in the current mode, with the record batch the loop would yield.
+    func sampleOnceBatch() -> (frame: SystemFrame, batch: RecordBatch) {
+        let (_, frame, batch) = takeSample(mode: currentMode == .paused ? .interactive : currentMode)
+        return (frame, batch)
+    }
+
     /// Per-sensor cost (probe `--bench`).
     public func sensorCosts() -> [SensorID: (last: UInt64, mean: UInt64, p95: UInt64)] {
         slots?.all.reduce(into: [:]) { $0[$1.sensorID] = $1.costNs } ?? [:]
@@ -238,7 +247,7 @@ public actor SamplingEngine {
         if slots == nil { slots = Slots(factory.make(disabled), canary: canary) }
         if assembler == nil { assembler = FrameAssembler(resolver: makeResolver()) }
 
-        let now = Self.uptimeNs()
+        let now = uptime()
         let wall = Date()
         var demand = visibility.demand
         if (alerts.state.arcs[.memory] ?? .calm) >= .elevated { demand.insert(.memoryAlert) }
@@ -252,8 +261,17 @@ public actor SamplingEngine {
                                                  nominalInterval: interval(mode))
         frame.alert = state
         frame.events = alertEvents + episodes.update(frame)
-        let record = RecordBatch(record: recordBuilder.record(from: frame), events: frame.events)
-        return (tick, frame, record)
+        // Overlay (R3): record only the ticks where the process table ran (its 5-s cadence), each covering 5 s,
+        // so history volume matches background mode. Events always pass through.
+        let record: HistoryRecord?
+        if mode == .overlay {
+            record = tick.processes.isFresh
+                ? recordBuilder.record(from: frame, interval: SamplingMode.background.interval) : nil
+        } else {
+            record = recordBuilder.record(from: frame)
+        }
+        let batch = RecordBatch(record: record, events: frame.events)
+        return (tick, frame, batch)
     }
 
     private func resetBaselines() {

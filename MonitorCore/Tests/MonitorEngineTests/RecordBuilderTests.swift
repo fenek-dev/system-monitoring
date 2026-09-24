@@ -32,6 +32,13 @@ import Testing
         #expect(RecordBuilder().record(from: f).interval == .seconds(1))
     }
 
+    @Test func explicitIntervalOverridesTheModeInterval() {
+        var f = frame([])
+        f.mode = .overlay
+        #expect(RecordBuilder().record(from: f).interval == .seconds(1))
+        #expect(RecordBuilder().record(from: f, interval: .seconds(5)).interval == .seconds(5))
+    }
+
     @Test func zeroGPUFoldsIntoOther() {
         let r = RecordBuilder().record(from: frame([app("idle", gpu: 0)]))
         #expect(r.apps.map(\.identity.key) == [.other])

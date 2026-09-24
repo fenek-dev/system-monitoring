@@ -24,6 +24,11 @@ public enum SensorResult<R: Sendable & Codable>: Sendable, Codable {
         case .notRequested: nil
         }
     }
+
+    /// The sensor ran and produced new data this tick.
+    public var isFresh: Bool {
+        if case .fresh = self { true } else { false }
+    }
 }
 
 /// Everything the sensors produced in one tick; also the fixture format.

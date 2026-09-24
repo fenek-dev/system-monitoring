@@ -182,6 +182,28 @@ final class Collector<T: Sendable>: Sendable {
         await e.stop()
     }
 
+    /// R3: in overlay mode only ticks where the process table ran (every 5 s) are recorded, with a 5-s interval.
+    @Test func overlayRecordsOnlyFiveSecondTicks() async {
+        let log = SpyLog()
+        let clock = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+        let e = SamplingEngine(factory: factory(log), resolver: { FixtureAppResolver([10: appID("a")]) },
+                               interactiveInterval: .milliseconds(20), backgroundInterval: .milliseconds(60),
+                               uptime: { clock.withLock { $0 } })
+        await e.setVisibility(UIVisibility(overlayVisible: true))
+        var frames: [SystemFrame] = [], batches: [RecordBatch] = []
+        for i in 0..<10 {
+            clock.withLock { $0 = 1_000_000_000_000 + UInt64(i) * 1_000_000_000 }   // 1-s grid from uptime 1000 s
+            let (frame, batch) = await e.sampleOnceBatch()
+            frames.append(frame)
+            batches.append(batch)
+        }
+        #expect(frames.count == 10 && frames.allSatisfy { $0.mode == .overlay })
+        let records = batches.compactMap(\.record)
+        #expect(records.count == 2)
+        #expect(records.allSatisfy { $0.interval == .seconds(5) })
+        #expect(log.count(.processes) == 2)
+    }
+
     @Test func pausedTakesNoSamplesAndEmitsPauseEvent() async throws {
         let log = SpyLog()
         let e = engine(log)
