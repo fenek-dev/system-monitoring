@@ -54,6 +54,25 @@ public struct HistoryPage: View {
         .onKeyPress(.rightArrow) { model?.step(1); return .handled }
         .onAppear(perform: configure)
         .onChange(of: nav.historyRange) { _, new in select(new, restoring: nil) }
+        .onChange(of: timeZone) { recalendar() }
+        .onChange(of: locale) { recalendar() }
+    }
+
+    /// The page's one calendar (environment time zone + locale); everything reads `model.calendar`.
+    private func pageCalendar() -> Calendar {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = timeZone
+        cal.locale = locale
+        return cal
+    }
+
+    /// Time zone / locale changed: rebuild the calendar and the window in it (the cursor goes to the latest bucket).
+    private func recalendar() {
+        guard let model else { return }
+        let cal = pageCalendar()
+        guard cal != model.calendar else { return }
+        model.calendar = cal
+        select(nav.historyRange, restoring: nil)
     }
 
     /// The clock for (re)building windows — read in actions only, never in `body`.
@@ -68,11 +87,8 @@ public struct HistoryPage: View {
                 model = seed                                                // tests: pre-loaded
                 return
             }
-            // The one calendar of the page (environment time zone + locale); everything reads `model.calendar`.
-            var cal = Calendar(identifier: .gregorian)
-            cal.timeZone = timeZone
-            cal.locale = locale
-            model = HistoryModel(range: nav.historyRange, now: currentNow(), provider: provider, calendar: cal)
+            model = HistoryModel(range: nav.historyRange, now: currentNow(), provider: provider,
+                                 calendar: pageCalendar())
             select(nav.historyRange, restoring: nav.historyScrub)          // restore only on the first appear
         }
     }
@@ -371,7 +387,7 @@ private struct HistoryChipsLayer: View {
 
     /// Center of chip + "+n" kept inside the chart width.
     static func groupCenter(_ chip: HistoryChip, width: CGFloat) -> CGFloat {
-        let extra = chip.hidden > 0 ? HistoryChip.plusWidth + TTSpace.x4 : 0
+        let extra = chip.hidden > 0 ? chip.pillWidth + HistoryChip.gap : 0
         let total = chip.width + extra
         return min(max(chip.x + extra / 2, total / 2), max(width - total / 2, total / 2))
     }
@@ -426,7 +442,6 @@ private struct HistoryAxis: View {
 /// Drag to scrub; ←/→ step at the page; VoiceOver adjustable.
 private struct HistoryScrubber: View {
     let model: HistoryModel
-    @Environment(\.timeZone) private var timeZone
 
     static let trackHeight: CGFloat = 8
     static let knob: CGFloat = 16
@@ -510,7 +525,6 @@ private struct HistoryAtCard: View {
 private struct HistoryAtReadout: View {
     let model: HistoryModel
     @Environment(\.unitPreferences) private var units
-    @Environment(\.timeZone) private var timeZone
 
     var body: some View {
         VStack(alignment: .leading, spacing: TTSpace.x10) {

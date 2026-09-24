@@ -1,6 +1,8 @@
+import Darwin
 import Foundation
 import MonitorLive
 import MonitorModel
+import MonitorUIKit
 import Observation
 
 // DESIGN §3.12 Processes table: Apps/Processes toggle, sort by column, live search, app → process expansion
@@ -200,11 +202,14 @@ public struct ProcessActionAvailability: Equatable, Sendable {
     public var canQuit: Bool
     public var canForceQuit: Bool
     public var disabledHelp: String?
+    /// Telltale itself (DESIGN §2.25): Quit quits Telltale; Force Quit is hidden and never offered.
+    public var isSelf: Bool
 
-    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?) {
+    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?, isSelf: Bool = false) {
         self.canQuit = canQuit
         self.canForceQuit = canForceQuit
         self.disabledHelp = disabledHelp
+        self.isSelf = isSelf
     }
 }
 
@@ -418,7 +423,17 @@ public extension ProcessTableModel {
 
     /// DESIGN §2.25 / §3.12: Quit/Force Quit only when every member is owned by the current user (and the
     /// injected service agrees); otherwise disabled with "Owned by {user}".
-    nonisolated static func availability(for row: ProcessRow, serviceCanControl: Bool) -> ProcessActionAvailability {
+    /// The self rule is `TTRowActionsMenu.model(…)`'s (`forceQuitVisible == false` ⇔ Telltale), so menu, inspector and
+    /// ⌘⌫ agree.
+    nonisolated static func availability(for row: ProcessRow, serviceCanControl: Bool, ownPID: Int32 = getpid(),
+                                         ownBundleID: String? = Bundle.main.bundleIdentifier) -> ProcessActionAvailability {
+        if let target = row.target {
+            let menu = TTRowActionsMenu.model(target: target, canControl: serviceCanControl, hasForceQuitHandler: true,
+                                              ownPID: ownPID, ownBundleID: ownBundleID)
+            if !menu.forceQuitVisible {
+                return ProcessActionAvailability(canQuit: true, canForceQuit: false, disabledHelp: nil, isSelf: true)
+            }
+        }
         guard row.target != nil, row.ownedByCurrentUser else {
             return ProcessActionAvailability(canQuit: false, canForceQuit: false,
                                              disabledHelp: "Owned by \(row.foreignOwner ?? row.user ?? "root")")
@@ -545,7 +560,9 @@ public extension ProcessTableModel {
         let target: ProcessTarget? = synthetic ? nil
             : .process(pid: p.pid, name: p.name, path: p.path, uid: p.uid)
         let exited = isExitedResidual(p.id)
-        let kind = exited ? (p.name.isEmpty ? nil : exitedName) : processKind(p, responsibleID: responsibleID)
+        let rawKind = exited ? (p.name.isEmpty ? nil : exitedName) : processKind(p, responsibleID: responsibleID)
+        // Never "Exited processes · Exited processes": a kind equal to the name is dropped.
+        let kind = rawKind == p.name ? nil : rawKind
         // An app's main process shows its bundle ("/Applications/Final Cut Pro.app", DESIGN §3.12 inspector).
         let displayPath = kind == "App" ? p.path.map(trimmedBundle) : p.path
         var row = ProcessRow(

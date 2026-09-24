@@ -17,6 +17,7 @@ public struct ProcessesPage: View {
     @Environment(\.processesExpandOnAppear) private var expandKeysOnAppear
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.presentConfirmDialog) private var confirmDialog
+    @Environment(\.appCommands) private var appCommands
     @State private var table = ProcessTableModel()
     @State private var coordinator = ProcessActionCoordinator()
     @State private var inspector = AppInspectorModel()
@@ -49,7 +50,11 @@ public struct ProcessesPage: View {
                 .frame(minHeight: Self.listMinHeight, maxHeight: .infinity)
             AppInspector(row: selectedRow, availability: availability, detailExpanded: detailExpanded,
                          onToggleDetail: toggleDetail,
-                         onQuit: { target in Task { await coordinator.quit(target) } },
+                         onQuit: { target in
+                             if availability.isSelf { appCommands.quitTelltale() } else {
+                                 Task { await coordinator.quit(target) }
+                             }
+                         },
                          onForceQuit: { forceQuit($0) },
                          model: inspector)
                 .layoutPriority(1)

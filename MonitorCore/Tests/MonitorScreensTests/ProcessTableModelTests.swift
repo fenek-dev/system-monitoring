@@ -230,6 +230,14 @@ struct ProcessTableExitedTests {
         #expect(ProcessTableModel.inspectedApp(row: row, detailExpanded: true) == nil)
     }
 
+    @Test func namedExitedRowHasNoDuplicateKind() {
+        var input = Self.input(.processes)
+        if let i = input.processes.firstIndex(where: { $0.id.pid == -2 }) { input.processes[i].name = "Exited processes" }
+        let row = ProcessTableModel.build(input).lines.first { $0.isExitedResidual }!
+        #expect(row.name == "Exited processes")
+        #expect(row.kindLabel == nil)                                      // not "Exited processes · Exited processes"
+    }
+
     @Test func lastChildOfItsAppAndNotCountedAsAProcess() {
         let apps = ProcessTableModel.build(Self.input(.apps, expanded: [PT.docker]))
         let docker = apps.lines.first { $0.id == .app(PT.docker) }!
@@ -254,6 +262,24 @@ struct ProcessTableActionTests {
         // The service can still veto an owned row.
         let vetoed = ProcessTableModel.availability(for: row("Xcode"), serviceCanControl: false)
         #expect(!vetoed.canQuit && !vetoed.canForceQuit)
+    }
+
+    /// Telltale itself: Quit (quits Telltale), never Force Quit — same rule as the row menu.
+    @Test func telltaleItselfIsNeverForceQuit() {
+        let out = ProcessTableModel.build(PT.input(mode: .processes))
+        let xcode = out.lines.first { $0.name == "Xcode" }!
+        let selfProcess = ProcessTableModel.availability(for: xcode, serviceCanControl: true, ownPID: 1842,
+                                                         ownBundleID: "dev.telltale.Telltale")
+        #expect(selfProcess == ProcessActionAvailability(canQuit: true, canForceQuit: false, disabledHelp: nil,
+                                                         isSelf: true))
+        let apps = ProcessTableModel.build(PT.input())
+        let xcodeApp = apps.lines.first { $0.name == "Xcode" }!
+        let selfApp = ProcessTableModel.availability(for: xcodeApp, serviceCanControl: true, ownPID: 9,
+                                                     ownBundleID: PT.xcode.id)
+        #expect(selfApp.isSelf && !selfApp.canForceQuit)
+        let other = ProcessTableModel.availability(for: xcode, serviceCanControl: true, ownPID: 9,
+                                                   ownBundleID: "dev.telltale.Telltale")
+        #expect(!other.isSelf && other.canForceQuit)
     }
 
     @Test func appGroupsNeedEveryMemberOwned() {

@@ -108,11 +108,13 @@ struct AppInspector: View {
                 .disabled(!availability.canQuit)
                 .help("Quit \(row.name)")
                 .disabledTooltip(availability.canQuit ? nil : availability.disabledHelp)
-            Button("Force Quit…") { if let t = row.target { onForceQuit(t) } }
-                .buttonStyle(.tt(.regularDestructive))
-                .disabled(!availability.canForceQuit)
-                .help("Force quit \(row.name)")
-                .disabledTooltip(availability.canForceQuit ? nil : availability.disabledHelp)
+            if !availability.isSelf {                                      // never offered for Telltale itself
+                Button("Force Quit…") { if let t = row.target, availability.canForceQuit { onForceQuit(t) } }
+                    .buttonStyle(.tt(.regularDestructive))
+                    .disabled(!availability.canForceQuit)
+                    .help("Force quit \(row.name)")
+                    .disabledTooltip(availability.canForceQuit ? nil : availability.disabledHelp)
+            }
             InspectorMenuButton(target: row.target, name: row.name)
             TTIconButton(detailExpanded ? .chevronDown : .chevronRight,
                          label: detailExpanded ? "Hide details" : "Show details", variant: .header) {

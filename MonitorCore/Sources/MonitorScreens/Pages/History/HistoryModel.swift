@@ -54,11 +54,9 @@ public struct HistoryWindow: Equatable, Sendable {
         switch range {
         case .live, .hour:
             let count = Int((Double(range.duration?.components.seconds ?? 60) / bucket).rounded())
-            let end = (now.timeIntervalSince1970 / bucket).rounded(.up) * bucket
-            // Store buckets are labelled by their start (1H: last bucket starts at end − 15 s); Live points are the
-            // samples themselves, the newest at `now` → the last slot.
-            let span = range == .live ? Double(count - 1) : Double(count)
-            return HistoryWindow(range: range, start: Date(timeIntervalSince1970: end - bucket * span),
+            // The newest bucket is the one containing `now` (labelled by its start, like the store's buckets).
+            let newest = (now.timeIntervalSince1970 / bucket).rounded(.down) * bucket
+            return HistoryWindow(range: range, start: Date(timeIntervalSince1970: newest - bucket * Double(count - 1)),
                                  bucket: bucket, count: count, latest: count - 1)
         case .day, .week, .month:
             let days = range == .day ? 1 : (range == .week ? 7 : 30)
@@ -67,7 +65,10 @@ public struct HistoryWindow: Equatable, Sendable {
             // Snap to the store's epoch-aligned bucket grid (30D: 2-h buckets vs. an odd UTC offset would put the
             // newest local bucket between two stored ones and leave it empty); at most one bucket earlier.
             let start = Date(timeIntervalSince1970: (midnight.timeIntervalSince1970 / bucket).rounded(.down) * bucket)
-            let count = Int((Double(days) * 86_400 / bucket).rounded())
+            // Cover through the next local midnight (DST days are 23/25 h; the snap adds up to one bucket), so the
+            // bucket containing `now` always exists.
+            let localEnd = calendar.date(byAdding: .day, value: 1, to: today) ?? today.addingTimeInterval(86_400)
+            let count = max(1, Int((localEnd.timeIntervalSince(start) / bucket).rounded(.up)))
             var w = HistoryWindow(range: range, start: start, bucket: bucket, count: count, latest: 0)
             w.latest = w.index(of: now)
             return w
@@ -190,7 +191,16 @@ public final class HistoryModel {
     public nonisolated static let shareLimit = 24
 
     @ObservationIgnored public var provider: any HistoryProvider
-    @ObservationIgnored public let calendar: Calendar
+    /// The page's calendar (environment time zone + locale). Changing it drops the layout caches; the page then
+    /// re-selects the range so the window is rebuilt in the new zone.
+    @ObservationIgnored public var calendar: Calendar {
+        didSet {
+            bandCache = nil
+            chipCache = nil
+        }
+    }
+    /// Band layouts computed (tests: the cache is hit on scrub, missed on range/width changes).
+    @ObservationIgnored public private(set) var bandLayoutCount = 0
     @ObservationIgnored private var throttle = ShareQueryThrottle()
     @ObservationIgnored private let clock: @Sendable () -> Double
     @ObservationIgnored private let sleepUntil: @Sendable (Double) async -> Void
@@ -202,7 +212,7 @@ public final class HistoryModel {
     /// Unpinned Live cursor keeps its timestamp while the window moves.
     @ObservationIgnored private var liveCursorTime: Date?
     @ObservationIgnored private var bandCache: (key: LayoutKey, bands: [HistoryBand])?
-    @ObservationIgnored private var chipCache: (key: LayoutKey, label: String, chips: [HistoryChip])?
+    @ObservationIgnored private var chipCache: (key: LayoutKey, chips: [HistoryChip])?
 
     private struct LayoutKey: Equatable {
         var events: [HistoryEvent]
@@ -407,6 +417,7 @@ public final class HistoryModel {
         let bands = HistoryBand.layout(events, memoryLevels: key.memory, window: window, width: width,
                                        openEnd: window.dataEnd)
         bandCache = (key, bands)
+        bandLayoutCount += 1
         return bands
     }
 
@@ -424,7 +435,7 @@ public final class HistoryModel {
         let chips = HistoryChip.layout(events, window: window, width: width,
                                        label: { HistoryText.chipLabel($0, range: range, calendar: calendar) },
                                        measure: measure)
-        chipCache = (key, "", chips)
+        chipCache = (key, chips)
         return chips
     }
 

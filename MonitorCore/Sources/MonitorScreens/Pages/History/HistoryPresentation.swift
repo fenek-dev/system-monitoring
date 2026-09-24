@@ -36,12 +36,18 @@ public enum HistoryText {
         }
     }
 
+    /// Cached per (format, calendar) — per thread, since `DateFormatter` isn't Sendable.
     static func formatter(fixed format: String, _ calendar: Calendar) -> DateFormatter {
+        let locale = calendar.locale ?? Locale(identifier: "en_US_POSIX")
+        let key = "tt.history.df|\(format)|\(calendar.identifier)|\(calendar.timeZone.identifier)|\(locale.identifier)"
+        let cache = Thread.current.threadDictionary
+        if let f = cache[key] as? DateFormatter { return f }
         let f = DateFormatter()
         f.calendar = calendar
-        f.locale = calendar.locale ?? Locale(identifier: "en_US_POSIX")
+        f.locale = locale
         f.timeZone = calendar.timeZone
         f.dateFormat = format
+        cache[key] = f
         return f
     }
 
@@ -233,28 +239,56 @@ public struct HistoryChip: Identifiable, Equatable, Sendable {
     public var width: CGFloat
     /// Hidden overlapping chips folded into this one ("+n").
     public var hidden: Int
+    /// Width of the "+n" pill (0 when nothing is hidden).
+    public var pillWidth: CGFloat = 0
 
     public static let height: CGFloat = 22
-    public static let plusWidth: CGFloat = 30
+    /// Gap between a chip and its "+n" pill, and the minimum gap between chip groups.
+    public static let gap: CGFloat = 4
 
-    /// `measure`: text width of a label in `caption` (chip width = text + 16 padding + 2 border).
+    /// Chip + pill extent to the right of the chip's centre.
+    public var right: CGFloat { x + width / 2 + (hidden > 0 ? Self.gap + pillWidth : 0) }
+    public var left: CGFloat { x - width / 2 }
+
+    /// `measure`: text width in `caption` (chip width = text + 16 padding + 2 border; the "+n" pill likewise).
+    /// Placement accounts for the "+n" pills: groups (chip + pill) never overlap or touch closer than `gap`.
     public static func layout(_ events: [HistoryEvent], window: HistoryWindow, width: CGFloat,
                               label: (HistoryEvent) -> String, measure: (String) -> CGFloat) -> [HistoryChip] {
         let visible = events.filter { $0.kind != .samplingPaused && $0.start >= window.start && $0.start <= window.end }
         let ranked = visible.sorted { $0.level != $1.level ? $0.level > $1.level : $0.start < $1.start }
+        func pill(_ n: Int) -> CGFloat { n > 0 ? ceil(measure("+\(n)")) + 18 : 0 }
         var placed: [HistoryChip] = []
         for e in ranked {
             let text = label(e)
             let w = ceil(measure(text)) + 18
             let center = CGFloat(window.fraction(of: e.start)) * width
             let x = min(max(center, w / 2), max(width - w / 2, w / 2))
-            if let i = placed.firstIndex(where: { abs($0.x - x) < ($0.width + w) / 2 + ($0.hidden > 0 ? plusWidth : 0) }) {
+            let l = x - w / 2, r = x + w / 2
+            if let i = placed.firstIndex(where: { l < $0.right + gap && r + gap > $0.left }) {
                 placed[i].hidden += 1
+                placed[i].pillWidth = pill(placed[i].hidden)
             } else {
                 placed.append(HistoryChip(id: e.id, event: e, text: text, x: x, width: w, hidden: 0))
             }
         }
-        return placed.sorted { $0.x < $1.x }
+        // A pill that grew after later chips were placed may now reach the next group: fold that group into the
+        // more severe (then earlier) of the two until every neighbour clears.
+        placed.sort { $0.x < $1.x }
+        var i = 0
+        while i + 1 < placed.count {
+            let a = placed[i], b = placed[i + 1]
+            guard a.right + gap > b.left else {
+                i += 1
+                continue
+            }
+            let keepA = a.event.level != b.event.level ? a.event.level > b.event.level : a.event.start <= b.event.start
+            var kept = keepA ? a : b
+            kept.hidden = a.hidden + b.hidden + 1
+            kept.pillWidth = pill(kept.hidden)
+            placed.replaceSubrange(i...(i + 1), with: [kept])
+            i = max(0, i - 1)
+        }
+        return placed
     }
 }
 

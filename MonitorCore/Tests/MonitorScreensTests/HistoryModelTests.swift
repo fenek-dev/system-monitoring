@@ -143,14 +143,39 @@ struct HistoryWindowTests {
         let month = HistoryWindow.make(.month, now: HT.now, calendar: cal)
         // 30D snaps to the 2-h epoch grid (BST midnight = 23:00Z → 22:00Z).
         let monthMidnight = cal.date(byAdding: .day, value: -29, to: day.start)!
-        #expect(month.count == 360 && month.start <= monthMidnight
+        #expect(month.count == 361 && month.start <= monthMidnight
             && month.start > monthMidnight.addingTimeInterval(-7_200))
+        #expect(month.end >= cal.date(byAdding: .day, value: 1, to: day.start)!)
         #expect(month.start.timeIntervalSince1970.truncatingRemainder(dividingBy: 7_200) == 0)
         let hour = HistoryWindow.make(.hour, now: HT.now, calendar: cal)
         #expect(hour.count == 240 && hour.latest == 239 && hour.end >= HT.now)
         let live = HistoryWindow.make(.live, now: HT.now, calendar: cal)
         #expect(live.count == 60 && live.latest == 59)
         #expect(day.index(of: day.time(at: 100).addingTimeInterval(299)) == 100)
+    }
+
+    /// The bucket containing `now` always exists: late evening in BST / UTC+5 / UTC+5:45 (grid snap) and on a DST
+    /// fall-back day (25 h).
+    @Test(arguments: [
+        ("Europe/London", "2026-09-24T23:30:00+01:00"),
+        ("Asia/Tashkent", "2026-09-24T23:30:00+05:00"),
+        ("Asia/Kathmandu", "2026-09-24T23:50:00+05:45"),
+        ("Asia/Kolkata", "2026-09-24T23:59:00+05:30"),
+        ("Europe/London", "2026-10-25T23:30:00+00:00"),         // clocks went back at 02:00
+        ("Europe/London", "2026-10-25T01:30:00+00:00"),         // the repeated hour
+        ("America/New_York", "2026-11-01T23:45:00-05:00"),
+    ])
+    func nowIsInsideItsBucketAtAnyTimeZone(zone: String, iso: String) {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: zone)!
+        let now = ISO8601DateFormatter().date(from: iso)!
+        for range in HistoryRange.allCases {
+            let w = HistoryWindow.make(range, now: now, calendar: cal)
+            #expect(w.time(at: w.latest) <= now, "\(zone) \(range)")
+            #expect(now < w.time(at: w.latest).addingTimeInterval(w.bucket), "\(zone) \(range)")
+            #expect(now < w.end, "\(zone) \(range)")
+            #expect(w.latest < w.count, "\(zone) \(range)")
+        }
     }
 
     @Test func bucketedPlacesPointsByTime() {
@@ -219,6 +244,20 @@ struct HistoryWindowTests {
         #expect(HistoryText.chipLabel(chip, range: .week, calendar: HT.london) == "Xcode build · Thu 14:32")
         #expect(HistoryText.moment(HT.now, range: .month, calendar: HT.london) == "Thu 14:32")
         #expect(HistoryText.moment(HT.now, range: .hour, calendar: HT.london) == "14:32")
+    }
+
+    @Test func chipsAndTheirPlusPillsNeverOverlap() {
+        let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        // A dense cluster (grows a wide "+n" pill) just left of a separate chip.
+        var events = (0..<30).map { HistoryEvent(start: w.time(at: 100 + $0 % 3), level: .calm, label: "Cluster \($0)") }
+        events.append(HistoryEvent(start: w.time(at: 112), level: .calm, label: "Next"))
+        let chips = HistoryChip.layout(events, window: w, width: 810, label: { $0.label },
+                                       measure: { CGFloat($0.count) * 6 })
+        for (a, b) in zip(chips, chips.dropFirst()) {
+            #expect(a.right + HistoryChip.gap <= b.left)
+        }
+        #expect(chips.reduce(0) { $0 + 1 + $1.hidden } == events.count)  // every event accounted for
+        #expect(chips.contains { $0.hidden > 0 && $0.pillWidth > 0 })
     }
 
     @Test func notPersistentBanner() {
@@ -489,6 +528,20 @@ struct HistoryModelTests {
         #expect(measured == first)
         _ = m.chips(width: 700) { _ in measured += 1; return 50 }
         #expect(measured > first)
+        // Bands: computed once per (events, memory levels, window, width).
+        let bandsBefore = m.bandLayoutCount
+        _ = m.bands(width: 800)
+        _ = m.bands(width: 800)
+        m.scrub(to: 20, interactive: false)
+        _ = m.bands(width: 800)
+        _ = m.legendKinds
+        _ = m.bands(width: 800)
+        #expect(m.bandLayoutCount == bandsBefore + 1)
+        _ = m.bands(width: 700)
+        #expect(m.bandLayoutCount == bandsBefore + 2)
+        m.select(.week, now: HT.now)
+        _ = m.bands(width: 700)
+        #expect(m.bandLayoutCount == bandsBefore + 3)                     // range change invalidates
     }
 
     @Test func layoutCacheInvalidatesOnRangeChange() async {
@@ -501,6 +554,6 @@ struct HistoryModelTests {
         await m.load()
         let weekChips = m.chips(width: 800) { _ in 50 }
         #expect(!weekChips.isEmpty && weekChips != dayChips)
-        #expect(weekChips.allSatisfy { $0.text.contains(" · ") && $0.text.split(separator: " ").count >= 4 })
+        #expect(weekChips.allSatisfy { $0.text.range(of: #" · \w{3} \d\d:\d\d$"#, options: .regularExpression) != nil })
     }
 }
