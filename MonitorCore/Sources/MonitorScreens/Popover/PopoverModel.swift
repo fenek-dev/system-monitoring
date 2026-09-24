@@ -152,16 +152,15 @@ enum PopoverModel {
     // MARK: Banners
 
     struct Banner: Equatable, Identifiable {
-        enum Action: Equatable { case show(DashboardPage), quit(AppKey) }
+        enum Action: Equatable, Sendable { case show(DashboardPage), quit(AppKey) }
+        struct Button: Equatable, Sendable {
+            var title: String
+            var action: Action
+        }
         var id: String
         var level: AlertLevel
         var message: String
-        var buttons: [(title: String, action: Action)]
-
-        static func == (a: Banner, b: Banner) -> Bool {
-            a.id == b.id && a.level == b.level && a.message == b.message
-                && a.buttons.map(\.title) == b.buttons.map(\.title)
-        }
+        var buttons: [Button]
     }
 
     /// One banner per active alert, most severe first (DESIGN §3.2). "Quit {App}" only for user-owned apps.
@@ -190,12 +189,60 @@ enum PopoverModel {
                 message = "\(name ?? "An app") has used \(n) CPU for \(dur)."
                 show = ("Show Processes", .processes)
             }
-            var buttons: [(String, Banner.Action)] = [(show.0, .show(show.1))]
+            var buttons = [Banner.Button(title: show.0, action: .show(show.1))]
             if let app, app.isCurrentUser, canControl(app.target) {
-                buttons.append(("Quit \(app.name)", .quit(app.identity.key)))
+                buttons.append(Banner.Button(title: "Quit \(app.name)", action: .quit(app.identity.key)))
             }
-            return Banner(id: alert.id, level: alert.level, message: message,
-                          buttons: buttons.map { (title: $0.0, action: $0.1) })
+            return Banner(id: alert.id, level: alert.level, message: message, buttons: buttons)
+        }
+    }
+
+    /// Row expansion toggle (several rows may be open at once).
+    static func toggled(_ open: Set<MonitorModel.Category>, _ c: MonitorModel.Category) -> Set<MonitorModel.Category> {
+        var s = open
+        if s.contains(c) { s.remove(c) } else { s.insert(c) }
+        return s
+    }
+
+    /// Feedback line for a failed Quit (ARCHITECTURE §6.7: failures → toast); nil on success/cancel.
+    static func feedback(_ result: ActionResult, name: String) -> String? {
+        switch result {
+        case .done, .cancelled: nil
+        case .notPermitted: "Not permitted to quit \(name)"
+        case .failed(let why): "Couldn't quit \(name): \(why)"
+        }
+    }
+}
+
+/// Everything the popover does, in one place so behaviour is testable without driving SwiftUI gestures.
+@MainActor
+struct PopoverActions {
+    var commands: AppCommands
+    var actions: ProcessActions
+    var live: LiveModel
+
+    func openPage(_ c: MonitorModel.Category) { commands.openDashboard(c.dashboardPage) }
+    func openApp(_ key: AppKey) { commands.inspectApp(key) }
+    func openDashboard() { commands.openDashboard(.overview) }
+    func openHistory() { commands.openDashboard(.history) }
+    func openSettings() { commands.openSettings() }
+    func quitTelltale() { commands.quitTelltale() }
+    func setPaused(_ paused: Bool) { commands.setPaused(paused) }
+
+    /// Quits an app group; returns the feedback text for a failure.
+    func quit(_ app: AppSample) async -> String? {
+        PopoverModel.feedback(await actions.quit(app.target), name: app.name)
+    }
+
+    /// Banner button; returns feedback text for a failed Quit.
+    func perform(_ action: PopoverModel.Banner.Action) async -> String? {
+        switch action {
+        case .show(let page):
+            commands.openDashboard(page)
+            return nil
+        case .quit(let key):
+            guard let app = live.app(key) else { return nil }
+            return await quit(app)
         }
     }
 }

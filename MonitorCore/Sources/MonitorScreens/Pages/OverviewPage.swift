@@ -280,7 +280,7 @@ struct OverviewTopProcessesCard: View {
 
     var body: some View {
         let health = live.sensorHealth
-        let rows = live.apps.filter { $0.identity.key != .other }
+        let rows = Self.rows(live)
         TTCard(spacing: TTSpace.x8) {
             TTCardHeader("Top processes") { PageLink("All processes", to: .processes) }
             FitRows { n in   // "as many as fit (≈4 at the default size)"
@@ -289,6 +289,12 @@ struct OverviewTopProcessesCard: View {
                         style: TTTableStyle(scrolls: false, emptyMessage: "No processes"), onDoubleClick: open)
             }
         }
+    }
+
+    /// App groups by CPU, descending — sorted here, before the "as many as fit" prefix.
+    static func rows(_ live: LiveModel) -> [AppSample] {
+        live.apps.filter { $0.identity.key != .other }
+            .sorted { ($0.cpuPercent ?? -1) > ($1.cpuPercent ?? -1) }
     }
 
     private func open(_ app: AppSample) {

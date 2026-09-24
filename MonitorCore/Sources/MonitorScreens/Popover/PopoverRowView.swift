@@ -10,7 +10,7 @@ import SwiftUI
 /// - Expansion (ADDED): under the row in the same rounded fill (white @ 0.06), padding 0 10 8 36, 3 lines × 24
 ///   (tile 16, name `body12`, value in the 74 column `textSecondary`); "No app activity" when empty.
 /// - Stressed: `statusElevatedRowFill` (or critical) with the value in the status color. Hover `fillHover`.
-struct PopoverRowView: View {
+struct PopoverRowView: View, Equatable {
     let row: PopoverModel.Row
     let expanded: Bool
     let lines: [PopoverModel.AppLine]
@@ -18,6 +18,11 @@ struct PopoverRowView: View {
     let openPage: () -> Void
     let openApp: (AppKey) -> Void
     @State private var hovering = false
+
+    /// Data only; the closures are rebuilt every time and never change behaviour for equal data.
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.row == b.row && a.expanded == b.expanded && a.lines == b.lines
+    }
 
     private var fill: Color {
         if let f = TTColor.rowFill(row.stress) { return f }
@@ -32,14 +37,16 @@ struct PopoverRowView: View {
             Group { if row.compact { compactLine } else { fullLine } }
                 .padding(.horizontal, 10)
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2, perform: openPage)
-                .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { toggle() } }
+                // Single click toggles at once; a double click (toggle twice = unchanged) also opens the page.
+                .onTapGesture(perform: toggle)
+                .simultaneousGesture(TapGesture(count: 2).onEnded(openPage))
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint(expanded ? "Collapse top apps" : "Show top apps")
             if expanded { expansion.transition(.opacity) }
         }
         .background(RoundedRectangle(cornerRadius: TTRadius.r7, style: .continuous).fill(fill))
         .onHover { hovering = $0 }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
     }
 
     private var icon: some View { TTIcon(TTIconName.category(row.category), size: 16) }
@@ -112,6 +119,8 @@ struct PopoverRowView: View {
                 .frame(height: 24)
                 .contentShape(Rectangle())
                 .onTapGesture { openApp(line.key) }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
             }
         }
         .padding(EdgeInsets(top: 0, leading: 36, bottom: 8, trailing: 10))
@@ -121,21 +130,29 @@ struct PopoverRowView: View {
 // TODO(W3 T11): replace with `TTAlertBanner` once W3 lands it (the W0b stub draws nothing).
 /// DESIGN §2.23 alert banner: margin 2 top / 6 horizontal / 6 bottom; padding 10×12, radius 8, level fill with
 /// 1-pt level border; VStack gap 8 of `bannerText` (`textPrimary`) and an HStack gap 6 of small secondary buttons.
-struct PopoverBannerView: View {
+struct PopoverBannerView: View, Equatable {
     let banner: PopoverModel.Banner
     let perform: (PopoverModel.Banner.Action) -> Void
 
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.banner == b.banner }
+
+    /// The artboard's line box is 17.5 pt (`bannerText` 12 pt); SwiftUI's natural 12-pt line is ≈ 14.3 pt, so the
+    /// gap goes between lines (`lineSpacing`) and half of it above the first / below the last line (CSS half-leading).
+    static let lineBox: CGFloat = 17.5
+    static let naturalLine: CGFloat = 14.3
+
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: TTRadius.r8, style: .continuous)
+        let leading = Self.lineBox - Self.naturalLine
         VStack(alignment: .leading, spacing: 8) {
             Text(banner.message)
-                .font(TTFont.bannerText).lineSpacing(TTFont.bannerTextSpacing)
+                .font(TTFont.bannerText).lineSpacing(leading)
                 .foregroundStyle(TTColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, leading / 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 6) {
-                ForEach(banner.buttons.indices, id: \.self) { i in
-                    let b = banner.buttons[i]
+                ForEach(banner.buttons, id: \.title) { b in
                     Button(b.title) { perform(b.action) }.buttonStyle(TTButtonStyle(.smallSecondary))
                 }
             }

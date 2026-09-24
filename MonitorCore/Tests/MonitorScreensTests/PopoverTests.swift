@@ -72,6 +72,92 @@ struct PopoverTests {
         #expect(lines.allSatisfy { $0.value.hasSuffix("%") })
     }
 
+    // MARK: Behaviour (recording AppCommands + mock ActionLog)
+
+    final class CommandLog: @unchecked Sendable {
+        var entries: [String] = []
+    }
+
+    static func recording(_ log: CommandLog) -> AppCommands {
+        AppCommands(openDashboard: { log.entries.append("open \($0?.rawValue ?? "nil")") },
+                    inspectApp: { log.entries.append("inspect \($0.id)") },
+                    openSettings: { log.entries.append("settings") },
+                    setPaused: { log.entries.append("paused \($0)") },
+                    quitTelltale: { log.entries.append("quitTelltale") })
+    }
+
+    @Test func bannerButtonsShowPageAndQuitCulprit() async {
+        let live = ScreenFixture.live(.thermalFair)
+        let log = CommandLog()
+        let actionLog = ActionLog()
+        let actions = MockDataProvider(scenario: .thermalFair).processActions(log: actionLog)
+        let ops = PopoverActions(commands: Self.recording(log), actions: actions, live: live)
+        let banner = try? #require(PopoverModel.banners(live: live, units: UnitPreferences(),
+                                                        canControl: actions.canControl).first)
+        #expect(banner?.buttons.map(\.title) == ["Show Thermals", "Quit Final Cut Pro"])
+        for b in banner?.buttons ?? [] { _ = await ops.perform(b.action) }
+        #expect(log.entries == ["open thermals"])
+        #expect(actionLog.entries == ["quit Final Cut Pro -> done"])
+    }
+
+    @Test func footerAndRowCommands() {
+        let log = CommandLog()
+        let live = ScreenFixture.live(.calm)
+        let ops = PopoverActions(commands: Self.recording(log), actions: .noop, live: live)
+        ops.openDashboard()
+        ops.openHistory()
+        ops.quitTelltale()
+        ops.openPage(.thermals)                      // row double-click
+        ops.openApp(AppKey(kind: .app, id: "com.apple.dt.Xcode"))   // expansion line click
+        ops.setPaused(true)
+        ops.openSettings()
+        #expect(log.entries == ["open overview", "open history", "quitTelltale", "open thermals",
+                                "inspect com.apple.dt.Xcode", "paused true", "settings"])
+    }
+
+    @Test func rowExpansionToggles() {
+        var open: Set<MonitorModel.Category> = []
+        open = PopoverModel.toggled(open, .cpu)
+        open = PopoverModel.toggled(open, .memory)
+        #expect(open == [.cpu, .memory])            // several rows may be open at once
+        open = PopoverModel.toggled(open, .cpu)
+        #expect(open == [.memory])
+    }
+
+    @Test func topConsumerQuitAndFeedback() async {
+        let live = ScreenFixture.live(.calm)
+        let actionLog = ActionLog()
+        let actions = MockDataProvider(scenario: .calm).processActions(log: actionLog)
+        let ops = PopoverActions(commands: .noop, actions: actions, live: live)
+        let consumer = try? #require(PopoverModel.consumer(live: live))
+        #expect(consumer?.app.name == "Xcode")
+        if let app = consumer?.app { #expect(await ops.quit(app) == nil) }
+        #expect(actionLog.entries == ["quit Xcode -> done"])
+        #expect(PopoverModel.feedback(.notPermitted, name: "WindowServer") == "Not permitted to quit WindowServer")
+    }
+
+    // MARK: Invalidation
+
+    /// A memory-only update (no new sample) must not invalidate the CPU or Power rows' observed reads.
+    @Test func memoryOnlyChangeDoesNotTouchOtherRows() {
+        let provider = MockDataProvider(scenario: .calm)
+        let live = ScreenFixture.live(.calm)
+        let units = UnitPreferences()
+        final class Flag: @unchecked Sendable { var fired = false }
+        var flags: [MonitorModel.Category: Flag] = [:]
+        for c in [MonitorModel.Category.cpu, .power, .memory] {
+            let flag = Flag()
+            flags[c] = flag
+            withObservationTracking { _ = PopoverModel.row(c, live: live, units: units) } onChange: { flag.fired = true }
+        }
+        var f = provider.frame(at: 60)                       // same sample time as the last applied frame
+        f.memory.used = (f.memory.used ?? 0) + 1_073_741_824
+        live.apply(f)
+        #expect(flags[.memory]?.fired == true)
+        #expect(flags[.cpu]?.fired == false)
+        #expect(flags[.power]?.fired == false)
+    }
+
     @Test func snapshots() {
         assertScreen("popover", scenario: .calm)
         assertScreen("popover-alert", scenario: .thermalFair)

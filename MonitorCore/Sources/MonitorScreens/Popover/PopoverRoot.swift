@@ -6,13 +6,14 @@ import SwiftUI
 /// Menu bar popover content (DESIGN §3.1–3.2). `PopoverContainer` (W4) adds the 360-pt chrome and padding 6.
 /// Top to bottom: header, alert banners, full rows, divider, compact rows, divider, top consumer, divider, footer.
 /// Rows follow `PopoverLayout` (order, hidden); a divider is dropped when either side is empty.
+///
+/// Invalidation: this body reads only the layout and the expansion state. Each row, the banners and the top
+/// consumer are separate views that observe only what they show, and rows are `Equatable`, so e.g. a memory-only
+/// update does not rebuild the Power/Disk rows (sparkline rows follow the shared per-tick series counter).
 public struct PopoverRoot: View {
-    @Environment(LiveModel.self) private var live
     @Environment(\.popoverLayout) private var layout
-    @Environment(\.unitPreferences) private var units
-    @Environment(\.appCommands) private var commands
-    @Environment(\.processActions) private var actions
     @State private var expanded: Set<MonitorModel.Category>
+    @State private var feedback: String?
 
     public init() { _expanded = State(initialValue: []) }
 
@@ -21,61 +22,120 @@ public struct PopoverRoot: View {
 
     public var body: some View {
         let sections = PopoverModel.sections(layout)
-        let consumer = PopoverModel.consumer(live: live)
         VStack(alignment: .leading, spacing: 0) {
             PopoverHeader()
-            ForEach(PopoverModel.banners(live: live, units: units, canControl: actions.canControl)) { banner in
-                PopoverBannerView(banner: banner, perform: perform)
-            }
+            PopoverBanners(feedback: $feedback)
             rows(sections.full)
-            if !sections.full.isEmpty && !sections.compact.isEmpty { divider }
+            if !sections.full.isEmpty && !sections.compact.isEmpty { PopoverDivider() }
             rows(sections.compact)
-            if !(sections.full.isEmpty && sections.compact.isEmpty) && consumer != nil { divider }
-            if let consumer { TopConsumerView(consumer: consumer) }
-            divider
-            footer
+            PopoverConsumerSection(dividerAbove: !(sections.full.isEmpty && sections.compact.isEmpty),
+                                   feedback: $feedback)
+            PopoverDivider()
+            if let feedback {
+                Text(feedback).font(TTFont.caption).foregroundStyle(TTColor.statusElevated).lineLimit(1)
+                    .padding(.horizontal, 10).padding(.top, 2)
+                    .task(id: feedback) {
+                        try? await Task.sleep(for: .seconds(4))
+                        self.feedback = nil
+                    }
+            }
+            PopoverFooter()
         }
+        // CSS border-box: content starts inside the 1-pt side borders, 7 from the panel edge (vertical measured flush).
+        .padding(.horizontal, 1)
     }
 
     private func rows(_ categories: [MonitorModel.Category]) -> some View {
         ForEach(categories, id: \.self) { c in
-            let open = expanded.contains(c)
-            PopoverRowView(row: PopoverModel.row(c, live: live, units: units), expanded: open,
-                           lines: open ? PopoverModel.expansion(c, live: live, units: units) : [],
-                           toggle: { if open { expanded.remove(c) } else { expanded.insert(c) } },
-                           openPage: { commands.openDashboard(c.dashboardPage) },
-                           openApp: { commands.inspectApp($0) })
+            PopoverCategoryRow(category: c, expanded: expanded.contains(c)) {
+                withAnimation(.easeInOut(duration: 0.18)) { expanded = PopoverModel.toggled(expanded, c) }
+            }
         }
     }
+}
 
-    /// 1 pt `separator`, margin 4 vertical, 10 horizontal.
-    private var divider: some View {
-        TTSeparator().padding(.vertical, 4).padding(.horizontal, 10)
+/// 1 pt `separator`, margin 4 vertical, 10 horizontal.
+struct PopoverDivider: View {
+    var body: some View { TTSeparator().padding(.vertical, 4).padding(.horizontal, 10) }
+}
+
+/// One category row: observes only its own category (plus alert/health), hands plain data to the `Equatable`
+/// `PopoverRowView`.
+struct PopoverCategoryRow: View {
+    let category: MonitorModel.Category
+    let expanded: Bool
+    let toggle: () -> Void
+    @Environment(LiveModel.self) private var live
+    @Environment(\.unitPreferences) private var units
+    @Environment(\.appCommands) private var commands
+    @Environment(\.processActions) private var actions
+
+    var body: some View {
+        let ops = PopoverActions(commands: commands, actions: actions, live: live)
+        PopoverRowView(row: PopoverModel.row(category, live: live, units: units), expanded: expanded,
+                       lines: expanded ? PopoverModel.expansion(category, live: live, units: units) : [],
+                       toggle: toggle, openPage: { ops.openPage(category) }, openApp: { ops.openApp($0) })
+            .equatable()
     }
+}
 
-    /// HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: Open Dashboard (flex), History, Quit Telltale (ADDED).
-    private var footer: some View {
+/// One `TTAlertBanner` per active alert, most severe first (gap 6 between stacked banners comes from their margins).
+struct PopoverBanners: View {
+    @Binding var feedback: String?
+    @Environment(LiveModel.self) private var live
+    @Environment(\.unitPreferences) private var units
+    @Environment(\.appCommands) private var commands
+    @Environment(\.processActions) private var actions
+
+    var body: some View {
+        let ops = PopoverActions(commands: commands, actions: actions, live: live)
+        ForEach(PopoverModel.banners(live: live, units: units, canControl: actions.canControl)) { banner in
+            PopoverBannerView(banner: banner) { action in
+                Task { if let f = await ops.perform(action) { feedback = f } }
+            }
+            .equatable()
+        }
+    }
+}
+
+/// Divider + top consumer; observes apps and alert only.
+struct PopoverConsumerSection: View {
+    let dividerAbove: Bool
+    @Binding var feedback: String?
+    @Environment(LiveModel.self) private var live
+    @Environment(\.appCommands) private var commands
+    @Environment(\.processActions) private var actions
+
+    var body: some View {
+        if let consumer = PopoverModel.consumer(live: live) {
+            let ops = PopoverActions(commands: commands, actions: actions, live: live)
+            if dividerAbove { PopoverDivider() }
+            TopConsumerView(consumer: consumer, canQuit: consumer.app.isCurrentUser && actions.canControl(consumer.app.target),
+                            open: { ops.openApp(consumer.app.identity.key) },
+                            quit: { Task { if let f = await ops.quit(consumer.app) { feedback = f } } })
+                .equatable()
+        }
+    }
+}
+
+/// HStack gap 8, padding 6 top, 4 horizontal, 4 bottom: Open Dashboard (flex), History, Quit Telltale (ADDED).
+struct PopoverFooter: View {
+    @Environment(LiveModel.self) private var live
+    @Environment(\.appCommands) private var commands
+    @Environment(\.processActions) private var actions
+
+    var body: some View {
+        let ops = PopoverActions(commands: commands, actions: actions, live: live)
         HStack(spacing: 8) {
-            Button("Open Dashboard") { commands.openDashboard(.overview) }
+            Button("Open Dashboard") { ops.openDashboard() }
                 .buttonStyle(TTButtonStyle(.popoverPrimary))
                 .keyboardShortcut("d", modifiers: .command)
-            Button("History") { commands.openDashboard(.history) }
+            Button("History") { ops.openHistory() }
                 .buttonStyle(TTButtonStyle(.popoverSecondary))
-            TTIconButton(.quit, label: "Quit Telltale", variant: .footer) { commands.quitTelltale() }
+            TTIconButton(.quit, label: "Quit Telltale", variant: .footer) { ops.quitTelltale() }
                 .keyboardShortcut("q", modifiers: .command)
         }
         .padding(EdgeInsets(top: 6, leading: 4, bottom: 4, trailing: 4))
-    }
-
-    private func perform(_ action: PopoverModel.Banner.Action) {
-        switch action {
-        case .show(let page):
-            commands.openDashboard(page)
-        case .quit(let key):
-            guard let app = live.app(key) else { return }
-            let target = app.target
-            Task { _ = await actions.quit(target) }
-        }
     }
 }
 
@@ -84,10 +144,12 @@ public struct PopoverRoot: View {
 struct PopoverHeader: View {
     @Environment(LiveModel.self) private var live
     @Environment(\.appCommands) private var commands
+    @Environment(\.processActions) private var actions
 
     var body: some View {
         let alert = live.alert
         let paused = live.isPausedPhase
+        let ops = PopoverActions(commands: commands, actions: actions, live: live)
         HStack(spacing: 10) {
             PopoverGlyph(state: alert)
             VStack(alignment: .leading, spacing: 0) {
@@ -101,8 +163,8 @@ struct PopoverHeader: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             TTIconButton(paused ? .play : .pause, label: paused ? "Resume sampling" : "Pause sampling",
-                         variant: .popover) { commands.setPaused(!paused) }
-            TTIconButton(.settings, label: "Settings", variant: .popover) { commands.openSettings() }
+                         variant: .popover) { ops.setPaused(!paused) }
+            TTIconButton(.settings, label: "Settings", variant: .popover) { ops.openSettings() }
                 .keyboardShortcut(",", modifiers: .command)
         }
         .padding(EdgeInsets(top: 8, leading: 10, bottom: 10, trailing: 10))
@@ -116,10 +178,13 @@ struct PopoverHeader: View {
 
 /// DESIGN §3.1 #11: HStack gap 10, padding 8×10: tile 26; "Top consumer" `caption` `textSecondary`, name
 /// `body13`, detail `caption` `textSecondary`; small secondary "Quit" (disabled when not user-owned).
-struct TopConsumerView: View {
+struct TopConsumerView: View, Equatable {
     let consumer: PopoverModel.Consumer
-    @Environment(\.processActions) private var actions
-    @Environment(\.appCommands) private var commands
+    let canQuit: Bool
+    let open: () -> Void
+    let quit: () -> Void
+
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.consumer == b.consumer && a.canQuit == b.canQuit }
 
     var body: some View {
         let app = consumer.app
@@ -133,13 +198,10 @@ struct TopConsumerView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .onTapGesture { commands.inspectApp(app.identity.key) }
-            Button("Quit") {
-                let target = app.target
-                Task { _ = await actions.quit(target) }
-            }
-            .buttonStyle(TTButtonStyle(.smallSecondary))
-            .disabled(!app.isCurrentUser || !actions.canControl(app.target))
+            .onTapGesture(perform: open)
+            Button("Quit", action: quit)
+                .buttonStyle(TTButtonStyle(.smallSecondary))
+                .disabled(!canQuit)
         }
         .padding(.vertical, 8).padding(.horizontal, 10)
     }
