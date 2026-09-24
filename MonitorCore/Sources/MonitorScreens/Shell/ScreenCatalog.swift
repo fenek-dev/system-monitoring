@@ -114,7 +114,7 @@ struct ArtboardMenuBar: View {
                 .padding(.trailing, 12)
         }
         .frame(width: ScreenCatalog.popoverArtboardSize.width, height: 26)
-        .background(Color(.sRGB, red: 28 / 255, green: 28 / 255, blue: 32 / 255, opacity: 0.92))
+        .background(ShellStyle.hex(0x1A1A1D))   // rgba(28,28,32,0.92) over the artboard desktop, flattened
     }
 }
 
@@ -141,16 +141,16 @@ struct StatusIconsBoard: View {
                         TTStatusGlyph(state: item.state, size: 72, template: false)
                     }
                     .frame(height: 122)
-                    HStack(spacing: 0) {
-                        Spacer()
+                    // Artboard strip: gap 10, padding 0 10, 12-px time label.
+                    HStack(spacing: 10) {
+                        Spacer(minLength: 0)
                         Color.clear.frame(width: 16, height: 16)
                             .overlay(TTStatusGlyph(state: item.state, size: 16, template: false))
                         Text("2:32 PM")
-                            .font(.system(size: 13)).monospacedDigit()
+                            .font(.system(size: 12)).monospacedDigit()
                             .foregroundStyle(ShellStyle.textSecondary)
-                            .padding(.leading, 12)
                     }
-                    .padding(.horizontal, 11)
+                    .padding(.horizontal, 10)
                     .frame(height: 28)
                     .background(card(8))
                     .padding(.top, 12)

@@ -48,6 +48,25 @@ struct OverviewSnapshotTests {
         }.prefix(4)).map(\.identity.key))
     }
 
+    /// Design match: the sidebar footer shows the short model name (DESIGN §3.0 "MacBook Pro 14″").
+    @Test(arguments: [
+        ("MacBook Pro (14-inch, 2021)", "MacBook Pro 14″"),
+        ("MacBook Pro (16-inch, Nov 2023)", "MacBook Pro 16″"),
+        ("MacBook Pro (13-inch, M2, 2022)", "MacBook Pro 13″"),
+        ("MacBook Pro (14-inch)", "MacBook Pro 14″"),
+        ("MacBook Air (13-inch, M3, 2024)", "MacBook Air 13″"),
+        ("MacBook Air (15-inch, M2, 2023)", "MacBook Air 15″"),
+        ("MacBook Air (M1, 2020)", "MacBook Air"),
+        ("Mac mini (2023)", "Mac mini"),
+        ("Mac Studio (2025)", "Mac Studio"),
+        ("iMac (24-inch, 2023)", "iMac 24″"),
+        ("MacBook Pro 14″", "MacBook Pro 14″"),
+        ("Virtual Machine", "Virtual Machine"),
+    ])
+    func modelShortName(_ raw: String, _ expected: String) {
+        #expect(ShellFormat.modelShortName(raw) == expected)
+    }
+
     /// CP2: package watts fall back to the component sum; the popover Power row falls back to SMC system power.
     @Test func powerFallbacks() {
         var p = PowerSnapshot()
