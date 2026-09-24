@@ -1,353 +1,338 @@
 # Telltale — Parallel Build Plan (M1–M6)
 
-> **For agentic workers:** one workstream per agent, each in its own git worktree. REQUIRED SUB-SKILLS: superpowers:using-git-worktrees, superpowers:test-driven-development (W1, W2, W3 layout math, W6 parse layers), superpowers:verification-before-completion. Steps use `- [ ]`.
+> **For agentic workers:** one workstream per agent, each in its own git worktree. REQUIRED SUB-SKILLS: superpowers:using-git-worktrees, superpowers:test-driven-development (W1, W2, W3 layout/format math, W6 parse layers), superpowers:verification-before-completion. Steps use `- [ ]`.
 
-**Goal:** build Telltale (SPEC.md) with 4–6 agents working concurrently against the locked interfaces in `docs/ARCHITECTURE.md` §5.
-**Architecture:** `docs/ARCHITECTURE.md` (binding). Design: `docs/design/artboards/*.dc.html`, `docs/design/DESIGN.md`, reference PNGs `docs/design/reference/*.png` (W3 T0).
-**Inputs pending:** `docs/findings/*.md` from M0 (gate W6 streams).
+**Goal:** build Telltale (SPEC.md) with 4–6 agents working concurrently against the locked interfaces in `docs/ARCHITECTURE.md` §5 (revision 2).
+**Design:** `docs/design/DESIGN.md` (tokens, components `TT*`, screens), artboards, reference PNGs `docs/design/reference/<Artboard>@2x.png` (design agent).
+**Findings:** `docs/findings/{procs,gpu-apps,ioreport,smc}.md` exist; `temps`, `nstat`, `extras`, coalition notes pending/partial. Facts already applied: ARCHITECTURE §10.
 
 ---
 
 ## 0. Rules for every stream
 
-- **Worktree:** `git worktree add ../telltale-<id> -b ws/<id>-<slug> dev` (e.g. `../telltale-w1`, `ws/w1-engine`). Work, commit, and test only there. Each worktree has its own `.build/` and `TELLTALE_DATA_DIR=.build/data` (set by `scripts/run.sh`), so apps/DBs from different worktrees don't collide. Quit other Telltale instances before `scripts/run.sh` (two status items confuse checks).
-- **Ownership:** edit only files your stream owns (§1). Need a Model/Package change → ICR (`docs/icr/NNN-<id>-<slug>.md`, ARCHITECTURE §9), keep going with a local extension.
-- **Merging:** small PRs per task group, rebased on `dev`, fast-forward. Pre-merge: `scripts/ci.sh <YourTestSuites>` (= `swift build` all targets + `scripts/build.sh` + listed suites). The integrator (W7 owner, or the lead before W7 starts) merges.
-- **Tests (user rule):** TDD loop reruns only the failing tests + suites whose sources you touched. Full `swift test` only at integration checkpoints (reason: shared infrastructure) or when asked — state which.
-- **Output budget:** pipe builds/tests through the scripts (they `tail`/`grep`). Never paste > ~100 lines.
+- **Worktree:** `git worktree add ../telltale-<id> -b ws/<id>-<slug> dev`. Work, commit and test only there. `scripts/run.sh` sets `TELLTALE_DATA_DIR=.build/data` per worktree. Quit other Telltale instances before running yours.
+- **Ownership:** edit only files your stream owns (§1). Model/Package change → ICR (`docs/icr/NNN-<id>-<slug>.md`, ARCHITECTURE §9); continue with a local extension.
+- **Merging:** small PRs per task group, rebased on `dev`, fast-forward. Gate: `scripts/ci.sh <YourSuites>` (build all + app build + your suites + the `&-` grep). Integrator (lead until W7 starts, then W7) merges.
+- **Tests (user rule):** rerun only failing tests + suites whose sources you touched. Full `swift test` only at checkpoints (reason: shared-infrastructure merge) or on request — say which.
+- **Output budget:** use the scripts (they `tail`/`grep`); never paste > ~100 lines.
 - **Commits:** end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- **Perf numbers are advisory:** report them; don't tune to them unless a checkpoint says the budget is blown by > 2×.
+- **Perf is advisory:** report numbers; don't tune unless a checkpoint shows > 2× budget.
+- **No sudo** reference checks (ruling). Verify sensors by plausibility (idle vs `yes`/Metal load) and against `top`, `ps`, `vm_stat`, `nettop`, `iostat`, `ioreg`, `pmset`.
 
 ---
 
 ## 1. Ownership matrix (no file has two owners)
 
-| Stream | Owns (paths relative to repo root) |
-|---|---|
-| **W0** foundation (then integrator) | `MonitorCore/Package.swift`, `MonitorCore/Sources/MonitorModel/**`, `.gitignore`, `scripts/{gen,build,test,ci,render}.sh`, `MonitorCore/Sources/CPrivate/shim.c`, `MonitorCore/Sources/MonitorSensors/{LiveSensorFactory.swift,Support/**}`, `MonitorCore/Sources/MonitorMocks/**`, `MonitorCore/Tests/MonitorEngineTests/ModelCodableTests.swift` |
-| **W1** engine | `MonitorCore/Sources/MonitorEngine/**`, `MonitorCore/Tests/MonitorEngineTests/**` (except `ModelCodableTests.swift`, `Fixtures/recorded/**`) |
-| **W2** store | `MonitorCore/Sources/MonitorStore/**`, `MonitorCore/Tests/MonitorStoreTests/**` |
-| **W3** UI kit | `MonitorCore/Sources/MonitorUIKit/**`, `MonitorCore/Tests/MonitorUIKitTests/**`, `MonitorCore/Sources/telltale-render/**`, `docs/design/reference/**` |
-| **W4** app shell | `project.yml`, `App/**`, `scripts/{run,install}.sh`, `MonitorCore/Sources/MonitorScreens/Shell/**`, `MonitorCore/Tests/MonitorScreensTests/Shell*` + `__Snapshots__/shell-*` |
-| **W5a** screens A | `MonitorScreens/Popover/**`, `MonitorScreens/Pages/{Overview,CPU,GPU,Memory,Network}Page.swift`, `MonitorScreensTests/{Popover,Overview,CPU,GPU,Memory,Network}*` + `__Snapshots__/{popover,overview,cpu,gpu,memory,network}-*` |
-| **W5b** screens B | `MonitorScreens/Pages/{Thermals,Power,Disk}Page.swift`, `MonitorScreens/Pages/Processes/**`, `MonitorScreens/Pages/History/**`, `MonitorScreensTests/{Thermals,Power,Disk,Processes,History}*` + `__Snapshots__/{thermals,power,disk,processes,history}-*` |
-| **W6a** sensors: process & host | `MonitorSensors/Process/**`, `MonitorSensors/Host/**`, `CPrivate/include/{Responsibility,Sysmon}.h`, `MonitorSensorsTests/{Process,Host,Memory,Device,Assertion}*` |
-| **W6b** sensors: SoC, thermal, power | `MonitorSensors/{SoC,Thermal,Power}/**`, `CPrivate/include/{IOReport,HIDPrivate,SMC}.h`, `CPrivate/smc.c`, `MonitorSensorsTests/{IOReport,GPUClients,HID,SMC,Thermal,Battery}*` |
-| **W6c** sensors: network | `MonitorSensors/Network/**`, `CPrivate/include/NStat.h`, `MonitorSensorsTests/{NStat,Interface,WiFi,Latency,ReverseDNS}*` |
-| **W6d** sensors: disk | `MonitorSensors/Disk/**`, `MonitorSensorsTests/{DiskIO,Volume,SMART}*` |
-| **W7** integration & perf | `MonitorCore/Sources/MonitorRuntime/**`, `MonitorCore/Sources/telltale-probe/**`, `MonitorCore/Tests/MonitorRuntimeTests/**`, `MonitorCore/Tests/MonitorEngineTests/Fixtures/recorded/**`, `scripts/{probe,perf}.sh`, `docs/perf/**` |
+Paths below are under `MonitorCore/` unless they start with `App/`, `scripts/`, `docs/` or `project.yml`.
 
-`MonitorScreens/Shell/ScreenCatalog.swift` (screen × scenario registry used by `telltale-render`) is W4's; W0 writes it complete, so W5 never edits it.
+| Stream | Owns |
+|---|---|
+| **W0** foundation (→ integrator) | `Package.swift`, `Sources/MonitorModel/**`, `Tests/MonitorModelTests/**`, `.gitignore`, `scripts/{gen,build,test,ci}.sh`, `Sources/CPrivate/shim.c`, `Sources/MonitorSensors/{LiveSensorFactory.swift,Support/UnavailableSensor.swift}` |
+| **W1** engine + live | `Sources/MonitorEngine/**`, `Sources/MonitorLive/**`, `Tests/MonitorEngineTests/**` (except `Fixtures/recorded/**`), `Tests/MonitorLiveTests/**` |
+| **W2** store | `Sources/MonitorStore/**`, `Tests/MonitorStoreTests/**` |
+| **W3** UI kit | `Sources/MonitorUIKit/**`, `Tests/MonitorUIKitTests/**`, `Sources/telltale-render/**`, `scripts/render.sh` |
+| **W4** app shell | `project.yml`, `App/**`, `scripts/{run,install}.sh`, `Sources/MonitorScreens/Shell/**` (incl. `ScreenCatalog.swift`), `Tests/MonitorScreensTests/Shell*`, `__Snapshots__/shell-*` |
+| **Wm** mocks | `Sources/MonitorMocks/**`, `Tests/MonitorMocksTests/**`, `Sources/MonitorRuntime/MockPipeline.swift` |
+| **W5a** screens A | `Sources/MonitorScreens/Popover/**`, `Pages/{Overview,CPU,GPU,Memory,Network}Page.swift`, `Tests/MonitorScreensTests/{Popover,Overview,CPU,GPU,Memory,Network}*` + matching `__Snapshots__/*` |
+| **W5b** screens B | `Pages/{Thermals,Power,Disk}Page.swift`, `Tests/MonitorScreensTests/{Thermals,Power,Disk}*` + matching snapshots |
+| **W5c** screens C | `Pages/Processes/**`, `Pages/History/**`, `Tests/MonitorScreensTests/{Processes,ProcessTableModel,AppInspector,History}*` + matching snapshots |
+| **W6a** process & host | `Sources/MonitorSensors/{Process,Host}/**`, `Sources/CPrivate/include/{Responsibility,Coalition}.h`, `Support/W6a+*.swift`, `Tests/MonitorSensorsTests/{ProcessTable,Coalition,RootMemory,HostCPU,Memory,Device,Assertion}*` |
+| **W6b** SoC, thermal, power | `Sources/MonitorSensors/{SoC,Thermal,Power}/**` (incl. `Resources/*.json`), `Sources/CPrivate/include/{IOReport,HIDPrivate,SMC}.h`, `Sources/CPrivate/smc.c`, `Support/W6b+*.swift`, `Tests/MonitorSensorsTests/{IOReport,PState,GPUClients,SMC,TemperatureCatalog,HID,Thermal,Battery}*` |
+| **W6c** network | `Sources/MonitorSensors/Network/**`, `Sources/CPrivate/include/NStat.h`, `Support/W6c+*.swift`, `Tests/MonitorSensorsTests/{NStat,ReverseDNS,Interface,WiFi,Latency}*` |
+| **W6d** disk | `Sources/MonitorSensors/Disk/**`, `Support/W6d+*.swift`, `Tests/MonitorSensorsTests/{DiskIO,Volume,SMART}*` |
+| **W7** integration & perf | `Sources/MonitorRuntime/{TelltaleRuntime,LivePipeline}.swift`, `Sources/telltale-probe/**`, `Tests/MonitorRuntimeTests/**`, `Tests/MonitorEngineTests/Fixtures/recorded/**`, `scripts/{probe,perf}.sh`, `docs/perf/**` |
+
+W0 creates the first version of every stub file; ownership transfers to the listed stream when W0 merges. `docs/design/**` belongs to the design agent (not a stream here).
 
 ---
 
 ## 2. Dependency graph and slots
 
 ```
-                 ┌──────────── W1 engine ───────────────┐
-                 ├──────────── W2 store ────────────┐   │
-W0 foundation ───┼──────────── W3 UI kit ──┐        │   │
- (all stubs,     ├──────────── W4 shell ───┤        │   │
-  mock app runs) ├── W5a screens A ◀── W3 A┤        │   │
-                 └── W5b screens B ◀── W3 A┘        │   │
-                                                    ▼   ▼
-  docs/findings/* ──▶ W6a ─┐                     W7 integration (live pipeline, probe, fixtures, perf)
-                  ──▶ W6b ─┼──▶ (each merges independently; W7 wires nothing per sensor: LiveSensorFactory already references them)
-                  ──▶ W6c ─┤
-                  ──▶ W6d ─┘
+                ┌── W1 engine+live ──(T1 LiveModel day 1)──┐
+                ├── W2 store ─────────────────────────┐    │
+W0 foundation ──┼── W3 UI kit ── phase A ──┐          │    │
+ (Model real,   ├── W4 shell ──────────────┤          │    │
+  stubs, status ├── Wm mocks ──────────────┤          │    │
+  item)         ├── W5a / W5b / W5c ◀──────┘ (A + LiveModel + ScreenCatalog)
+                │                                     ▼    ▼
+docs/findings ──┴── W6a ── W6b ── W6c ── W6d ──▶  W7 live pipeline, fixtures, perf, checkpoints
+                         (W7 T2 probe lands early; sensors plug in via LiveSensorFactory, no wiring edits)
 ```
 
-Hard dependencies (must be merged first):
-
-| Stream | Needs merged | Soft (nice to have) |
+| Stream | Hard deps (merged first) | Soft |
 |---|---|---|
-| W1, W2, W3, W4 | W0 | — |
-| W5a, W5b | W0 | W3 phase A (T1–T5) for real visuals; stubs compile from day 1 |
-| W6a/b/c/d | W0 + its `docs/findings/*.md` | W7 T2 (probe `--sensor`) — W0's probe is enough to start |
-| W7 T1 live pipeline | W0, W1 T12–T13 | W2 (uses stub store until merged) |
-| W7 perf / CP2+ | W7 T1, W6a | W6b–d |
+| W1, W2, W3, W4, Wm | W0 | Wm T4 needs W1 T1 |
+| W5a/b/c | W0 | W1 T1 (LiveModel), W3 phase A, W4 T1 (ScreenCatalog), Wm T1 (scenarios); W5c needs W3 T6 (`TTTable`) + T9 (`TTTreemap`) |
+| W6a/b/c/d | W0 + its findings | W7 T2 (probe) for verification |
+| W7 T2 probe | W0 | — (runs sensors directly) |
+| W7 T1 live pipeline | W1 T14–T15 | W2 (stub store until merged) |
 
-Suggested slot plan (6 agents; a slot takes the next stream when free):
+Slot plan (6 agents; a slot moves to its next item when done):
 
-| Slot | Day 0 | Day 1–3 | Then |
+| Slot | After W0 | Then | Then |
 |---|---|---|---|
-| 1 | W0 (lead) | W1 | W7 |
-| 2 | — | W2 | W6d → W6c |
-| 3 | — | W3 | W6b |
-| 4 | — | W4 | W6a (if findings ready earlier, W6a preempts W4's later tasks) |
-| 5 | — | W5a | W5a polish / CP5 |
-| 6 | — | W5b | W5b polish / CP5 |
+| 1 | W1 (T1 first, merge day 1) | W7 (T1, T3–T8) | CP runs |
+| 2 | W2 | W6d | W6c |
+| 3 | W3 | W6b | — |
+| 4 | W4 | W5c | — |
+| 5 | Wm | W7 T2 probe | W6a |
+| 6 | W5a | W5b | CP5 polish |
+
+W0 is done by the lead alone (Day 0).
 
 ---
 
-## W0 — Foundation (lands first, single agent)
+## W0 — Foundation (lands first; small)
 
-**Goal:** everything compiles; every shared type exists exactly as in ARCHITECTURE §5; the app builds from CLI and runs in mock mode; every other stream can start with zero edits outside its own paths.
-**Owns:** see §1 (and, transiently, initial versions of every stub file listed below; ownership transfers to the named stream at merge).
-**Consumes:** `Spikes/Sources/CPrivate/**`, ARCHITECTURE.md. **Produces:** all interfaces, stubs, scripts, mock runtime.
-**Depends on:** nothing.
+**Goal:** `swift build` compiles every target; MonitorModel is complete and real; every other public symbol exists as a compiling stub; the app builds from CLI and shows a status item.
+**Owns:** §1. **Produces:** all interfaces. **Depends on:** nothing.
 
-- [ ] **T0.1 Scripts + ignore.** `scripts/{gen,build,run,test,ci,render,probe,perf,install}.sh` per ARCHITECTURE §1 (probe/perf/install may be thin; W7/W4 finish them). `.gitignore` += `Telltale.xcodeproj/`, `.build*/`, `MonitorCore/.build/`.
-  Accept: `bash -n scripts/*.sh` clean; `scripts/test.sh X` prints ≤ 25 lines.
-- [ ] **T0.2 Package.** `MonitorCore/Package.swift` (tools 6.0, macOS 14, Swift 6 mode except CPrivate) with every target/product/test target from ARCHITECTURE §2, GRDB `from: "7.0.0"`, `privateLinks` on `CPrivate`. Copy all headers + `smc.c` + `shim.c` from `Spikes/Sources/CPrivate`.
-  Accept: `cd MonitorCore && swift build 2>&1 | grep -E 'error|Compiling|Build' | tail -3` → `Build complete`.
-- [ ] **T0.3 MonitorModel.** All types of ARCHITECTURE §5.1–5.5, 5.7–5.10 with explicit `public init`s (defaults for every field), `Codable`, `Sendable`, `Equatable`; `SystemFrame.empty`, `DeviceInfo.placeholder`, `AlertState.calm`; `UnavailableSensor`, `FixtureSensor`, `SensorSuite.allUnavailable`; `MetricVector`.
-  Accept: `scripts/test.sh ModelCodableTests` green (round-trip every top-level type; `MetricVector` NaN ↔ nil).
-- [ ] **T0.4 Engine stubs (W1 takes over).** Every public type/func of §5.6 with trivial bodies (return nil/empty; `SamplingEngine` loop that yields `SystemFrame.empty`). **`RingBuffer` and `LiveModel` must work** (basic `apply`: copy fields, append `frame.metrics` to ring buffers, `topApps`, `series`).
-  Accept: `swift build`; a smoke test `LiveModelSmokeTests` applies 3 mock frames and reads `series(.cpuUsage)` count 3.
-- [ ] **T0.5 Sensor stubs (W6 takes over).** One file per adapter in ARCHITECTURE §2 tree; each `public final class <Name>: Sensor` with the right `Reading`, cadence from §5.4 table, `prepare()` throwing `.unavailable("not implemented")`. `LiveSensorFactory.swift`: `SensorFactory.live` building `SensorSuite` from these classes, honoring `disabled`. `Support/Mach.swift` (`machTicksToNs`, `uptimeNs()`), `Support/CFHelpers.swift`.
-  Accept: `swift build`; W0 probe (T0.10) lists 18 sensors, all `unavailable(not implemented)`.
-- [ ] **T0.6 Store stub (W2 takes over).** `HistoryStore` actor conforming to both protocols, no-op writes, empty reads; `EmptyHistoryProvider` lives in MonitorUIKit env file (T0.7).
-- [ ] **T0.7 UI kit stubs (W3 takes over).** Every signature of ARCHITECTURE §5.11 compiling; placeholder bodies (rounded rect + label); tokens with provisional values from artboard CSS (`#121317` bg, `#f2f2f4` text, `#a8a8b0` secondary, `#0a84ff` accent); `EnvironmentValues+Telltale.swift` (`@Entry` keys); `SnapshotRenderer.hosting` + `writePNG` **working** (render CLI needs it).
-- [ ] **T0.8 Mocks.** `MockDataProvider` with all `MockScenario`s (numbers from MenuBar/Main/CPU/… artboards: M4 Pro 8P+4E, 24 GB, Xcode 212.4 % 3.82 GB, FCP 96.1 %/9.2 % GPU, Safari, WindowServer, com.docker.backend, Dropbox, Slack, Music, mds_stores); deterministic via seeded LCG like the artboards; `MockHistoryProvider` (30 d synthetic with History.dc bumps and events); `ActionLog` + recording `ProcessActions`.
-  Accept: `scripts/test.sh MockDataProviderTests` — same seed ⇒ identical frames; `thermalFair` ⇒ `alert.level == .elevated`, arc `.thermals`, culprit "Final Cut Pro".
-- [ ] **T0.9 Screens stubs.** `NavigationModel` (full), `ScreenCatalog` (all screens × scenarios + sizes, `LiveModel.mock(_:ticks:)`), `DashboardRoot` (sidebar list + page switch), `PopoverRoot`, `SettingsView`, and one placeholder view per page (`OverviewPage`, `CPUPage`, …, `ProcessesPage`, `AppInspector`, `HistoryPage`, `TimeTravelTreemap`), each `public init()` reading env.
-- [ ] **T0.10 Runtime + CLIs.** `TelltaleRuntime.make(mode:)`: mock path complete (MockDataProvider stream → LiveModel; honors visibility interval 1 s/5 s and pause); live path = mock + `os_log` warning (W7 replaces). `telltale-render --screen <id> --scenario <s> --out <png>` and `--all --out-dir`. `telltale-probe --list | --sensor <id> --ticks N` (prepare + sample, print status, cost, 200-char description).
-  Accept: `scripts/render.sh overview calm` writes a 2560×1720 PNG; `scripts/probe.sh --list` prints 18 rows.
-- [ ] **T0.11 App shell minimal (W4 takes over).** `project.yml` (ARCHITECTURE §1), `App/Info.plist`, `main.swift`, `AppDelegate` (status item with `StatusGlyphRenderer` image; click toggles a panel hosting `PopoverRoot`; `AppCommands.openDashboard` opens a window hosting `DashboardRoot`), `AppEnvironment` parsing `--mock`.
-  Accept: `scripts/build.sh` → `BUILD SUCCEEDED`, prints app path; `otool -L <app>/Contents/MacOS/Telltale | grep -E 'IOReport|sysmon|NetworkStatistics'` shows 3 links.
-- [ ] **T0.12 Verification = CP0** (§Integration). Full `swift test` (reason: first run of shared infrastructure). Merge to `dev`, tag `cp0`.
+- [ ] **T0.1 Scripts + ignore.** `scripts/{gen,build,test,ci}.sh` per ARCHITECTURE §1 (`ci.sh` includes the `&-` grep). `.gitignore` += `Telltale.xcodeproj/`, `.build*/`, `MonitorCore/.build/`.
+  Accept: `bash -n scripts/*.sh`; `scripts/test.sh X` prints ≤ 25 lines.
+- [ ] **T0.2 Package.** Every target, product, test target and resource of ARCHITECTURE §2 (incl. `MonitorLive`, `MonitorMocksTests`, `MonitorModelTests`, `MonitorLiveTests`; resources `SoC/Resources`, `Thermal/Resources` with placeholder `{}` JSON). `CPrivate`: `shim.c` + copies of `Spikes/Sources/CPrivate/include/{Responsibility,IOReport,HIDPrivate,SMC,NStat}.h` and `smc.c` (no `Sysmon.h`); weak linker flags (ARCHITECTURE §1); `linkedFramework` IOKit/CoreWLAN/SystemConfiguration on `MonitorSensors`; GRDB `from: "7.0.0"`.
+  Accept: `cd MonitorCore && swift build 2>&1 | grep -E 'error|Build' | tail -3` → `Build complete`.
+- [ ] **T0.3 MonitorModel (real).** All of ARCHITECTURE §5.1–5.5, 5.8–5.11 model types: explicit `public init`s, `Codable` (`MetricVector` by rawValue; `RawTick` decodeIfPresent → `.notRequested`), `SensorError.fromErrno`, `unavailableReason(…)`, `UIVisibility.demand`, `HistoryRange.displayBucket`, `ProcessID.coalitionResidual`, `UnavailableSensor`, `FixtureSensor`, `SensorSuite.allUnavailable`, statics (`.empty`, `.placeholder`, `.calm`, `.noop`).
+  Accept: `scripts/test.sh MonitorModelTests` (round-trip every top-level type; enum-reorder-safe `MetricVector`; `RawTick` JSON without `coalitions` key decodes to `.notRequested`; `UIVisibility.demand` table).
+- [ ] **T0.4 Stubs for every other public symbol.** Exactly the signatures of ARCHITECTURE §5.6, 5.7, 5.9 (`HistoryStore`), 5.10 (`NavigationModel`), 5.11 (runtime façade + `RuntimePipeline`, `LivePipeline`/`MockPipeline` stubs), 5.12 (UIKit: placeholder bodies), Screens (`DashboardRoot`, `PopoverRoot`, `SettingsView`, every page, `ScreenCatalog` with empty `entries`), sensors (one class per adapter, `prepare()` throws `.unavailable("not implemented")`, cadence from §5.4), `LiveSensorFactory`. `MockDataProvider` real for `.calm` only (artboard numbers: M4 Pro 8P+4E, 24 GB, Xcode 212.4 % 3.82 GB, FCP 96.1 %, Safari, WindowServer, com.docker.backend); other scenarios return calm. `telltale-render`/`telltale-probe` mains print "not implemented".
+  Accept: `swift build` clean with Swift 6 strict concurrency (no warnings about Sendable in Model).
+- [ ] **T0.5 Minimal app.** `project.yml`, `App/Info.plist`, `main.swift`, `AppDelegate` with an `NSStatusItem` (SF Symbol placeholder) and a Quit menu item.
+  Accept: `scripts/build.sh` → `BUILD SUCCEEDED` (proves `unsafeFlags` survive `xcodebuild`; if not, move flags to `OTHER_LDFLAGS` in `project.yml` and re-run); `otool -l <app>/Contents/MacOS/Telltale | grep -B1 -A3 LC_LOAD_WEAK_DYLIB` lists IOReport and NetworkStatistics.
+- [ ] **T0.6 CP0.** `swift build` + `scripts/build.sh` + `scripts/run.sh` → status item visible. Merge to `dev`, tag `cp0`.
 
 ---
 
-## W1 — Engine: rates, grouping, assembly, alerts, live model (TDD)
+## W1 — Engine + live model (TDD)
 
-**Goal:** deterministic, fixture-tested pipeline RawTick → SystemFrame → HistoryRecord/events; the sampling actor; the UI-facing `LiveModel`.
-**Owns:** `MonitorCore/Sources/MonitorEngine/**`, `MonitorCore/Tests/MonitorEngineTests/**` (minus W0/W7 files).
-**Consumes:** MonitorModel (§5.1–5.7). **Produces:** §5.6 + §5.7 implementations; `LiveModel` semantics W4/W5 rely on.
-**Depends on:** W0. Real-fixture tests (T14) wait for W7 T3.
+**Goal:** RawTick → SystemFrame (rates, grouping, coalition attribution, energy) → records/events; sampling actor; `LiveModel`.
+**Owns:** §1. **Consumes:** MonitorModel. **Produces:** ARCHITECTURE §5.6–5.8 implementations. **Depends on:** W0.
 
-Every task: write failing test → implement → `scripts/test.sh <Suite>` green.
+Each task: failing test → implement → `scripts/test.sh <Suite>`.
 
-- [ ] **T1 RingBuffer + LiveHistory.** Fixed capacity, wraparound order, `SeriesPoint` window slicing by time, gap point when dt > 3× interval. Suite `RingBufferTests`, `LiveHistoryTests`.
-- [ ] **T2 RateCalculator.** First sight nil; steady rate; counter reset (smaller value) ⇒ nil + rebaseline; zero dt ⇒ nil; prune; reset. Suite `RateCalculatorTests`.
-- [ ] **T3 CPUTicks.** Per-core usage, user/system/idle fractions, core count change ⇒ nil. Suite `CPUTicksTests`.
-- [ ] **T4 AppResolver + AppGrouper.** Rules of ARCHITECTURE §5.1 (tests build fake `.app` bundles with `Info.plist` in a temp dir): helper → responsible app; nested `.app` → outermost; user non-app → `.process`; root daemon → `.system`; restricted → `.system`; cache hit doesn't touch disk (counter). Suite `AppGroupingTests`.
-- [ ] **T5 ProcessAssembler.** `RawProcess` + `GPUClientsReading` + `NetworkFlowsReading` (+ closed bytes) + `SleepAssertionsReading` → `[ProcessSample]`: cpu % = Δns/Δt/1e9×100; energy W = ΔnJ/Δt/1e9; GPU % = ΔgpuNs/Δt; PID reuse (same pid, new startTime) ⇒ no rate; `isCurrentUser`; totals. Suite `ProcessAssemblerTests`.
-- [ ] **T6 SystemAssembler.** CPU (clusters from IOReport + host ticks), GPU (IOReport, AGX fallback), memory (used = app + wired + compressed; rates of page/swap ins/outs), network (sum non-loopback interfaces; primary ipv4), thermals (group avg/max, hottest, socAverage = mean of cpu/gpu/soc groups), power (package = cpu+gpu+ane+dram; battery drain = V×A), disk (sum internal drivers; IOPS). Fills `SystemMetrics`. Suite `SystemAssemblerTests`.
-- [ ] **T7 FrameAssembler.** Composes T5/T6 + `AppGrouper`; `sensorHealth`; `interval`; `reset()` ⇒ next frame has no rates. Suite `FrameAssemblerTests`.
-- [ ] **T8 RecordBuilder.** Threshold per `RecordConfig`; remainder summed into `.other`; system vector copied. Suite `RecordBuilderTests`.
-- [ ] **T9 AlertEngine.** Table-driven tests for every row of ARCHITECTURE §5.7: immediate step-up, `stepDownHold` hysteresis, runaway enter after 5 min sustained / exit after 30 s below 80 %, `pulseToken` increments only on entry to critical, nil inputs never raise, paused ⇒ calm + `paused`, culprit selection, emitted `HistoryEvent`s. Suite `AlertEngineTests`.
-- [ ] **T10 EventDetector.** App episodes (enter/merge/close, min duration), swap growth, flush on pause. Suite `EventDetectorTests`.
-- [ ] **T11 LiveModel.** Phases (collecting until first frame with `interval != nil`; paused), `isPresenting` gate (observed properties unchanged while false; published on flip to true), `topApps` per Category table, `topConsumer`, per-app series only for top 64 apps. Test observation with `withObservationTracking`. Suite `LiveModelTests`.
-- [ ] **T12 SensorSlot + CrashCanary.** With `FixtureSensor`: lazy prepare, cadence per mode & demand, `.cached` ages, transient ⇒ stale then nil, 3 failures ⇒ degraded + backoff, unavailable ⇒ retry after 5 min (injected clock), canary marker set/cleared (UserDefaults suite in temp). Suite `SensorSlotTests`.
-- [ ] **T13 SamplingEngine.** Custom executor; `sampleOnce()`; loop with test intervals (internal init `intervals:` override, 20 ms); mode switch samples immediately; pause stops sampling + emits paused event and no records; wake resets baselines; `liveFrames` drops stale; records unbounded. Suite `SamplingEngineTests`.
-- [ ] **T14 Recorded-fixture replay** (after W7 T3): `FixtureLoader.ticks("idle")`, `("load-8core")`, `("chrome")`, `("sleep-wake")` → invariants: CPU usage ∈ [0,1]; sum of app CPU ≈ system CPU × cores ×100 (±15 %); Chrome helpers grouped under one app; no rate spike after wake. Suite `RecordedFixtureTests`.
+- [ ] **T1 MonitorLive (merge first, day 1).** `RingBuffer`, `LiveHistory` (time windows, gap points), `LiveModel`: phases, `isPresenting` gate, change-only assignment, per-category version counters, `@ObservationIgnored` ring buffers, cached `topApps`/`topConsumer`, per-app series for top 64. Suite `LiveModelTests` (uses `withObservationTracking`: a memory-only change does not fire a CPU observer; equal frame fires nothing).
+- [ ] **T2 RateCalculator.** capturedNs semantics: same capturedNs → previous result; first sight nil; decrease → nil + rebaseline; prune; reset. Suite `RateCalculatorTests`.
+- [ ] **T3 CPUTicks.** Suite `CPUTicksTests`.
+- [ ] **T4 AppResolver + AppGrouper.** ARCHITECTURE §5.1 rules 1–6 (fake `.app` bundles in a temp dir; user non-bundle → `.process`; restricted → by responsible PID if known else `.system`; AGX exited creator → `.system`); cache hit doesn't touch disk. Suite `AppGroupingTests`.
+- [ ] **T5 ProcessAssembler.** sysctl list + rusage v6 (cpu %, energy nJ, disk, footprint), AGX per-client deltas summed per pid (client reset/recreate guarded), NStat per `ProcessID` (flows + cumulative `closedBytes`), `rootMemory` RSS for restricted pids (`memorySource = .rss(age)`), assertions; PID reuse. Suite `ProcessAssemblerTests`.
+- [ ] **T6 CoalitionAttributor.** Residual per metric, clamp ≥ 0, single restricted member fill (`.coalition`), else synthetic row (leader `p_comm`, leader's app, or "System"), thresholds; GPU residual only when AGX unavailable. Suite `CoalitionAttributorTests` incl. **no-double-count property test** (200 random coalitions: Σ app CPU/energy == Σ coalition deltas for covered pids ± 1e-9; synthetic + filled rows == residual).
+- [ ] **T7 EnergyAttributor.** Ruling cases: own uid v6; foreign via coalition residual; v6 missing → SoC share + `usesSoCShareFallback`; `energyEstimated` propagation to `AppSample`. Suite `EnergyAttributorTests`.
+- [ ] **T8 SessionAccumulator.** Per-AppKey CPU/GPU time and net bytes since launch; survives process exit; app key change. Suite `SessionAccumulatorTests`.
+- [ ] **T9 SystemAssembler.** CPU (host ticks + IOReport clusters incl. watts), GPU (IOReport, AGX fallback), memory, network, thermals (groups from SMC catalog temps; raw list HID+SMC only with `.rawTemperatures`; `approximateMapping`), power (package, PSTR/PDTR), disk; `SystemMetrics`. Suite `SystemAssemblerTests`.
+- [ ] **T10 FrameAssembler.** Composition; `sensorHealth`; connections only for `inspectedApp`; `reset()`. Suite `FrameAssemblerTests`.
+- [ ] **T11 RecordBuilder.** Suite `RecordBuilderTests`.
+- [ ] **T12 AlertEngine.** Table of ARCHITECTURE §5.8 (runaway ≥ 100 % for 5 min; exit < 80 % for 30 s; hysteresis; pulseToken; nil inputs; paused). Suite `AlertEngineTests`.
+- [ ] **T13 EventDetector.** Suite `EventDetectorTests`.
+- [ ] **T14 SensorSlot + CrashCanary.** Cadence by mode/demand (incl. `.processTable`/`.memoryAlert` for rootMemory), `.fresh`/`.cached` with capturedNs, stale → nil, backoff, unavailable retry (injected clock), canary. Suite `SensorSlotTests`.
+- [ ] **T15 SamplingEngine.** Custom executor; `sampleOnce()`; loop with 20 ms test intervals; **wake-up via sleeper cancel** (setVisibility to interactive samples within 5 ms; paused takes no samples); engine adds `.memoryAlert` while memory arc ≥ elevated; `SampleContext.alertLevel`; wake resets baselines; streams. Suite `SamplingEngineTests`.
+- [ ] **T16 Recorded-fixture replay** (after W7 T3). Invariants: usage ∈ [0,1]; Σ app CPU ≈ system CPU × cores × 100 (±15 %) with restricted pids covered by coalition rows; helpers grouped; no spike after wake. Suite `RecordedFixtureTests`.
 
-**Verification:** `scripts/test.sh MonitorEngineTests` (own target — touched sources). Perf: `FrameAssemblerTests/testAssemble600Processes` measures mean over 100 runs with a 600-process synthetic tick; report ms (target ≤ 2 ms, advisory).
-
----
-
-## W2 — Store: GRDB, rollups, queries, export (TDD)
-
-**Goal:** `HistoryStore` implementing `HistoryRecorder` + `HistoryProvider` per ARCHITECTURE §5.8.
-**Owns:** `MonitorCore/Sources/MonitorStore/**`, `MonitorCore/Tests/MonitorStoreTests/**`.
-**Consumes:** MonitorModel History types. **Produces:** live `HistoryStore` for W7; query semantics for W5b.
-**Depends on:** W0.
-
-All tests use `.inMemory` (plus `.file(tmp)` where WAL matters) and an injected `now`.
-
-- [ ] **T1 Open + migrate.** Pragmas (WAL, NORMAL, INCREMENTAL auto_vacuum, cache_size), migrator `v1` = schema of §5.8, columns generated from `HistoryMetric.allCases`. Suite `SchemaTests` (columns match enum; reopen idempotent).
-- [ ] **T2 Append + flush.** Buffer; flush on `flushInterval` or `flushMaxRecords`; one transaction; app upsert by key; `.other` row; events insert/update (end set later). Suite `WriterTests`.
-- [ ] **T3 Raw series.** `series(_:range:.hour/.day,…)` bucketed to ≤ maxPoints (AVG per bucket), gap points where no rows for > 3× bucket, `nil` for NaN columns. Suite `SeriesQueryTests`.
-- [ ] **T4 Rollups.** 1 m from raw, 15 m from 1 m, only completed buckets, idempotent re-run, `n` counts, apps absent in some samples averaged as 0. Suite `RollupTests` (avg(raw) == 1 m value within 1e-9).
-- [ ] **T5 Retention.** Raw > 24 h, 1 m > 7 d, 15 m > 30 d, events > 30 d deleted; `incremental_vacuum`. Suite `RetentionTests`.
-- [ ] **T6 Range routing.** week → 1 m, month → 15 m; boundary where raw has been pruned but 1 m exists. Suite `RangeRoutingTests`.
-- [ ] **T7 App queries.** `appSeries`, `appShares(at:)` (bucket containing time; fractions sum to 1 incl. `.other`), `topApps` avg/peak/total, `total` (∫rate dt using interval_ms), `peak`. Suite `AppQueryTests`.
-- [ ] **T8 Events + coverage.** `events(in:)` overlap semantics; `coverage()` min..max ts across tables. Suite `EventQueryTests`.
-- [ ] **T9 CSV export.** Header, ISO-8601 UTC, range rows, streaming (no full materialization), golden file `Tests/MonitorStoreTests/Golden/export-hour.csv`. Suite `CSVExportTests`.
-- [ ] **T10 Robustness.** `flushSync()`; newer `user_version` ⇒ file moved aside + fresh DB; unreadable path ⇒ throws (runtime falls back to in-memory). Suite `RobustnessTests`.
-- [ ] **T11 Perf test (advisory).** File DB: 24 h synthetic at 1 s (86,400 system rows, 15 apps each) + maintenance: report flush time per 30 records, maintenance pass time, file size, `series(month)`/`appShares` latency. Suite `StorePerfTests` (tagged, run on request). Record numbers in PR.
-
-**Verification:** `scripts/test.sh MonitorStoreTests`; perf numbers from T11 in PR description (targets: flush < 5 ms, queries < 50 ms, 30-day projection < 200 MB).
+**Verification:** `scripts/test.sh MonitorLiveTests MonitorEngineTests`. Perf: `FrameAssemblerTests/assemble920` (920 pids, 330 restricted, 770 coalitions) mean of 100 runs; report ms (advisory ≤ 3 ms).
 
 ---
 
-## W3 — UI kit: tokens, components, charts, treemap, glyph, snapshot harness
+## W2 — Store (TDD)
 
-**Goal:** every component of ARCHITECTURE §5.11 in the design's visual language; snapshot tooling; reference PNGs.
-**Owns:** `MonitorCore/Sources/MonitorUIKit/**`, `MonitorCore/Tests/MonitorUIKitTests/**`, `MonitorCore/Sources/telltale-render/**`, `docs/design/reference/**`.
-**Consumes:** MonitorModel, `docs/design/DESIGN.md`, artboards. **Produces:** components for W4/W5; `assertSnapshot`; `telltale-render --compare`.
-**Depends on:** W0. Phase A = T0–T5 (unblocks W5 visuals) — merge as soon as done.
+**Goal:** `HistoryStore` per ARCHITECTURE §5.9. **Owns:** §1. **Depends on:** W0.
 
-- [ ] **T0 Reference PNGs.** Capture the 13 artboards at native size @2x into `docs/design/reference/<Artboard>.png` (browser tool on the canvas link from SPEC.md; fallback `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars --force-device-scale-factor=2 --window-size=1280,860 --screenshot=… file://…`). Accept: 13 PNGs, sizes match `canvas.json` ×2.
-- [ ] **T1 Tokens.** From DESIGN.md (if not yet written: from artboard CSS; reconcile when it lands). Accept: `TokenTests` (contrast of text on surfaces ≥ 4.5 : 1 for primary/secondary), gallery render.
-- [ ] **T2 Fmt (TDD).** Table tests with every number format visible in the artboards ("212.4%", "3.82 GB", "894 MB", "8.1 MB/s", "12 KB/s", "5 h 40 m", "2:41:07", "4.12 GHz", "1,180 MHz", "3,104", "−52 dBm", "—"). Suite `FmtTests`.
-- [ ] **T3 Snapshot harness.** `assertSnapshot` (tolerance compare, `TELLTALE_RECORD=1`, failure artifacts), both render paths, `telltale-render --compare <reference.png>` (side-by-side + 50 % overlay PNG), `--gallery`. Suite `SnapshotHarnessTests` (renders a known view twice ⇒ identical; red vs blue ⇒ fails).
-- [ ] **T4 TreemapLayout (TDD).** Areas ∝ values (±0.5 %), no overlaps, union == rect, input order preserved, zeros → `.zero`, worst aspect ratio ≤ slice-and-dice's on random inputs (property test, 200 seeds). Suite `TreemapLayoutTests`.
-- [ ] **T5 Core components.** `Panel`, `StatTile`, `MetricValue` ("—" + `.help`), `Sparkline` (Canvas; gaps), `RangePicker`, `AppIcon` (+ `NSCache`), `EmptyState`, `PageScroll`. Snapshot each in `ComponentSnapshotTests` after visual check vs Main/CPU artboards.
-- [ ] **T6 Charts.** `ChartSegments` (split series at nil — TDD, `ChartSegmentsTests`); `LiveChart` (60 s axis labels "60 s ago · 45 s · 30 s · 15 s · now", stacked mode for user/system and power components); `HistoryChart` (range axis, scrub `RuleMark` + drag gesture, event markers). Snapshots.
-- [ ] **T7 Composition components.** `StackedBar` (memory composition, disk used/purgeable), `CoreGrid`, `PressureScale` (Warning ≥ 60 %, Critical ≥ 80 %), `ThermalPressureSteps`. Snapshots vs Memory/CPU/Thermals artboards.
-- [ ] **T8 DataTable.** Column spec, sort toggle, selection, zebra rows, expandable rows (Apps → processes), context menu hook, `LazyVStack`. Suite `DataTableTests` (sort order, expand state) + snapshot vs Processes artboard row styling.
-- [ ] **T9 Feedback components.** `AlertBanner` (vs MenuBarAlert), `ConfirmSheet` (vs Processes force-quit dialog), `Toast`.
-- [ ] **T10 StatusGlyph.** Geometry from `StatusIcon.dc.html` SVG (5 arcs r = 6.4 in 18-pt box, center dot r = 1.4, stroke 2.2); per-arc tint; template when calm; `StatusGlyphRenderer` cache. Suite `StatusGlyphTests` (template flag, cache hits) + snapshot vs StatusIcon reference.
-- [ ] **T11 TreemapView.** Labels hide below min size; `.other` styled muted; selection callback.
+All tests `.inMemory` (+ `.file(tmp)` where WAL matters), injected `now`.
 
-**Verification:** `scripts/test.sh MonitorUIKitTests`; `swift run telltale-render --gallery --out .build/renders/gallery.png` reviewed against references; perf: `SparklinePerfTests` renders 7 sparklines × 60 pts 100× via ImageRenderer, report ms/frame (advisory target < 4 ms).
+- [ ] **T1 Open + migrate.** Pragmas; migrator `v1`; columns from `HistoryMetric`/`AppMetric`; **ALTER TABLE ADD COLUMN for missing metric columns at every open**. Suite `SchemaTests` (add a fake metric name list → column appears; reopen idempotent).
+- [ ] **T2 Append + flush.** Buffer, flush on interval/count, one transaction, app upsert, `.other`, events insert/update. Suite `WriterTests`.
+- [ ] **T3 Series.** `bucket` default `range.displayBucket`, AVG, gap points for empty buckets, NaN → nil. Suite `SeriesQueryTests`.
+- [ ] **T4 Rollups.** Completed buckets only, idempotent, `n`, absent apps = 0. Suite `RollupTests`.
+- [ ] **T5 Retention.** 24 h raw / 7 d 1 m / 30 d 15 m / 30 d events; incremental vacuum. Suite `RetentionTests`.
+- [ ] **T6 Range routing.** Suite `RangeRoutingTests`.
+- [ ] **T7 App queries.** `appSeries`, `appShares(at:)` (fractions sum to 1 incl. `.other`), `topApps`, `total`, `peak`. Suite `AppQueryTests`.
+- [ ] **T8 Events + coverage.** Suite `EventQueryTests`.
+- [ ] **T9 CSV export.** Golden `Tests/MonitorStoreTests/Golden/export-hour.csv`, streaming. Suite `CSVExportTests`.
+- [ ] **T10 Robustness.** No `flushSync` (termination awaits `flush()`); `flush()` completes < 3 s with 120 buffered records; newer `user_version` → file moved aside; unreadable path throws. Suite `RobustnessTests`.
+- [ ] **T11 Perf (advisory, on request).** 24 h synthetic at 1 s + maintenance: flush per 30 records, maintenance pass, file size, `series(.month)`/`appShares` latency. Suite `StorePerfTests`.
+
+**Verification:** `scripts/test.sh MonitorStoreTests`; T11 numbers in PR (targets: flush < 5 ms, queries < 50 ms, 30-day projection < 200 MB).
 
 ---
 
-## W4 — App shell: status item, popover panel, dashboard window, navigation, settings
+## W3 — UI kit
 
-**Goal:** the AppKit shell and dashboard chrome (sidebar, device header, page header with range/pause/settings), settings, launch at login, process actions, visibility → sampling mode.
-**Owns:** `project.yml`, `App/**`, `scripts/{run,install}.sh`, `MonitorScreens/Shell/**`, shell snapshot tests.
-**Consumes:** `TelltaleRuntime`, `LiveModel`, `NavigationModel`, UIKit components, `AppCommands`/`ProcessActions` types. **Produces:** live `AppCommands`, `ProcessActions`, `UIVisibility` stream, `SettingsStore` (units, popover layout, disabled sensors) injected into env.
-**Depends on:** W0. Uses W3 components as they land.
+**Goal:** DESIGN.md §1–§2 as the `TT*` components of ARCHITECTURE §5.12; snapshot tooling; render CLI.
+**Owns:** §1. **Depends on:** W0. **Phase A (T1–T6) unblocks W5 — merge each as done.**
 
-- [ ] **T1 Composition.** `AppEnvironment`: args/env (`--mock`, `--open-dashboard <page>`, `--open-popover`, `TELLTALE_DATA_DIR`, `TELLTALE_DISABLE_SENSORS`), `SettingsStore` (UserDefaults suite scoped to data dir), runtime creation, env injection helper `func install<V: View>(_ v: V) -> some View`. Accept: `scripts/run.sh --mock calm` launches; `log stream --predicate 'subsystem == "dev.telltale"' | head` shows mode.
-- [ ] **T2 StatusItemController.** Glyph from `live.alert` (observation re-armed), template/tinted swap, one pulse on `pulseToken` change, click toggles popover, right-click menu (Open Dashboard, Pause/Resume, Settings…, Quit). Accept: `--mock thermalFair` ⇒ amber thermals arc; `--mock thermalCritical` ⇒ red + one pulse; screenshot via `screencapture -R` of menu bar region reviewed vs StatusIcon reference.
-- [ ] **T3 PopoverPanelController.** Borderless non-activating `NSPanel`, 360 pt wide, positioned under the status item on the screen that owns it; closes on outside click/Esc/status click; hosting view created on open and released on close; reports `popoverOpen`. Accept: open/close 20× ⇒ RSS back within 3 MB (`ps -o rss=`).
-- [ ] **T4 DashboardWindowController + VisibilityTracker.** Window per ARCHITECTURE §5.12; released on close; occlusion/miniaturize/page/inspected app ⇒ `runtime.setVisibility`. Accept: log shows interactive ↔ background when window hidden behind another fullscreen app / minimized / closed.
-- [ ] **T5 Shell views.** `DashboardRoot` layout (custom sidebar, no `NavigationSplitView`), `Sidebar` (Monitor/System/Activity sections, live values per item), `DeviceHeader` ("MacBook Pro 14″ · M4 Pro · 8P + 4E CPU · 16-core GPU · 24 GB unified memory · up 4 d 7 h"), `PageHeader` (title, subtitle, `RangePicker`, Pause, Settings). Accept: `scripts/render.sh overview calm` chrome matches Main reference (checklist in PR); `ShellSnapshotTests`.
-- [ ] **T6 AppCommands live.** Open dashboard at page, inspect app, pause/resume (runtime + glyph dim), close popover, quit (flush store via `runtime.shutdown()`).
-- [ ] **T7 ProcessActionsLive.** Per ARCHITECTURE §5.12; `canControl` false for root/other users. Accept: `ProcessActionsTests` against a spawned `sleep 100` child (quit ⇒ exits; force ⇒ SIGKILL; root pid 1 ⇒ `canControl == false`).
-- [ ] **T8 Settings.** Window + `SettingsView`: launch at login (`SMAppService.mainApp` register/unregister, status text), units, popover rows order (drag) + hide toggles, "Re-enable sensors" (clears canary + disabled list). Accept: toggles persist across relaunch; `scripts/install.sh` then enabling launch at login shows Telltale in System Settings › Login Items.
-- [ ] **T9 PowerEvents.** Sleep/wake ⇒ runtime; screen lock not treated as sleep.
-- [ ] **T10 App Nap decision hook** (after W7 T5 measurement): add activity assertion only if W7 reports median background interval > 6 s.
+- [ ] **T1 Tokens** (DESIGN §1). Suite `TokenTests` (primary/secondary text contrast ≥ 4.5 : 1 on surfaces).
+- [ ] **T2 TTFormat** (DESIGN §5, TDD): every sample in the artboards ("212.4%", "3.82 GB", "894 MB", "8.1 MB/s", "12 KB/s", "5 h 40 m", "2:41:07", "4.12 GHz", "1,180 MHz", "3,104", "−52 dBm", "7.15 W", "—"). Suite `TTFormatTests`.
+- [ ] **T3 Snapshot harness + telltale-render.** `SnapshotRenderer` (both paths), `assertSnapshot` (tolerance, `TELLTALE_RECORD=1`, failure artifacts), `telltale-render --screen/--scenario/--all/--gallery/--compare <ref.png>` (side-by-side + 50 % overlay), `scripts/render.sh`. Screens appear once W4 T1 fills `ScreenCatalog`. Suite `SnapshotHarnessTests`.
+- [ ] **T4 Core components.** `MetricValue` (unified signature: nil → "—" + tooltip; `estimated` style), `TTCard`, `TTCardHeader`, `TTStatStrip`, `TTMetricTile`, `TTAreaChart` (Canvas, gap rule), `TTSegmented` (+compact), `TTAppTile`, `TTBadge`, `TTProgressBar`, `TTKeyValueList`, `TTEmptyState`, `PageScroll`. Snapshots `ComponentSnapshotTests` after visual check vs Main/CPU references.
+- [ ] **T5 Charts.** `ChartSegments` (TDD, `ChartSegmentsTests`), `TTLineChart`, `TTStackedArea`, `TTMirroredChart`, `TTDualChart`, `TTTimelineRow`, `TTLegend`, `TTTimeAxis`. Snapshots.
+- [ ] **T6 Table family.** `TTTable` (sort, selection, zebra, `children` expansion, row menu), `TTRowActionsMenu` (env `processActions`, disabled when `!canControl`), `TTSearchField`. Suite `TTTableTests` + snapshot vs Processes reference.
+- [ ] **T7 Status glyph.** `TTStatusGlyph` geometry from `StatusIcon.dc.html` (5 arcs r 6.4 in 18-pt box, center r 1.4, stroke 2.2), per-arc tint, template when calm, dimmed when paused; `StatusGlyphRenderer` cache. Suite `StatusGlyphTests` + snapshot vs StatusIcon reference.
+- [ ] **T8 TreemapLayout (TDD).** DESIGN §2.28: sorted desc, `other` last (bottom-right), areas ∝ values (±0.5 %), no overlaps, union == rect, results in input order, zeros → `.zero`; aspect ratio ≤ slice-and-dice on 200 random seeds. Suite `TreemapLayoutTests`.
+- [ ] **T9 TTTreemap** (gutter, labels, fill, 0.25 s transition unless scrubbing).
+- [ ] **T10** `TTCoreBars`, `TTFanGauge`.
+- [ ] **T11** `TTPopoverRow` (full/compact/expansion), `TTSidebarItem`.
+- [ ] **T12** `TTAlertBanner`, `TTConfirmDialog`, `TTToast`.
 
-**Verification:** `scripts/build.sh && scripts/run.sh --mock calm`; manual: icon, popover, dashboard navigation over all 10 pages, settings; `scripts/test.sh ShellSnapshotTests ProcessActionsTests`. Perf: mock mode, UI closed, 5 min: report `%CPU`/RSS (`scripts/perf.sh 5 --mock`).
-
----
-
-## W5a — Screens A: popover, Overview, CPU, GPU, Memory, Network
-
-**Goal:** pixel-faithful (structure/tokens/copy) implementations of MenuBar, MenuBarAlert, Main (Overview), CPU, GPU, Memory, Network artboards, plus spec extras in design style.
-**Owns:** see §1.
-**Consumes:** `LiveModel` (§5.6), `NavigationModel`, `HistoryProvider` (via env), UIKit components, `AppCommands`, `ProcessActions`, `UnitPreferences`, `PopoverLayout`. **Produces:** screens registered in `ScreenCatalog` (already present).
-**Depends on:** W0; W3 phase A for visuals.
-
-Per-page loop (applies to every task): build against `LiveModel.mock(.calm)` → `scripts/render.sh <screen> calm` → compare with `docs/design/reference/<Artboard>.png` (checklist in PR) → also render `sensorsUnavailable` and `collecting` → record goldens (`TELLTALE_RECORD=1 scripts/test.sh <Page>SnapshotTests`) → range picker: `live` uses `LiveModel.series`, others call `historyProvider.series(...)` (MockHistoryProvider in tests).
-
-- [ ] **T1 PopoverRoot.** Header (glyph, "Telltale", status line "All systems nominal" / alert title), `AlertBanner` from `alert.active.first` (copy per MenuBarAlert: "Thermal pressure: Fair", culprit sentence with temperature, buttons "Show Thermals" → `openDashboard(.thermals)`, "Quit <culprit>" → `processActions.quit`), category rows in `PopoverLayout.order` minus hidden (label, subtitle, value, sparkline), row click expands top 3 apps (`LiveModel.topApps`), "Top consumer", footer: Quit (Telltale), Open Dashboard, History. Accept: renders `popover-calm` and `popover-alert` match references; `PopoverTests` (expand shows 3 apps; hidden row absent).
-- [ ] **T2 OverviewPage.** Five KPI tiles, "Last 60 seconds" multi-line chart, Power panel, Disk panel, Top processes table (5 rows; columns Process/CPU/GPU/Memory/Network/Energy impact as W) with row actions menu. Accept: vs Main reference.
-- [ ] **T3 CPUPage.** Total/User/System/Idle, load avg, threads/processes, P and E `CoreGrid`s with cluster freq/residency/power, usage chart (user/system stacked), Top CPU consumers (PID, User, % CPU, CPU time, Threads) with Quit/Force Quit. Accept: vs CPU reference.
-- [ ] **T4 GPUPage.** Utilization, frequency, power, GPU memory, cores; utilization & frequency chart; Neural Engine (watts only — ruling); media engines only if non-empty; GPU clients table (% GPU, GPU time; Renderer and per-app GPU memory columns dropped — ruling). Accept: vs GPU reference minus dropped items.
-- [ ] **T5 MemoryPage.** Used/pressure/swap/compressed/page-ins tiles, composition `StackedBar`, pressure chart with thresholds, swap panel, Top memory consumers (Compressed/Private/Ports only if non-nil — ruling). Accept: vs Memory reference.
-- [ ] **T6 NetworkPage.** Download/Upload/Today (`historyProvider.total` since local midnight)/Latency/Packet loss tiles, throughput chart, Interfaces panel (Wi-Fi band/channel/RSSI/link rate; no SSID, no Public IP — rulings), Network by app (Download, Upload, This session, Connections). Accept: vs Network reference minus dropped items.
-
-**Verification:** `scripts/test.sh PopoverTests OverviewSnapshotTests CPUSnapshotTests GPUSnapshotTests MemorySnapshotTests NetworkSnapshotTests`; `scripts/run.sh --mock calm` walk-through; perf: dashboard on CPU page, mock 1 s updates, `scripts/perf.sh 2 --mock --interactive` report `%CPU` (advisory ≤ 8 %).
+**Verification:** `scripts/test.sh MonitorUIKitTests`; `swift run telltale-render --gallery --out .build/renders/gallery.png` reviewed vs references. Perf: `AreaChartPerfTests` (7 charts × 60 pts, 100 renders) ms/frame (advisory < 4 ms).
 
 ---
 
-## W5b — Screens B: Thermals, Power, Disk, Processes (+ app detail), History
+## W4 — App shell
 
-**Goal:** remaining pages + spec features: Apps/Processes toggle, app detail inspector with per-app charts and live connections, row actions, time-travel treemap, events, export CSV, empty/collecting states.
-**Owns:** see §1. **Consumes/Produces:** as W5a (+ `HistoryProvider.appShares/appSeries/events/exportCSV/topApps/peak`). **Depends on:** W0; W3 phase A; `DataTable` (W3 T8) and `TreemapView` (W3 T11) for T4/T5 visuals.
+**Goal:** AppKit shell, dashboard chrome, settings, launch at login, actions, visibility → sampling, catalog of screens for rendering.
+**Owns:** §1. **Depends on:** W0; uses W1 T1, W3 components, Wm scenarios as they land.
 
-- [ ] **T1 ThermalsPage.** SoC average, hottest sensor, pressure, fans (read-only: "automatic" label, no Automatic/Full speed buttons — ruling), `ThermalPressureSteps`, temperatures chart (P-cores/GPU/Battery), sensors table by group (Now, Peak 1 h via `historyProvider.peak`) expandable to raw sensors (demand `.rawTemperatures`). Accept: vs Thermals reference minus fan controls.
-- [ ] **T2 PowerPage.** Package + components tiles, battery drain, power-by-component stacked chart, Battery panel (health, condition, cycles, capacity, temperature, adapter), Energy table (Energy impact as W, "12 h average" via `topApps(.energy, 12 h)`, "Preventing sleep"; App Nap column dropped — ruling). Desktop: battery panel → `EmptyState`. Accept: vs Power reference minus App Nap.
-- [ ] **T3 DiskPage.** Read/Write (MB/s + IOPS), free space, SSD wear, volumes (used/purgeable bars, Eject for ejectable → `processActions.eject`), throughput chart, SSD health (SMART or status-only), disk activity by process. Accept: vs Disk reference.
-- [ ] **T4 ProcessesPage + ProcessTableModel + AppInspector.** Search, sort chips (CPU/GPU/Memory/Network/Disk/Energy), Apps/Processes toggle (apps expand to processes), counts line, table columns per artboard; inspector: header (icon, name, path, PID, user, threads), metric tiles, per-app charts (`LiveModel.appSeries` live; `historyProvider.appSeries` for ranges), process list, live connections (demand `.connections`; remote host, port, protocol, rate), actions Quit / Force Quit… (`ConfirmSheet` copy from artboard) / Reveal in Finder / Open in Activity Monitor, disabled when `!canControl`; toast after quit. `ProcessTableModel` sorts/filters once per frame. Accept: vs Processes reference; `ProcessTableModelTests` (sort, filter, group expand, selection survives refresh); `ProcessesTests` using `ActionLog`.
-- [ ] **T5 HistoryPage + HistoryModel + TimeTravelTreemap.** Ranges 1H/24H/7D/30D, lanes (CPU, GPU, Memory pressure, Network ↓, SoC temperature, Package power) as `HistoryChart`s sharing one scrub, event markers + jump list, "At <time>" readout with top process and note, time-travel treemap (`appShares(at: scrub ?? now)`; live when scrub nil), Export CSV (`NSSavePanel` → `exportCSV`), collecting/empty overlays from `coverage()`. Accept: vs History reference; `HistoryModelTests` (scrub → queries debounced ≤ 10/s; range change cancels in-flight tasks).
+- [ ] **T1 ScreenCatalog + composition.** `ScreenCatalog` (screen × scenario × size, incl. `LiveModel.mock(_:ticks:)`), `AppEnvironment` (args/env: `--mock`, `--open-dashboard`, `--open-popover`, `TELLTALE_DATA_DIR`, `TELLTALE_DISABLE_SENSORS`), `SettingsStore` (defaults suite per data dir), environment injection helper. Accept: `scripts/render.sh overview calm` produces a PNG; `scripts/run.sh --mock calm` launches.
+- [ ] **T2 StatusItemController.** Glyph from `live.alert`, template/tinted, dim when paused, one pulse per `pulseToken`, click toggles popover, right-click menu (Open Dashboard, Pause/Resume, Settings…, Quit). Accept: `--mock thermalFair` amber thermals arc; `--mock thermalCritical` red + one pulse; `screencapture -R` of the bar vs StatusIcon reference.
+- [ ] **T3 PopoverPanelController.** Borderless non-activating `NSPanel`, 360 pt, under the status item; outside click/Esc/status click closes; hosting view created/released per open. Accept: 20 open/close cycles → RSS within 3 MB of start.
+- [ ] **T4 DashboardWindowController + VisibilityTracker.** Occlusion/miniaturize/page/inspected app → `runtime.setVisibility`. Accept: log shows interactive ↔ background transitions.
+- [ ] **T5 Shell views.** `DashboardRoot` (custom sidebar), `Sidebar` (`TTSidebarItem`, live values), `DeviceHeader`, `PageHeader` (title, subtitle, `TTSegmented` range, Pause, Settings). Accept: overview chrome vs Main reference; `ShellSnapshotTests`.
+- [ ] **T6 AppCommands + termination.** Open dashboard at page, inspect app, pause/resume, close popover, quit via `applicationShouldTerminate → .terminateLater → await runtime.shutdown() → reply`. Accept: quit during a 60 s mock run → store flush logged before exit (live mode after CP3).
+- [ ] **T7 ProcessActionsLive.** `canControl` false for root/other users and synthetic rows. Suite `ProcessActionsTests` (spawned `sleep 100`: quit exits, force = SIGKILL; pid 1 not controllable).
+- [ ] **T8 Settings.** Launch at login, units, popover row order (drag) + hide, re-enable sensors. Accept: persists across relaunch; after `scripts/install.sh`, Telltale listed in Login Items.
+- [ ] **T9 PowerEvents.** Sleep/wake → runtime; screen lock ≠ sleep.
+- [ ] **T10 App Nap hook** only if W7 T5 reports median background interval > 6 s.
 
-**Verification:** `scripts/test.sh ThermalsSnapshotTests PowerSnapshotTests DiskSnapshotTests ProcessesTests ProcessTableModelTests HistoryModelTests`; mock walk-through; perf: Processes page with 600 mock processes at 1 s, report `%CPU` and main-thread hitch (`os_signpost` around `apply`+render; advisory ≤ 16 ms/frame).
+**Verification:** `scripts/build.sh && scripts/run.sh --mock calm`; walk icon/popover/10 pages/settings; `scripts/test.sh ShellSnapshotTests ProcessActionsTests`. Perf: `scripts/perf.sh 5 --mock` (UI closed) report.
 
 ---
 
-## W6 — Sensor adapters (4 streams; start each when its findings exist)
+## Wm — Mocks (small, early)
 
-Common recipe per sensor (each W6 stream repeats it for every sensor it owns):
-1. Read the findings doc(s). Port the matching spike (`Spikes/Sources/spike-*/main.swift`) into the stub file; sync the header from `Spikes/Sources/CPrivate/include/` into `MonitorCore/Sources/CPrivate/include/` (you own it).
-2. Split **parse** (pure: CF dictionary/plist/struct → Reading) from **FFI** (handles, calls). Capture raw dumps once (`telltale-probe --sensor <id> --dump <file>` or the spike) into `Tests/MonitorSensorsTests/Fixtures/`; TDD the parse layer (`<Name>ParseTests`).
-3. FFI smoke test gated by `TELLTALE_HW_TESTS=1` (`<Name>SmokeTests`): prepare + 2 samples, plausible ranges.
-4. Compare `scripts/probe.sh --sensor <id> --ticks 5 --interval 1` against the reference tool named below (tolerance from findings; default ±30 %).
-5. Cost: `scripts/probe.sh --sensor <id> --bench --ticks 30` p50/p95 within ARCHITECTURE §7 estimate or findings number; paste into PR.
-6. Errors: every failure path maps to `SensorError` (never crash, never block > 250 ms).
+**Goal:** deterministic scenarios that drive all UI work and snapshots; mock runtime pipeline.
+**Owns:** §1. **Depends on:** W0 (T4: W1 T1).
 
-Test command pattern: `scripts/test.sh <Name>ParseTests` and `TELLTALE_HW_TESTS=1 scripts/test.sh <Name>SmokeTests`.
+- [ ] **T1 Scenarios.** All `MockScenario`s with artboard numbers: `thermalFair` (FCP culprit, fans 3,900 rpm), `thermalCritical`, `memoryWarning`/`Critical`, `runaway`, `collecting`, `sensorsUnavailable` (soc, smc, networkFlows unavailable), `paused`, `restricted` (330 restricted rows, `.coalition` fills, synthetic coalition rows, `rss` memory). Suite `MockDataProviderTests` (same seed ⇒ same frames; `thermalFair` ⇒ elevated thermals arc, culprit "Final Cut Pro").
+- [ ] **T2 MockHistoryProvider.** 30 days synthetic with History.dc bumps and events; honors `bucket`, gaps (a paused hour), `coverage` short for `collecting`. Suite `MockHistoryProviderTests`.
+- [ ] **T3 ActionLog + recording ProcessActions.**
+- [ ] **T4 MockPipeline.** Stream → `LiveModel`, 1 s/5 s by visibility, pause. Suite `MockPipelineTests`.
+
+**Verification:** `scripts/test.sh MonitorMocksTests`; `scripts/run.sh --mock restricted` after W4 T1.
+
+---
+
+## W5a / W5b / W5c — Screens
+
+Per-page loop (all three streams): build against `LiveModel.mock(.calm)` → `scripts/render.sh <screen> calm` → compare with `docs/design/reference/<Artboard>@2x.png` (checklist in PR) → render `sensorsUnavailable`, `collecting` (and `restricted` for tables) → record goldens (`TELLTALE_RECORD=1 scripts/test.sh <Page>SnapshotTests`) → range picker: `live` uses `LiveModel.series`, others `historyProvider.series(…, bucket: nil)`. All values via `MetricValue` + `unavailableReason`. Screen layout/copy per DESIGN.md §3.
+
+### W5a — popover, Overview, CPU, GPU, Memory, Network
+**Depends on:** W0; soft: W1 T1, W3 A (+T11 popover row), W4 T1, Wm T1.
+- [ ] **T1 PopoverRoot** (DESIGN §3.1–3.2): header + status line, `TTAlertBanner` from `alert.active.first` ("Show Thermals", "Quit ‹culprit›"), `TTPopoverRow`s in `PopoverLayout` order minus hidden, expansion = top 3 apps, Top consumer, footer Quit Telltale / Open Dashboard / History. Suite `PopoverTests` + snapshots `popover-calm`, `popover-alert`.
+- [ ] **T2 OverviewPage** (§3.4). Energy column in W.
+- [ ] **T3 CPUPage** (§3.5): clusters (freq "—" when catalog lacks the chip; cluster power from IOReport), core bars, top CPU consumers.
+- [ ] **T4 GPUPage** (§3.6): no Renderer / per-app GPU memory; ANE watts only; media engines only if present; GPU MHz "—" if unresolved.
+- [ ] **T5 MemoryPage** (§3.7): **no Compressed/Private/Ports columns** (removed); restricted rows show RSS or "—" per ARCHITECTURE §5.5.
+- [ ] **T6 NetworkPage** (§3.8): Today via `historyProvider.total` since local midnight; no SSID, no Public IP; "This session" = `netRxSession/netTxSession`.
+**Verification:** `scripts/test.sh PopoverTests OverviewSnapshotTests CPUSnapshotTests GPUSnapshotTests MemorySnapshotTests NetworkSnapshotTests`; perf: `scripts/perf.sh 2 --mock --interactive` report.
+
+### W5b — Thermals, Power, Disk
+**Depends on:** as W5a (+ W3 T10).
+- [ ] **T1 ThermalsPage** (§3.9): groups (SMC catalog), hottest, pressure steps, read-only fans (no Automatic/Full speed buttons), chart, sensor table with Peak 1 h (`historyProvider.peak`) expanding to the raw list (HID + SMC, demand `.rawTemperatures`); caption when `approximateMapping`.
+- [ ] **T2 PowerPage** (§3.10): energy table in W with estimated style when `energyEstimated`, 12 h average via `topApps(.energy, 12 h)`, Preventing sleep; no App Nap column; desktop → battery `TTEmptyState`.
+- [ ] **T3 DiskPage** (§3.11): volumes with Eject, SSD health (SMART or status-only), disk activity by process.
+**Verification:** `scripts/test.sh ThermalsSnapshotTests PowerSnapshotTests DiskSnapshotTests`.
+
+### W5c — Processes (+ app detail), History
+**Depends on:** as W5a + W3 T6, T8, T9; Wm T2.
+- [ ] **T1 ProcessTableModel.** Sort/filter/search once per frame; Apps/Processes toggle; apps expand to processes (incl. synthetic coalition rows; `hiddenProcessCount` shown as "+N restricted"); selection survives refresh. Suite `ProcessTableModelTests`.
+- [ ] **T2 ProcessesPage** (§3.12): table columns per artboard; restricted/coalition rows per ARCHITECTURE §5.5 (tooltips, estimated style); row actions via `TTRowActionsMenu`; **no Sample button**; toast after quit. Snapshots `processes-calm`, `processes-restricted`.
+- [ ] **T3 AppInspector:** header, tiles, per-app charts (`LiveModel.appSeries` live; `historyProvider.appSeries` ranges), process list, live connections (sets `inspectedApp`), actions + `TTConfirmDialog` force quit. Suite `AppInspectorTests` (uses `ActionLog`).
+- [ ] **T4 HistoryPage + HistoryModel + TimeTravelTreemap** (§3.13): ranges 1H/24H/7D/30D, lanes with shared scrub, event markers + jump list, "At ‹time›" readout, treemap (`appShares(at: scrub ?? now)`), Export CSV (`NSSavePanel` → `exportCSV`), partial/empty states; subtitle copy per DESIGN.md (24 h = full resolution, ruling). Suite `HistoryModelTests` (scrub queries debounced ≤ 10/s; range change cancels in-flight).
+**Verification:** `scripts/test.sh ProcessTableModelTests ProcessesSnapshotTests AppInspectorTests HistoryModelTests`; perf: Processes page with `restricted` scenario (920 rows) at 1 s, `os_signpost` apply+render ms (advisory ≤ 16 ms).
+
+---
+
+## W6 — Sensor adapters (start each when its findings exist)
+
+Recipe per sensor:
+1. Read findings; port the spike into the stub file; own/sync the header (add `__attribute__((weak_import))` to private decls and `static inline bool tt_<lib>_available(void)`).
+2. Split **parse** (pure: CF/plist/struct/text → Reading) from **FFI**. Capture raw dumps into `Tests/MonitorSensorsTests/Fixtures/` (via spike or `telltale-probe --dump`); TDD the parser (`<Name>ParseTests`).
+3. FFI smoke test gated by `TELLTALE_HW_TESTS=1` (`<Name>SmokeTests`).
+4. `scripts/probe.sh --sensor <id> --ticks 5 --interval 1` vs the reference tool below (±30 % unless findings say otherwise).
+5. `scripts/probe.sh --sensor <id> --bench --ticks 30` p50/p95 in the PR; compare with ARCHITECTURE §5.4/§7.
+6. All failures → `SensorError` (`fromErrno` for errno); never crash; never block > 250 ms.
+7. Callback/async sensors: state in a `Sendable` box (`let queue`, `let lock: OSAllocatedUnfairLock<State>`); no `@unchecked`. **Budget ~0.5 day** for Swift 6 `@Sendable` closure/lock work on NStat, `ps`, HID and SMC-sweep callbacks.
 
 ### W6a — Process & host
-**Findings:** `docs/findings/procs.md`, `sysmon.md`, `extras.md` (§ sleep assertions). **Depends on:** W0.
-- [ ] **T1 RusageProcessSensor** (spike-procs): retained pid buffer, `proc_pid_rusage` V4, mach ticks → ns, name/path/responsible cached per `ProcessID`, EPERM ⇒ `restricted`. Ref: Activity Monitor CPU/Memory. Bench target ≤ 8 ms @ 600 pids.
-- [ ] **T2 SysmonProcessSensor** (spike-sysmon): attribute IDs from findings, async reply ≤ 250 ms (continuation + timeout), root processes visible. If findings say ❌: class stays `unavailable` with the reason.
-- [ ] **T3 FallbackProcessSensor**: sysmon primary, rusage fallback; per-pid merge (sysmon fields preferred); `source` reported.
-- [ ] **T4 HostCPUSensor**: `host_processor_info` (dealloc each tick), core kinds from `hw.perflevel*` + IORegistry cluster mapping (findings), load avg. Ref: `top -l 2 -n 0 | grep "CPU usage"`.
-- [ ] **T5 MemorySensor**: `host_statistics64`, `vm.swapusage`, `kern.memorystatus_vm_pressure_level`, pressure fraction per findings. Ref: `vm_stat`, `sysctl vm.swapusage`, Activity Monitor Memory.
-- [ ] **T6 DeviceInfoSensor**: model name (IORegistry `product-name`), chip (`machdep.cpu.brand_string`), P/E counts, GPU cores (AGX `gpu-core-count`), memory, boot time, battery presence, fan count.
-- [ ] **T7 SleepAssertionSensor**: `IOPMCopyAssertionsByProcess`. Ref: `pmset -g assertions`.
-**Verification:** CP2 (live CPU/memory/processes vs Activity Monitor).
+**Findings:** `procs.md` (+ coalition notes). **Depends on:** W0.
+- [ ] **T1 ProcessTableSensor.** `sysctl KERN_PROC_ALL` list per tick (pid, ppid, uid, `p_comm`, `p_starttime`; reused buffer) + `proc_pid_rusage(RUSAGE_INFO_V6)` enrichment (cpu ticks → ns, footprint, disk, `ri_energy_nj`), threads (`PROC_PIDTASKINFO`), `proc_name`/`proc_pidpath` (**record whether root pids return a path**), responsible PID; EPERM → `restricted`. Ref: `ps -Ao pid,user,%cpu,rss,comm`, `top -l 2 -o cpu`. Bench target ≤ 7 ms @ 920 pids.
+- [ ] **T2 CoalitionSensor + Coalition.h.** `coalition_info_resource_usage` (weak), `_Static_assert` on the usage struct size + runtime size check → `.unavailable` on mismatch; membership via `PROC_PIDCOALITIONINFO` (refresh when pid set changes); leader pid; energy field per findings. Parse test on a captured struct dump. Ref: plausibility — Σ coalition CPU ≈ `top` total.
+- [ ] **T3 RootMemorySensor.** `/bin/ps -axo pid=,rss=` via `Process` on its own queue; `sample()` returns last completed result, triggers next when due; parse tests (malformed lines, KB → bytes). Cadence 30 s, `requires: [.processTable, .memoryAlert]`.
+- [ ] **T4 HostCPUSensor** (core kinds from `hw.perflevel*` + IOReport channel names). Ref: `top -l 2 -n 0`.
+- [ ] **T5 MemorySensor.** Ref: `vm_stat`, `sysctl vm.swapusage`, `memory_pressure`.
+- [ ] **T6 DeviceInfoSensor** (`hwModel`, `osBuild`, product name, chip, P/E, GPU cores, memory, boot time, battery, fans).
+- [ ] **T7 SleepAssertionSensor.** Ref: `pmset -g assertions`.
+- [ ] **T8 GPU energy gap check.** Run `Spikes` `spike-gpu-apps --load` and sample own-pid `ri_energy_nj`; record whether GPU work raises it; if not, file ICR for the `gpuW × gpu share` term.
+**Verification:** CP2.
 
 ### W6b — SoC, thermal, power
-**Findings:** `ioreport.md`, `gpu-apps.md`, `temps.md`, `smc.md`. **Depends on:** W0.
-- [ ] **T1 IOReportSensor**: subscription once; energy channels → W over interval; cluster residency (+ MHz if findings provide table); GPU active/freq; media engines only if exposed. Ref: `sudo powermetrics --samplers cpu_power,gpu_power -i 1000 -n 1` (run by the user if sudo needed).
-- [ ] **T2 GPUClientsSensor**: AGX user clients → per-pid accumulated GPU ns (sum per pid), device utilization, in-use system memory. Ref: Activity Monitor % GPU.
-- [ ] **T3 HIDTemperatureSensor + TemperatureCatalog**: client created once, services cached, name → `TemperatureGroup` table from findings, garbage filter. Ref: spike-temps under `yes` load.
-- [ ] **T4 SMCSensor**: `smc.c` port, key list cached in `prepare()`, fans (rpm/min/max), selected T-keys, system power key if found. Ref: spike-smc.
-- [ ] **T5 ThermalStateSensor**: `ProcessInfo.thermalState` (+ IOKit thermal pressure level if findings recommend finer levels mapped to 4 steps).
-- [ ] **T6 BatterySensor**: `AppleSmartBattery` registry props + `IOPSCopyPowerSourcesInfo` + `ProcessInfo.isLowPowerModeEnabled`. Ref: `ioreg -rn AppleSmartBattery | grep -E 'Cycle|Capacity|Temperature'`, `pmset -g batt`.
-**Verification:** CP4 (GPU/Thermals/Power pages live).
+**Findings:** `ioreport.md`, `gpu-apps.md`, `smc.md`, `temps.md` (pending Task 4 fix). **Depends on:** W0.
+- [ ] **T1 IOReportSensor.** Weak-linked; subscription to Energy Model + CPU Complex/Core Performance States + GPU Performance States; watts (`CPU Energy`, `GPU0`/`GPU Energy`, `ANE0`, `DRAM0`, per-cluster `EACC_CPU`/`PACC*_CPU`); residency with idle states `IDLE`/`OFF`/`DOWN`; MHz from `PStateCatalog` (`SoC/Resources/pstates.json`, keyed by hw.model; M1 Max tables from findings; unknown chip → nil); GPU MHz: try `AGXAccelerator` `gpu-perf-states`, else nil. Parse tests with captured channel dicts. Ref: plausibility idle vs 8× `yes` (≥ +4 W CPU, P clusters → 100 %).
+- [ ] **T2 GPUClientsSensor.** `clientID` = registry entry ID, `creatorName` from "pid N, Name", Σ `accumulatedGPUTime` per client; device utilization, `In use system memory`. Parse test on creator strings. Ref: `spike-gpu-apps --load` → own pid high %.
+- [ ] **T3 SMCDecoder (TDD).** Byte order per key family: fan/temp ints BE, battery `B0**`/`CH**` ints LE, `flt ` LE, `si16`, `sp78`. Suite `SMCParseTests` with findings values (`B0CT` → 1855, `B0DC` → 6075, `CHBV` → 4214, F0Mx 5779).
+- [ ] **T4 SMCSensor + TemperatureCatalog.** `prepare()` opens the connection and reads only hard-coded keys (fans `F#Ac/Mn/Mx`, `PSTR`, `PDTR`, catalog T-keys for this hw.model); full key sweep (0.45–0.57 s) on a background queue once, cached in `~/Library/Caches/dev.telltale/smc-keys-<hwModel>-<osBuild>.json`, used for the raw list. Catalog `Thermal/Resources/temperature-catalog.json`: per hw.model prefix → key pattern → `TemperatureGroup`; unknown model → generic families + `approximateMapping`. Suite `TemperatureCatalogTests`. Ref: fans rise under 8× `yes`.
+- [ ] **T5 HIDTemperatureSensor.** Raw list only (names carry no P/E/GPU tag → group `.other` unless catalog maps a name); 65–80 ms read; cadence `.every(.seconds(2), background: nil, requires: .rawTemperatures)`.
+- [ ] **T6 ThermalStateSensor.**
+- [ ] **T7 BatterySensor.** `AppleSmartBattery` ioreg preferred (health = `AppleRawMaxCapacity/DesignCapacity`, cycles, `Temperature` centi-°C, `TimeRemaining`, signed amperage from two's-complement `UInt64`), `IOPSCopyPowerSourcesInfo`, low power mode. Ref: `ioreg -rn AppleSmartBattery`, `pmset -g batt`.
+**Verification:** CP4.
 
 ### W6c — Network
-**Findings:** `nstat.md`, `extras.md` (§ ping, Wi-Fi). **Depends on:** W0.
-- [ ] **T1 NStatSensor**: long-lived manager on own queue; added/removed sources; pid/epid from description; counts query per tick; closed-flow bytes accumulated into `closedBytesByPID`; endpoints only with `.connections`; lock-protected state (`OSAllocatedUnfairLock`). Ref: `nettop -P -L 2 -J bytes_in,bytes_out -s 2`.
-- [ ] **T2 ReverseDNS**: async `getnameinfo` on a serial queue, LRU 512, TTL 10 min, no blocking in `sample()`.
-- [ ] **T3 InterfaceSensor**: `getifaddrs` `if_data` counters (64-bit via sysctl `NET_RT_IFLIST2` if needed), kind via SystemConfiguration, primary interface, router IPv4 (`SCDynamicStore State:/Network/Global/IPv4`). Ref: `netstat -ibn`.
-- [ ] **T4 WiFiSensor**: CoreWLAN rssi/noise/channel/band/width/tx rate/PHY → "Wi-Fi 6E" label; SSID never read (ruling).
-- [ ] **T5 LatencyProbe**: `SOCK_DGRAM` ICMP echo to router every 10 s on own queue, 5-min loss window. Ref: `ping -c 5 <router>`.
-**Verification:** CP4 (Network page + app inspector connections live).
+**Findings:** `nstat.md`, `extras.md`. **Depends on:** W0.
+- [ ] **T1 NStatSensor.** Weak-linked; long-lived manager on the box queue; added/removed sources; pid/epid → `ProcessID` (start time via `sysctl KERN_PROC_PID`, cached; helper in `Support/W6c+StartTime.swift`); `sample()` returns the last **completed** counts query and starts the next; removed-flow bytes folded into cumulative `closedBytes[ProcessID]`, pruned 10 min after exit; endpoints only with `.connections`. Ref: `nettop -P -L 2 -J bytes_in,bytes_out -s 2`.
+- [ ] **T2 ReverseDNS** (async `getnameinfo`, LRU 512, TTL 10 min).
+- [ ] **T3 InterfaceSensor** (64-bit counters, kinds, primary, router). Ref: `netstat -ibn`.
+- [ ] **T4 WiFiSensor** (no SSID).
+- [ ] **T5 LatencyProbe** (ICMP `SOCK_DGRAM` to router every 10 s, 5-min loss window). Ref: `ping -c 5 <router>`.
+**Verification:** CP4.
 
 ### W6d — Disk
-**Findings:** `extras.md` (§ disk stats, SMART). **Depends on:** W0.
-- [ ] **T1 DiskIOSensor**: `IOBlockStorageDriver` `Statistics`, BSD name via parent media, internal flag. Ref: `iostat -d -w 1 -c 3`.
-- [ ] **T2 VolumeSensor**: `FileManager.mountedVolumeURLs` + `URLResourceValues` (capacity, available, important, internal, ejectable, encrypted, fs type). Ref: `df -h`, Finder Get Info.
-- [ ] **T3 SMARTSensor**: NVMe SMART plugin per findings; else `SMARTStatus` only from IORegistry. Cadence 300 s, only with `.smart`.
-**Verification:** CP4 (Disk page live).
+**Findings:** `extras.md`. **Depends on:** W0.
+- [ ] **T1 DiskIOSensor.** Ref: `iostat -d -w 1 -c 3`.
+- [ ] **T2 VolumeSensor.** Ref: `df -h`.
+- [ ] **T3 SMARTSensor** (NVMe SMART plugin per findings, else status only; 300 s, `.smart`).
+**Verification:** CP4.
 
 ---
 
 ## W7 — Integration, probe, fixtures, perf
 
-**Goal:** live pipeline, tooling that other streams use for verification, recorded fixtures, perf measurement, running the checkpoints.
-**Owns:** see §1. **Consumes:** everything. **Produces:** `TelltaleRuntime` live mode, `telltale-probe`, `scripts/perf.sh`, `docs/perf/*.md`, recorded fixtures.
-**Depends on:** W0; T1 needs W1 T12–T13.
+**Owns:** §1. **Depends on:** W0; T1 needs W1 T14–T15. T2 is done first, by slot 5, so W6 streams can verify.
 
-- [ ] **T1 LivePipeline.** `TelltaleRuntime.make(.live)`: `SamplingEngine(factory: .live, disabled:)`, `HistoryStore(.file(dataDir/history.sqlite))` (in-memory fallback), consumer tasks (frames → `LiveModel`, records → store), maintenance timer, visibility → engine + `live.isPresenting`, pause, sleep/wake, `shutdown()` flushSync. Accept: `RuntimeTests` with `SensorFactory` of `FixtureSensor`s + in-memory store: 10 ticks ⇒ 10 system rows, LiveModel phase `.live`, pause ⇒ no rows.
-- [ ] **T2 telltale-probe.** `--list`, `--sensor <id>`, `--ticks`, `--interval`, `--bench` (p50/p95/max per sensor + total), `--dump <file>` (raw reading JSON), `--record <file>` (`[RawTick]`), `--frames` (one-line summary per frame: cpu %, mem, top 3 apps, alert), `--maintain-now [--data-dir <dir>]` (runs store rollup + retention once, for CP3). Accept: runs with any subset of real sensors; unavailable ones listed with reasons.
-- [ ] **T3 Fixtures.** Record into `Tests/MonitorEngineTests/Fixtures/recorded/`: `idle` (20 ticks @1 s), `load-8core` (`yes` ×8), `chrome` (Chrome with 10 tabs), `sleep-wake` (ticks around `pmset sleepnow`, user-run). Keep each < 2 MB (strip `processes` to top 200 if needed). Accept: W1 T14 passes.
-- [ ] **T4 perf.sh.** Launch live app (UI closed), 60 s warm-up, sample `ps -o %cpu=,rss= -p <pid>` every 5 s for N min; also `--interactive` (launches with `--open-dashboard processes`, parsed by W4 T1), `--mock`. Output: avg/p95 CPU %, max RSS, DB size delta. Writes `docs/perf/<date>-<cp>.md`.
-- [ ] **T5 App Nap / interval check.** Log actual `frame.interval` in background for 10 min; report median/p95; hand decision to W4 T10.
-- [ ] **T6 Unavailable drills.** `TELLTALE_DISABLE_SENSORS=soc,smc,networkFlows,temperatures scripts/run.sh` ⇒ every affected value "—" with tooltip, no crashes, alerts calm; crash canary drill (debug arg `--crash-sensor smc` that aborts inside `prepare()` once) ⇒ next launch shows "Disabled after a crash".
-- [ ] **T7 Soak.** 8 h live run: RSS drift < 10 MB, DB size within projection, `leaks Telltale | tail -3` = 0 leaks.
-- [ ] **T8 Run checkpoints CP2–CP5** (below) and file findings as ICRs/bugs to owning streams.
+- [ ] **T2 telltale-probe (early).** Builds `SensorFactory.live` directly (no engine): `--list`, `--sensor <id>`, `--ticks`, `--interval`, `--demand <opts>`, `--bench` (p50/p95/max + total), `--dump <file>`, `--record <file>` (`[RawTick]`, needs W1 T14), `--frames`, `--maintain-now [--data-dir]`. Accept: runs with all sensors unavailable (W0 stubs) and lists reasons.
+- [ ] **T1 LivePipeline.** Engine + `SensorFactory.live` + `HistoryStore(.file(dataDir/history.sqlite))` (in-memory fallback) + consumers + maintenance timer + visibility + pause + sleep/wake + `shutdown()` (flush with 3 s timeout). Suite `RuntimeTests` (fixture sensors, in-memory store: 10 ticks ⇒ 10 rows; pause ⇒ none; shutdown flushes).
+- [ ] **T3 Fixtures.** `idle`, `load-8core`, `many-helpers` (Electron/Chrome-style app), `sleep-wake` (user-triggered) into `Tests/MonitorEngineTests/Fixtures/recorded/` (< 2 MB each). Unblocks W1 T16.
+- [ ] **T4 perf.sh** (`--mock`, `--interactive` via `--open-dashboard processes`); writes `docs/perf/<date>-<cp>.md`.
+- [ ] **T5 Interval/App Nap check.** Background `frame.interval` median/p95 over 10 min → W4 T10 decision.
+- [ ] **T6 Drills.** `TELLTALE_DISABLE_SENSORS=coalitions,soc,smc,networkFlows,temperatures` ⇒ "—" + tooltips, restricted rows stay `.restricted`, alerts calm; crash canary (`--crash-sensor smc` debug arg aborts once in `prepare()`) ⇒ next launch "Disabled after a crash".
+- [ ] **T7 Soak.** 8 h live: RSS drift < 10 MB, DB within projection, `leaks Telltale | tail -3` = 0.
+- [ ] **T8 Checkpoints CP2–CP5**; findings → ICRs/bugs to owners.
 
-**Verification:** `scripts/test.sh RuntimeTests`; perf reports in `docs/perf/`.
+**Verification:** `scripts/test.sh RuntimeTests`; reports in `docs/perf/`.
 
 ---
 
 ## Integration schedule
 
-Merge order (each arrow = merged to `dev` and rebased by everyone):
-
+Merge order:
 1. **W0** → tag `cp0`.
-2. **W3 phase A** (T0–T5), **W1 T1–T11**, **W4 T1–T5** — any order, as ready.
-3. **W5a / W5b** page by page (each page = one PR), **W3 T6–T11**, **W4 T6–T9**.
-4. **W1 T12–T13** → **W7 T1–T2** (live pipeline with stub store).
-5. **W2** (all) → W7 flips live runtime to the real store.
-6. **W6a** → CP2. Then **W6b / W6c / W6d** independently as findings allow.
-7. **W7 T3** fixtures → **W1 T14**.
-8. Polish PRs → CP5.
+2. **W1 T1** (MonitorLive), **Wm T1–T3**, **W3 T1–T4**, **W4 T1**, **W7 T2** — as ready.
+3. **W3 T5–T12**, **W4 T2–T9**, **Wm T4**, **W5a/b/c** page by page.
+4. **W1 T2–T15** → **W7 T1** (stub store).
+5. **W2** → W7 switches to the real store.
+6. **W6a** → CP2. Then **W6b / W6c / W6d** as findings allow.
+7. **W7 T3** → **W1 T16**.
+8. Polish → CP5.
 
-Checkpoints (integrator runs; full `swift test` at each — reason: shared-infrastructure merge point):
+Checkpoints (integrator; full `swift test` at each — reason: shared-infrastructure merge point):
 
-| CP | When | Steps | Pass criteria |
+| CP | When | Steps | Pass |
 |---|---|---|---|
-| **CP0** foundation | after W0 | `scripts/ci.sh`; `swift test`; `scripts/run.sh --mock calm`; `scripts/render.sh --all` | builds from CLI; status item visible; popover + dashboard open; 10 pages reachable (placeholders); 18 sensors listed by probe; private frameworks linked |
-| **CP1** mock app | W3 A + W1 core + W4 T1–T5 + first W5 pages | `scripts/run.sh --mock calm`, then `--mock thermalFair`, `--mock thermalCritical`, `--mock collecting`, `--mock sensorsUnavailable`; `scripts/render.sh popover-alert thermalFair` vs reference | glyph states match StatusIcon; banner copy matches MenuBarAlert; popover rows expand to top 3; visibility switches 1 s ↔ 5 s in log; "—" + tooltip in unavailable scenario |
-| **CP2** live core (≈ M1/M2) | W1 all + W6a + W7 T1–T2 | `scripts/run.sh` (live); compare CPU %, memory, top apps with Activity Monitor for 2 min; `scripts/perf.sh 10` | top-5 apps match AM (±30 %); helpers grouped; restricted processes shown (or sysmon covers them); perf reported (advisory < 1 % CPU, < 80 MB) |
-| **CP3** history (≈ M5) | + W2 + W5b T5 + W7 | live 30 min; quit/relaunch; History 1H/24H; `telltale-probe --maintain-now` (forces rollup) then 7D/30D; scrub; Export CSV | data survives relaunch; pause gap visible; treemap changes with scrub; CSV opens in Numbers with expected columns; DB size logged |
-| **CP4** all sensors (≈ M3/M4/M6) | + W6b + W6c + W6d | every page live; app inspector connections; actions on a test app (TextEdit): Quit, Force Quit confirm, Reveal, Open in AM; drills (W7 T6); `scripts/perf.sh 10` + `--interactive 2` | no "—" except documented unavailable sources; actions disabled on root processes; perf reported vs CP2 delta |
-| **CP5** design sign-off | all pages merged | `scripts/render.sh --all` vs `docs/design/reference/*`; checklist per screen; record goldens; 8 h soak (W7 T7) | every artboard's structure/tokens/copy matched or ruling-justified; goldens committed; soak within limits |
+| **CP0** | W0 | `swift build`; `scripts/build.sh`; `scripts/run.sh` | builds from CLI; status item appears; weak dylib load commands present |
+| **CP1** mock app | W1 T1, Wm, W3 A + T7, W4 T1–T6, first W5 pages | `scripts/run.sh --mock calm` / `thermalFair` / `thermalCritical` / `collecting` / `sensorsUnavailable` / `restricted`; `scripts/render.sh popover-alert thermalFair` vs reference | glyph states; banner copy; rows expand to top 3; 1 s ↔ 5 s in log; "—" + tooltips; restricted rows per ARCHITECTURE §5.5 |
+| **CP2** live core | W1 all, W6a, W7 T1–T2 | live 2 min vs `top`/`ps`; `scripts/perf.sh 10` | top-5 apps match `top` (±30 %); helpers grouped; root processes present with coalition values; Σ app CPU ≈ system CPU (±15 %, no double count); perf reported |
+| **CP3** history | + W2, W5c T4, W7 | live 30 min; quit/relaunch; ranges; `telltale-probe --maintain-now`; scrub; Export CSV | survives relaunch; pause gap; treemap follows scrub; CSV columns; DB size logged; quit flushes via terminateLater |
+| **CP4** all sensors | + W6b, W6c, W6d | every page live; inspector connections; actions on TextEdit; W7 T6 drills; `scripts/perf.sh 10` + `--interactive 2` | only documented "—"; root rows not controllable; perf delta vs CP2 reported |
+| **CP5** design sign-off | all pages | `scripts/render.sh --all` vs `docs/design/reference/*`; goldens; W7 T7 soak | structure/tokens/copy match or ruling-justified; goldens committed; soak within limits |
 
 ---
 
 ## Unresolved questions
 
-1. History artboard copy says "5-minute resolution for 24 h"; SPEC says full resolution 24 h / 1 min 7 d / 15 min 30 d. Plan follows SPEC and changes the copy to match. OK?
-2. Runaway-app thresholds: ≥ 150 % CPU sustained 5 min (exit < 80 % for 30 s), elevated only. Acceptable defaults?
-3. Grouping: user-owned non-app executables (node, Homebrew services) get their own `.process` group instead of "System" (SPEC says non-app daemons → System). Keep?
-4. Processes inspector "Sample" button (artboard) isn't in the rulings: drop it, or run `/usr/bin/sample <pid>` and open the report?
-5. Popover row reorder/hide (SPEC) lives in Settings, not drag-in-popover. OK?
-6. Paused state glyph: dimmed calm glyph (design doesn't show it). OK?
-7. Bundle id prefix `dev.telltale` and install path `~/Applications/Telltale.app` for launch at login. OK?
-8. Reference PNG capture: may the lead use the browser tool on the claude.ai canvas link (renders live values), or local headless Chrome only?
-9. Sensors needing sudo to verify (powermetrics) — user runs those reference commands manually?
+None blocking. Tracked risks: (1) `ri_energy_nj` may exclude GPU energy (W6a T8 → ICR if so); (2) GPU MHz unresolved on M1 Max (shows "—"); (3) coalition leader-pid discovery method not yet documented in findings (W6a T2 decides; `leaderPID` is optional).

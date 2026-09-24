@@ -31,8 +31,9 @@ The design wins on look, layout, copy and screen set. Where this spec and the de
   - App Nap column: dropped.
   - ANE shows watts only, no %.
   - Media engine % is kept only if IOReport exposes it.
-  - Energy impact is shown as average watts (from `ri_billed_energy`), not Apple's score.
-  - Per-app Compressed/Private/Ports are shown only if libsysmon provides them.
+  - Energy impact is shown as average watts, not Apple's score. Own-user processes use `RUSAGE_INFO_V6` `ri_energy_nj`; other users' processes get their resource-coalition energy residual; an IOReport SoC-power share is the fallback only when v6 energy is unavailable. (`ri_billed_energy` always reads 0 and is not used.)
+  - Per-app Compressed/Private/Ports columns are removed (libsysmon is unusable: sysmond requires an Apple-only entitlement).
+  - Root/other-user processes (EPERM for `proc_pid_rusage`): listed from `sysctl KERN_PROC_ALL`; CPU, energy and disk come from resource coalitions (residual per coalition, shown as estimated); memory comes from `/bin/ps` RSS, run only while a process table is open or a memory alert is active; otherwise "—" plus a tooltip.
   - SSD health: only what the NVMe SMART IOKit plugin gives without root, else a status only.
   - Latency and packet loss: unprivileged ICMP (`SOCK_DGRAM`) to the router every 10s.
   - Disk IOPS: from IOBlockStorageDriver `Statistics`.
@@ -54,14 +55,18 @@ CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Di
 ## Data sources
 | Metric | Source | Per-app |
 |---|---|---|
-| Process table (CPU time, mem, disk I/O, energy) | `libsysmon` (sysmond, private) → fallback `proc_pid_rusage`/`proc_pidinfo` | yes |
+| Process list | `sysctl KERN_PROC_ALL` (all pids incl. root) | yes |
+| Per-process CPU time, footprint, disk I/O, energy (own user) | `proc_pid_rusage` `RUSAGE_INFO_V6` (`ri_energy_nj`) + `proc_pidinfo` | yes |
+| Root/other-user CPU, energy, disk, GPU time | resource coalitions (`coalition_info_resource_usage`, private) + `PROC_PIDCOALITIONINFO` | yes (coalition residual) |
+| Root/other-user memory | `/bin/ps -axo pid,rss` (setuid), on demand | yes |
 | CPU total / per-core | `host_processor_info` | – |
 | P/E cluster usage & freq, GPU %, CPU/GPU/ANE/DRAM watts | IOReport (private) | – |
 | Per-app GPU time | IORegistry `AGXDeviceUserClient` (`accumulatedGPUTime`) | yes |
 | Memory pressure, swap, compressed | `host_statistics64`, `sysctl vm.swapusage`, memorystatus | – |
 | Network per-app + connections | `NetworkStatistics.framework` (private) | yes |
 | System network totals | `getifaddrs` / `sysctl` | – |
-| Temps | `IOHIDEventSystemClient` sensors (private) | – |
+| Temps (curated P/E/GPU/SoC groups) | SMC `T*` key families (mapping per `hw.model`) | – |
+| Temps (raw list, Thermals page only) | `IOHIDEventSystemClient` sensors (private) | – |
 | Thermal state | `ProcessInfo.thermalState` | – |
 | Fans | SMC (`AppleSMC` user client) | – |
 | Battery | IOKit `AppleSmartBattery` / IOPowerSources | – |
@@ -72,12 +77,12 @@ CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Di
 - Non-app daemons are grouped under "System". Each app row expands into its processes.
 
 ## Menu bar & popover
-- One **static** icon. No live values in the bar.
-- Popover: scrollable stacked **cards**, one per category: headline value, 60s sparkline, top 3 apps. Cards can be reordered and hidden (persisted in UserDefaults).
+- One icon, no live values in the bar; it shows status states (calm/elevated/critical) per the design.
+- Popover: design's row list, one row per category (headline value, 60s sparkline), each row expandable to its top 3 apps. Rows reorderable/hideable in Settings (persisted in UserDefaults).
 - Footer: "Open Dashboard".
 
 ## Dashboard window
-- **System timeline**: per-category line charts of system totals over a selectable range (1h / 24h / 7d / 90d).
+- **System timeline**: per-category line charts of system totals over a selectable range (Live / 1H / 24H / 7D / 30D).
 - **Time-travel treemap**: app share of the selected metric. Live by default. Scrubbing the timeline shows shares at that moment.
 - **Per-app detail page**: all metrics over time, process list, live network connections (remote host via reverse DNS, port, protocol, rate).
 - **Temps**: curated groups (CPU P/E die max/avg, GPU, SSD, battery), thermal state, and an expandable raw sensor list with history.
@@ -95,27 +100,18 @@ Right-click an app row: Quit, Force Quit (confirm), Reveal in Finder, Open in Ac
 
 ## Extras (v1)
 - Launch at login (`SMAppService.mainApp`).
-- Out of scope for v1: alerts, global hotkey, export, configurable rates/retention, Intel, App Store.
+- Out of scope for v1: custom alert rules, Notification Center, global hotkey, configurable rates/retention, Intel, App Store. (Built-in alert states and CSV export are in scope — see Rulings.)
 
 ## Budget (advisory)
 UI closed: <1% avg CPU of one core, <80 MB RSS.
 
 ## Structure
-```
-system-monitor/
-  App/                 Xcode app target (UI only)
-  MonitorCore/         SwiftPM package
-    Sensors/           Sensor protocol + adapters (one per source)
-    Aggregator/        PID→app grouping, counter deltas → rates
-    Store/             GRDB schema, batched writer, rollups
-  Spikes/              M0 CLI spikes (throwaway)
-```
-Core logic is tested with `swift test` against recorded fixture samples. Sensors get smoke tests on the real machine.
+See `docs/ARCHITECTURE.md` (binding module layout, interfaces, concurrency) and `docs/superpowers/plans/2026-09-24-parallel-build-plan.md` (workstreams). Milestones below are superseded by the parallel build plan's checkpoints CP0–CP5.
 
 ## Milestones
-- **M0** CLI spikes on macOS 26: libsysmon, IOReport, HID temps, SMC fans, NStat, AGX per-app GPU, responsible PID.
+- **M0** CLI spikes on macOS 26: libsysmon (unusable), resource coalitions, IOReport, HID temps, SMC fans, NStat, AGX per-app GPU, responsible PID.
 - **M1** App shell: status item, popover cards, CPU + memory, app grouping, launch at login.
-- **M2** libsysmon backend (root procs), per-app disk + energy.
+- **M2** Root processes via resource coalitions + `ps` RSS, per-app disk + energy (rusage v6).
 - **M3** IOReport (GPU, clusters, watts), temps, fans, battery.
 - **M4** Network (NStat), live connections.
 - **M5** Store + rollups, dashboard timeline, time-travel treemap.
