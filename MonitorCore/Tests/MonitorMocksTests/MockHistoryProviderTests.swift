@@ -18,17 +18,40 @@ import MonitorModel
 
     // MARK: - Bucket honored
 
+    // Buckets are epoch-aligned (matching MonitorStore.Queries.Buckets), not anchored to `end`, so the
+    // count is `windowSeconds / bucketSeconds` ± 1 depending on where `end` falls relative to a boundary
+    // — never anchored precisely at the window edges. Exact alignment is covered by
+    // `bucketTimestampsAreMultiplesOfTheBucketWidth`; these just check the count is in that ±1 range.
+
     @Test func honorsExplicitBucket() async throws {
         let p = MockHistoryProvider(end: Self.end)
         let points = try await p.series([.cpuUsage], range: .hour, end: Self.end, bucket: .seconds(600))
-        // 1 h / 10 min = 6 buckets.
-        #expect(points[.cpuUsage]?.count == 6)
+        // 1 h / 10 min = 6 buckets, ±1 for epoch alignment.
+        #expect((6...7).contains(points[.cpuUsage]?.count ?? -1))
     }
 
     @Test func defaultBucketMatchesDisplayBucket() async throws {
         let p = MockHistoryProvider(end: Self.end)
         let points = try await p.series([.cpuUsage], range: .day, end: Self.end, bucket: nil)
-        #expect(points[.cpuUsage]?.count == 288)   // 24 h / 5 min (DESIGN §5.10)
+        // 24 h / 5 min = 288 buckets (DESIGN §5.10), ±1 for epoch alignment.
+        #expect((288...289).contains(points[.cpuUsage]?.count ?? -1))
+    }
+
+    /// The real store's `Buckets` are epoch-aligned, so every bucket's start must be an exact multiple
+    /// of the bucket width in seconds since the Unix epoch — never anchored to `end`.
+    @Test func bucketTimestampsAreMultiplesOfTheBucketWidth() async throws {
+        let p = MockHistoryProvider(end: Self.end)
+        let width: Double = 900   // 15 min
+        let points = try await p.series([.cpuUsage], range: .day, end: Self.end, bucket: .seconds(Int64(width)))
+        let times = points[.cpuUsage]?.map(\.time) ?? []
+        #expect(!times.isEmpty)
+        for t in times {
+            let epoch = t.timeIntervalSince1970
+            #expect(abs(epoch.truncatingRemainder(dividingBy: width)) < 0.001)
+        }
+        // Strictly increasing by exactly `width`, and every bucket starts at or before `end`.
+        for (a, b) in zip(times, times.dropFirst()) { #expect(b.timeIntervalSince(a) == width) }
+        #expect(times.last.map { $0 <= Self.end } ?? false)
     }
 
     // MARK: - Gaps
@@ -69,7 +92,7 @@ import MonitorModel
         let today = Calendar.current.startOfDay(for: Self.end)
         let events = try await p.events(in: DateInterval(start: today, end: Self.end))
         #expect(events.contains { $0.label == "Xcode build" })
-        #expect(events.contains { $0.label == "Final Cut Pro export" })
+        #expect(events.contains { $0.label == "FCP export" })
     }
 
     // MARK: - Per-app queries
@@ -87,6 +110,16 @@ import MonitorModel
         let p = MockHistoryProvider(end: Self.end)
         let shares = try await p.appShares(at: Self.end, metric: .cpu, range: .live, limit: 20)
         #expect(!shares.isEmpty)
+        #expect(abs(shares.map(\.fraction).reduce(0, +) - 1) < 0.001)
+    }
+
+    /// `.restricted` has more positive-CPU apps than a small `limit`, so this only sums to 1 if
+    /// `appShares` appends an `.other` remainder for the apps it truncated away.
+    @Test func appSharesWithLimitBelowRosterCountStillSumToOneViaOther() async throws {
+        let p = MockHistoryProvider(scenario: .restricted, end: Self.end)
+        let shares = try await p.appShares(at: Self.end, metric: .cpu, range: .live, limit: 5)
+        #expect(shares.count == 6)   // 5 named + `.other`
+        #expect(shares.last?.identity.key == .other)
         #expect(abs(shares.map(\.fraction).reduce(0, +) - 1) < 0.001)
     }
 
@@ -120,6 +153,9 @@ import MonitorModel
         let elapsed = try await clock.measure {
             _ = try await p.series(metrics, range: .month, end: Self.end)
         }
+        let ms = Double(elapsed.components.seconds) * 1_000 + Double(elapsed.components.attoseconds) * 1e-15
+        print("thirtyDayQueryIsFast: \(ms) ms for a 30-day/7-metric query (target <20 ms, advisory)")
+        // Advisory bound, well above the <20 ms target: report the number above, don't tune to this.
         #expect(elapsed < .milliseconds(100))
     }
 }
