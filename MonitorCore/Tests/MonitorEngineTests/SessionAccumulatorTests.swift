@@ -47,6 +47,39 @@ import Testing
         #expect(s.totals(.system) == (4, 4, 5, 6))
     }
 
+    @Test func keysUnseenForADayArePruned() {
+        let hour: UInt64 = 3_600 * sec, t0: UInt64 = 100 * hour
+        var s = SessionAccumulator()
+        s.add(byApp: [a: ProcessDelta(cpuNs: 1), b: ProcessDelta(cpuNs: 2)], atUptimeNs: t0)
+        s.pruneUnseen(atUptimeNs: t0)                                    // arms the hourly check
+        // a keeps a row (no deltas) all day; b has neither
+        for h in stride(from: 1, through: 24, by: 1) {
+            _ = s.totalsMarkingSeen(a, atUptimeNs: t0 + UInt64(h) * hour)
+            s.pruneUnseen(atUptimeNs: t0 + UInt64(h) * hour)
+        }
+        #expect(s.keyCount == 2)                                         // exactly 24 h: kept
+        _ = s.totalsMarkingSeen(a, atUptimeNs: t0 + 25 * hour)
+        s.pruneUnseen(atUptimeNs: t0 + 25 * hour)
+        #expect(s.keyCount == 1)
+        #expect(s.totals(a).cpuNs == 1)
+        #expect(s.totals(b) == (0, 0, 0, 0))
+        // marking a key without totals creates nothing
+        #expect(s.totalsMarkingSeen(b, atUptimeNs: t0 + 26 * hour).disk == nil)
+        #expect(s.keyCount == 1)
+    }
+
+    @Test func pruneIsHourlyNotPerTick() {
+        let hour: UInt64 = 3_600 * sec, t0: UInt64 = 100 * hour
+        var s = SessionAccumulator()
+        s.add(byApp: [b: ProcessDelta(cpuNs: 2)], atUptimeNs: t0)
+        s.pruneUnseen(atUptimeNs: t0 + 24 * hour + 1)                    // first call only arms
+        #expect(s.keyCount == 1)
+        s.pruneUnseen(atUptimeNs: t0 + 24 * hour + 2)                    // not due yet
+        #expect(s.keyCount == 1)
+        s.pruneUnseen(atUptimeNs: t0 + 25 * hour + 1)
+        #expect(s.keyCount == 0)
+    }
+
     @Test func saturatesInsteadOfTrapping() {
         var s = SessionAccumulator()
         s.add(byApp: [a: ProcessDelta(cpuNs: .max)])

@@ -96,19 +96,19 @@ public struct FrameAssembler {
             }
         }
         if pa.unattributedDelta != ProcessDelta() { byApp[.system, default: ProcessDelta()].accumulate(pa.unattributedDelta) }
-        session.add(byApp: byApp)
+        session.add(byApp: byApp, atUptimeNs: tick.uptimeNs)
 
         var apps = AppGrouper.group(rows, identities: pa.identities, unattributed: pa.unattributed)
         for i in apps.indices {
-            let t = session.totals(apps[i].identity.key)
+            let t = session.totalsMarkingSeen(apps[i].identity.key, atUptimeNs: tick.uptimeNs)
             apps[i].cpuTimeNs = t.cpuNs
             apps[i].gpuTimeNs = t.gpuNs
             apps[i].netRxSession = t.rx
             apps[i].netTxSession = t.tx
-            let disk = session.diskTotals(apps[i].identity.key)                     // ICR-14: accumulated, never drops
-            apps[i].diskReadSession = disk?.read
-            apps[i].diskWriteSession = disk?.write
+            apps[i].diskReadSession = t.disk?.read                                  // ICR-14: accumulated, never drops
+            apps[i].diskWriteSession = t.disk?.write
         }
+        session.pruneUnseen(atUptimeNs: tick.uptimeNs)                              // keys without a row for > 24 h
 
         frame.connections = connections(tick.networkFlows, inspectedApp: inspectedApp, rows: rows,
                                         owners: pa.flowOwners)
