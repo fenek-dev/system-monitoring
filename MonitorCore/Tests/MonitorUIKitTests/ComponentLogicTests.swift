@@ -52,6 +52,27 @@ import Testing
         #expect([16, 20, 26, 44].map { TTAppTile.radius(CGFloat($0)) } == [4, 5, 7, 10])
     }
 
+    @Test(.enUS) func popoverExpansionLines() {
+        func app(_ n: String, cpu: Double? = nil, rx: Double? = nil, tx: Double? = nil, w: Double? = nil) -> AppSample {
+            AppSample(identity: AppIdentity(key: AppKey(kind: .app, id: n), displayName: n), cpuPercent: cpu,
+                      netRxBps: rx, netTxBps: tx, energyWatts: w)
+        }
+        let apps = [app("A", cpu: 5, rx: 1_000_000, w: 0.004), app("B", cpu: 212.4, tx: 2_000_000, w: 7.15),
+                    app("C", cpu: 0), app("D", cpu: 18.7, rx: 100_000, tx: 50_000, w: 12.4), app("E", cpu: 9)]
+        let u = UnitPreferences()
+        #expect(TTPopoverRow.lines(apps, .cpu, units: u).map(\.name) == ["B", "D", "E"])
+        #expect(TTPopoverRow.lines(apps, .cpu, units: u).map(\.value) == ["212.4%", "18.7%", "9.0%"])
+        #expect(TTPopoverRow.lines(apps, .network, units: u).map(\.value) == ["2.0 MB/s", "1.0 MB/s", "150 KB/s"])
+        #expect(TTPopoverRow.lines(apps, .thermals, units: u).map(\.value) == ["12.4 W", "7.15 W", "<0.01 W"])
+        #expect(TTPopoverRow.lines([app("Z", cpu: 0)], .cpu, units: u).isEmpty)
+        #expect(TTPopoverRow.page(.power) == .power)
+    }
+
+    @Test func sidebarValues() {
+        #expect(!TTSidebarItem.hasValue(.overview) && !TTSidebarItem.hasValue(.processes) && !TTSidebarItem.hasValue(.history))
+        #expect(TTSidebarItem.hasValue(.cpu) && TTSidebarItem.hasValue(.disk))
+    }
+
     @Test func chartSummary() {
         let s = ChartSeries(id: "u", label: "User", color: .blue,
                             points: [SeriesPoint(value: 0.1), SeriesPoint(value: 0.22), SeriesPoint(value: nil)])
