@@ -20,6 +20,7 @@ struct ProbeOptions: Sendable {
     var disabled: Set<SensorID> = []
     var quiet = false
     var json = false
+    var trimIdle = false
 
     static let usage = """
     telltale-probe — exercise Telltale sensors, the engine and the store without the app.
@@ -27,7 +28,8 @@ struct ProbeOptions: Sendable {
       --list                         every sensor: cadence, prepare() result / unavailable reason
       --sensor <id>                  sample one sensor directly (no engine); prints the last reading
       --bench [--sensor <id>]        per-sensor sample() cost p50/p95/max + total, then full engine ticks
-      --record <file>                engine ticks → [RawTick] JSON (fixture format)
+      --record <file> [--trim-idle]  engine ticks → [RawTick] JSON (fixture format); --trim-idle drops processes and
+                                     coalitions whose counters never change (deltas unchanged; see FixtureTrim)
       --frames                       engine ticks → frame summaries (system + top apps)
       --maintain-now [--data-dir d]  flush + rollup + retention + vacuum on d/history.sqlite
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
@@ -92,6 +94,7 @@ struct ProbeOptions: Sendable {
             case "--disable": o.disabled.formUnion(try parseSensors(try value(a)))
             case "--quiet": o.quiet = true
             case "--json": o.json = true
+            case "--trim-idle": o.trimIdle = true
             case "-h", "--help": command = .help
             default: throw ParseError(description: "unknown argument \(a)")
             }

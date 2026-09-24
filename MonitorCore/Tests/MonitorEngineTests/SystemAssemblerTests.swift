@@ -259,7 +259,7 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         #expect(s.power.lowPowerMode)
         let b = try #require(s.power.battery)
         #expect(b.percent == 80 && b.timeRemaining == .seconds(300 * 60) && b.healthFraction == 0.9)
-        #expect(b.drainWatts == 18)
+        #expect(b.drainWatts == -18)                             // signed: discharging is negative (ruling)
         #expect(b.temperatureC == 31)
         #expect(s.metrics[.packageWatts] == 5.5 && s.metrics[.batteryPercent] == 80 && s.metrics[.systemWatts] == 20)
         #expect(s.metrics[.batteryTemp] == 31)
@@ -272,14 +272,23 @@ private let device = DeviceInfo(performanceCores: 2, efficiencyCores: 1, gpuCore
         #expect(s.power.packageWatts == nil)
     }
 
-    @Test func chargingBatteryHasNoDrainAndTimeToFull() {
+    @Test func chargingBatteryHasPositivePowerAndTimeToFull() {
         var sa = SystemAssembler()
         let bat = BatteryReading(present: true, percent: 50, isCharging: true, onAC: true, minutesToFull: 40,
                                  voltageV: 12, amperageA: 2, adapterName: "96W USB-C")
         let s = assemble(&sa, RawTick(battery: fresh(bat, sec)))
-        #expect(s.power.battery?.drainWatts == nil)
+        #expect(s.power.battery?.drainWatts == 24)                 // signed: charging is positive (ruling)
         #expect(s.power.battery?.timeRemaining == .seconds(40 * 60))
         #expect(s.power.adapterName == "96W USB-C")
+    }
+
+    @Test func batteryHealthIsClampedToDesign() {
+        var sa = SystemAssembler()
+        let fresh100 = BatteryReading(present: true, percent: 100, onAC: true, designCapacityWh: 70, maxCapacityWh: 72.4,
+                                      voltageV: 12.5, amperageA: 0)
+        let b = assemble(&sa, RawTick(battery: fresh(fresh100, sec))).power.battery
+        #expect(b?.healthFraction == 1)                           // 103 % raw → 100 %
+        #expect(b?.drainWatts == 0)                               // full on the adapter
     }
 
     // MARK: Disk

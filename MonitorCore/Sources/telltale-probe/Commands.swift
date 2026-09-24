@@ -165,6 +165,12 @@ enum Commands {
             if !o.quiet { print("tick \(k): \(Report.oneLine(frame))") }
         }
         await engine.stop()
+        if o.trimIdle {
+            let t = FixtureTrim.trimIdle(ticks)
+            ticks = t.ticks
+            print("trim-idle: kept \(t.processes.kept)/\(t.processes.total) processes, "
+                + "\(t.coalitions.kept)/\(t.coalitions.total) coalitions")
+        }
         do {
             let data = try RawTick.fixtureEncoder.encode(ticks)        // W1's shared fixture format
             write(data, to: path)
