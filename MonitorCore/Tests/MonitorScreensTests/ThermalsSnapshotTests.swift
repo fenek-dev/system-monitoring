@@ -18,6 +18,12 @@ struct ThermalsSnapshotTests {
     @Test func collecting() { assertScreen("thermals", scenario: .collecting) }
     @Test func restricted() { assertScreen("thermals", scenario: .restricted) }
 
+    /// First tick: one sample → chart "Collecting…", values already shown.
+    @Test func firstTick() {
+        assertSnapshot(ThermalsPage().telltaleEnvironment(ScreenFixture.context(.collecting, page: .thermals, ticks: 0)),
+                       size: ScreenSize.pageContent, named: "thermals-firsttick-collecting")
+    }
+
     /// "Show raw sensors" expanded: groups with their raw HID/SMC children at indent 20.
     @Test func rawSensorsExpanded() {
         assertSnapshot(ThermalsPage(showRawSensors: true).screenEnvironment(.calm, page: .thermals),

@@ -17,6 +17,12 @@ struct PowerSnapshotTests {
     @Test func collecting() { assertScreen("power", scenario: .collecting) }
     @Test func restricted() { assertScreen("power", scenario: .restricted) }
 
+    /// First tick: one sample → chart "Collecting…", values already shown.
+    @Test func firstTick() {
+        assertSnapshot(PowerPage().telltaleEnvironment(ScreenFixture.context(.collecting, page: .power, ticks: 0)),
+                       size: ScreenSize.pageContent, named: "power-firsttick-collecting")
+    }
+
     /// A selected user-owned row shows inline [Quit] [Force Quit] (leading) instead of "…".
     @Test func selectedRowInlineActions() {
         var ctx = ScreenFixture.context(.calm, page: .power)
