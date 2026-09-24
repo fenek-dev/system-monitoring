@@ -1,0 +1,320 @@
+{
+  "channels" : [
+    {
+      "group" : "Energy Model",
+      "name" : "EACC_CPU",
+      "subgroup" : "",
+      "unit" : "mJ",
+      "value" : 183
+    },
+    {
+      "group" : "Energy Model",
+      "name" : "PACC0_CPU",
+      "subgroup" : "",
+      "unit" : "mJ",
+      "value" : 1066
+    },
+    {
+      "group" : "Energy Model",
+      "name" : "PACC1_CPU",
+      "subgroup" : "",
+      "unit" : "mJ",
+      "value" : 226
+    },
+    {
+      "group" : "Energy Model",
+      "name" : "CPU Energy",
+      "subgroup" : "",
+      "unit" : "mJ",
+      "value" : 1474
+    },
+    {
+      "group" : "Energy Model",
+      "name" : "GPU0",
+      "subgroup" : "",
+      "unit" : "mJ",
+      "value" : 367
+    },
+    {
+      "group" : "Energy Model",
+      "name" : "ANE0",
+      "subgroup" : "",
+      "unit" : "mJ",
+      "value" : 0
+    },
+    {
+      "group" : "Energy Model",
+      "name" : "DRAM0",
+      "subgroup" : "",
+      "unit" : "mJ",
+      "value" : 1674
+    },
+    {
+      "group" : "Energy Model",
+      "name" : "GPU Energy",
+      "subgroup" : "",
+      "unit" : "nJ",
+      "value" : 380867850
+    },
+    {
+      "group" : "CPU Stats",
+      "name" : "ECPU",
+      "states" : [
+        {
+          "name" : "IDLE",
+          "residency" : 7955632
+        },
+        {
+          "name" : "V0P4",
+          "residency" : 0
+        },
+        {
+          "name" : "V1P3",
+          "residency" : 1525092
+        },
+        {
+          "name" : "V2P2",
+          "residency" : 451034
+        },
+        {
+          "name" : "V3P1",
+          "residency" : 912323
+        },
+        {
+          "name" : "V4P0",
+          "residency" : 13327868
+        }
+      ],
+      "subgroup" : "CPU Complex Performance States"
+    },
+    {
+      "group" : "CPU Stats",
+      "name" : "PCPU",
+      "states" : [
+        {
+          "name" : "IDLE",
+          "residency" : 11220163
+        },
+        {
+          "name" : "V0P14",
+          "residency" : 0
+        },
+        {
+          "name" : "V1P13",
+          "residency" : 2184
+        },
+        {
+          "name" : "V2P12",
+          "residency" : 13974
+        },
+        {
+          "name" : "V3P11",
+          "residency" : 39091
+        },
+        {
+          "name" : "V4P10",
+          "residency" : 171619
+        },
+        {
+          "name" : "V5P9",
+          "residency" : 2976687
+        },
+        {
+          "name" : "V6P8",
+          "residency" : 981300
+        },
+        {
+          "name" : "V7P7",
+          "residency" : 2496858
+        },
+        {
+          "name" : "V8P6",
+          "residency" : 4142798
+        },
+        {
+          "name" : "V9P5",
+          "residency" : 1626537
+        },
+        {
+          "name" : "V10P4",
+          "residency" : 173628
+        },
+        {
+          "name" : "V11P3",
+          "residency" : 94102
+        },
+        {
+          "name" : "V12P2",
+          "residency" : 0
+        },
+        {
+          "name" : "V13P1",
+          "residency" : 0
+        },
+        {
+          "name" : "V14P0",
+          "residency" : 233133
+        }
+      ],
+      "subgroup" : "CPU Complex Performance States"
+    },
+    {
+      "group" : "CPU Stats",
+      "name" : "PCPU1",
+      "states" : [
+        {
+          "name" : "IDLE",
+          "residency" : 21536921
+        },
+        {
+          "name" : "V0P14",
+          "residency" : 112329
+        },
+        {
+          "name" : "V1P13",
+          "residency" : 1623
+        },
+        {
+          "name" : "V2P12",
+          "residency" : 169177
+        },
+        {
+          "name" : "V3P11",
+          "residency" : 122104
+        },
+        {
+          "name" : "V4P10",
+          "residency" : 188717
+        },
+        {
+          "name" : "V5P9",
+          "residency" : 93805
+        },
+        {
+          "name" : "V6P8",
+          "residency" : 260224
+        },
+        {
+          "name" : "V7P7",
+          "residency" : 585266
+        },
+        {
+          "name" : "V8P6",
+          "residency" : 753601
+        },
+        {
+          "name" : "V9P5",
+          "residency" : 197868
+        },
+        {
+          "name" : "V10P4",
+          "residency" : 31147
+        },
+        {
+          "name" : "V11P3",
+          "residency" : 0
+        },
+        {
+          "name" : "V12P2",
+          "residency" : 0
+        },
+        {
+          "name" : "V13P1",
+          "residency" : 0
+        },
+        {
+          "name" : "V14P0",
+          "residency" : 119290
+        }
+      ],
+      "subgroup" : "CPU Complex Performance States"
+    },
+    {
+      "group" : "GPU Stats",
+      "name" : "GPUPH",
+      "states" : [
+        {
+          "name" : "OFF",
+          "residency" : 9973337
+        },
+        {
+          "name" : "P1",
+          "residency" : 14229814
+        },
+        {
+          "name" : "P2",
+          "residency" : 0
+        },
+        {
+          "name" : "P3",
+          "residency" : 0
+        },
+        {
+          "name" : "P4",
+          "residency" : 0
+        },
+        {
+          "name" : "P5",
+          "residency" : 0
+        },
+        {
+          "name" : "P6",
+          "residency" : 0
+        },
+        {
+          "name" : "P7",
+          "residency" : 0
+        },
+        {
+          "name" : "P8",
+          "residency" : 0
+        },
+        {
+          "name" : "P9",
+          "residency" : 0
+        },
+        {
+          "name" : "P10",
+          "residency" : 0
+        },
+        {
+          "name" : "P11",
+          "residency" : 0
+        },
+        {
+          "name" : "P12",
+          "residency" : 0
+        },
+        {
+          "name" : "P13",
+          "residency" : 0
+        },
+        {
+          "name" : "P14",
+          "residency" : 0
+        },
+        {
+          "name" : "P15",
+          "residency" : 0
+        }
+      ],
+      "subgroup" : "GPU Performance States"
+    },
+    {
+      "group" : "SoC Stats",
+      "name" : "AVEMSR",
+      "states" : [
+        {
+          "name" : "INACT",
+          "residency" : 24173177
+        },
+        {
+          "name" : "ACT",
+          "residency" : 0
+        }
+      ],
+      "subgroup" : "Cluster Power States"
+    }
+  ],
+  "intervalNs" : 1007737750
+}

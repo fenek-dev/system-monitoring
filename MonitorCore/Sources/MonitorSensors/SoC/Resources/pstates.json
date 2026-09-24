@@ -1,1 +1,18 @@
-{}
+{
+  "version": 1,
+  "chips": {
+    "M1 Pro/Max/Ultra": {
+      "ecpuMHz": [600, 972, 1332, 1704, 2064],
+      "pcpuMHz": [600, 828, 1056, 1296, 1524, 1752, 1980, 2208, 2448, 2676, 2904, 3036, 3132, 3168, 3228],
+      "gpuMHz": [388.8, 486, 648, 777.6, 972, 1296]
+    }
+  },
+  "models": {
+    "MacBookPro18,1": "M1 Pro/Max/Ultra",
+    "MacBookPro18,2": "M1 Pro/Max/Ultra",
+    "MacBookPro18,3": "M1 Pro/Max/Ultra",
+    "MacBookPro18,4": "M1 Pro/Max/Ultra",
+    "Mac13,1": "M1 Pro/Max/Ultra",
+    "Mac13,2": "M1 Pro/Max/Ultra"
+  }
+}
