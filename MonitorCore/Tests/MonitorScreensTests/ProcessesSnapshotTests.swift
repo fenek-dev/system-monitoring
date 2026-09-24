@@ -76,7 +76,7 @@ struct ProcessesSnapshotTests {
             Issue.record("no Docker Desktop in the mock")
             return
         }
-        let exited = ProcessSample(id: ProcessID(pid: -2, startTimeUs: 1), name: "Exited processes", user: "arthur",
+        let exited = ProcessSample(id: .exitedResidual(1), name: "Exited processes", user: "arthur",
                                    uid: 501, isCurrentUser: true, app: docker.identity.key, provenance: .coalition,
                                    cpuPercent: 6.4, diskReadBps: 180_000, energyWatts: 0.21, energyEstimated: true)
         frame.processes.append(exited)

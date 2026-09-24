@@ -3,6 +3,7 @@ import MonitorLive
 import MonitorMocks
 import MonitorModel
 @testable import MonitorScreens
+import os
 import Testing
 
 /// Records `appSeries` calls; returns one point per metric.
@@ -43,20 +44,17 @@ struct AppInspectorActionTests {
     }
 
     @Test func forceQuitNeedsConfirmation() async {
-        var asked: [(String, String, String)] = []
-        var answer = false
+        struct Box: Sendable { var asked: [[String]] = []; var answer = false }
+        let box = OSAllocatedUnfairLock(initialState: Box())
         let c = ProcessActionCoordinator(actions: actions, confirm: { title, message, button in
-            asked.append((title, message, button))
-            return answer
+            box.withLock { $0.asked.append([title, message, button]); return $0.answer }
         })
         await c.forceQuit(xcode)                                           // cancelled in the dialog
-        #expect(asked.count == 1)
-        #expect(asked.first?.0 == "Force quit “Xcode”?")
-        #expect(asked.first?.1 == ProcessActionCoordinator.dialogMessage)
-        #expect(asked.first?.2 == "Force Quit")
+        let asked = box.withLock { $0.asked }
+        #expect(asked == [["Force quit “Xcode”?", ProcessActionCoordinator.dialogMessage, "Force Quit"]])
         #expect(log.entries.isEmpty)                                       // nothing sent without confirming
         #expect(c.toast == nil)
-        answer = true
+        box.withLock { $0.answer = true }
         await c.forceQuit(xcode)
         #expect(log.entries == ["forceQuit Xcode -> done"])
         #expect(c.toast?.text == "Xcode was force quit.")

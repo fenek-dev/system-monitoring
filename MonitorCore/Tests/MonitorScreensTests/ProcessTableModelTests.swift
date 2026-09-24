@@ -208,7 +208,7 @@ struct ProcessTableExitedTests {
     /// Docker Desktop plus an "Exited processes" residual (pid −2) with the highest CPU of the table.
     static func input(_ mode: NavigationModel.ProcessesMode, expanded: Set<AppKey> = []) -> ProcessTableInput {
         var t = PT.table()
-        let exited = ProcessSample(id: ProcessID(pid: -2, startTimeUs: 77), name: "", user: "arthur", uid: PT.me,
+        let exited = ProcessSample(id: .exitedResidual(77), name: "", user: "arthur", uid: PT.me,
                                    isCurrentUser: true, app: PT.docker, provenance: .coalition, cpuPercent: 300,
                                    diskReadBps: 1e6, energyWatts: 2, energyEstimated: true)
         t.processes.append(exited)
@@ -232,7 +232,9 @@ struct ProcessTableExitedTests {
 
     @Test func namedExitedRowHasNoDuplicateKind() {
         var input = Self.input(.processes)
-        if let i = input.processes.firstIndex(where: { $0.id.pid == -2 }) { input.processes[i].name = "Exited processes" }
+        if let i = input.processes.firstIndex(where: { $0.id.isExitedResidual }) {
+            input.processes[i].name = "Exited processes"
+        }
         let row = ProcessTableModel.build(input).lines.first { $0.isExitedResidual }!
         #expect(row.name == "Exited processes")
         #expect(row.kindLabel == nil)                                      // not "Exited processes · Exited processes"
