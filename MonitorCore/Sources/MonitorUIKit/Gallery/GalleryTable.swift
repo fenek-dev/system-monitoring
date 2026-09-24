@@ -7,6 +7,8 @@ import SwiftUI
         [
             .init(id: "processes-list", size: CGSize(width: 1020, height: 330)) { AnyView(ProcessesList()) },
             .init(id: "search-field", size: CGSize(width: 240, height: 40)) { AnyView(SearchSample()) },
+            // Main@2x "Top processes" at (240, 562): 1020×220 (template 2.2fr 1fr×5 28).
+            .init(id: "top-processes", size: CGSize(width: 1020, height: 250)) { AnyView(TopProcesses()) },
             .init(id: "row-action", size: CGSize(width: 60, height: 34)) {
                 AnyView(
                     TTRowActionsButton(target: .process(pid: 2210, name: "Final Cut Pro", path: nil, uid: 501), name: "Final Cut Pro")
@@ -90,6 +92,42 @@ private struct ProcessesList: View {
                         style: .processes)
                     .frame(height: 28 + 4 + 5 * 35)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(TTColor.bgWindow)
+    }
+}
+
+private struct TopProcesses: View {
+    @State var selection: String?
+    @State var sort: (column: String, descending: Bool) = ("cpu", true)
+
+    var body: some View {
+        typealias C = TTTable<GalleryProcessRow>.Column
+        let units = UnitPreferences()
+        let columns = [
+            C(id: "name", title: "Process", width: .fraction(2.2, min: 0)) {
+                AnyView(TTNameCell(identity: $0.identity, name: $0.name))
+            },
+            C(id: "cpu", title: "CPU", width: .fraction(1, min: 0), alignment: .trailing, sortKey: { $0.cpu }) {
+                AnyView(Text(TTFormat.cpuPercent($0.cpu)))
+            },
+            C(id: "gpu", title: "GPU", width: .fraction(1, min: 0), alignment: .trailing) { AnyView(Text(TTFormat.cpuPercent($0.gpu))) },
+            C(id: "mem", title: "Memory", width: .fraction(1, min: 0), alignment: .trailing) { AnyView(Text(TTFormat.bytes($0.mem))) },
+            C(id: "net", title: "Network", width: .fraction(1, min: 0), alignment: .trailing) {
+                AnyView(MetricValue(TTFormat.rateCell($0.net, units: units), font: TTFont.body12))
+            },
+            C(id: "energy", title: "Energy impact", width: .fraction(1, min: 0), alignment: .trailing) {
+                AnyView(Text(TTFormat.appWatts($0.energy)))
+            },
+            C(id: "actions", title: "", width: .fixed(28), alignment: .trailing) {
+                AnyView(TTRowActionsButton(target: .process(pid: $0.pid, name: $0.name, path: nil, uid: 501), name: $0.name))
+            },
+        ]
+        return TTCard(spacing: TTSpace.x8) {
+            TTCardHeader("Top processes") { TTLink("All processes") {} }
+            TTTable(rows: GalleryProcessRow.samples, columns: columns, selection: $selection, sort: $sort)
+                .frame(height: 26 + 4 + 5 * 34)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(TTColor.bgWindow)

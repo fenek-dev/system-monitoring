@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// DESIGN §1.2. SF Pro (system) everywhere; tabular digits on every style (§0 "Numerals").
@@ -38,6 +39,13 @@ public enum TTFont {
     public static let tileLetter20 = sf(10, .bold)
     public static let tileLetter26 = sf(13, .bold)
     public static let tileLetter44 = sf(20, .bold)
+
+    /// Natural single-line height of the system font (what SwiftUI `Text` lays out), e.g. `stat` 20/semibold.
+    /// Use to pin a row's height when `minimumScaleFactor` may shrink the text.
+    public static func lineHeight(size: CGFloat, weight: NSFont.Weight = .regular) -> CGFloat {
+        let f = NSFont.systemFont(ofSize: size, weight: weight)
+        return (f.ascender - f.descender + f.leading).rounded(.up)
+    }
 
     /// W0b placeholder name kept for source compatibility (= `title2`).
     public static let largeValue = title2
