@@ -57,6 +57,8 @@ struct OverlaySnapshotTests {
     /// Ruling (width jitter): the overlay keeps one size whatever the values: calm, collecting ("—"),
     /// GPU unavailable ("— — —") and worst-case values (100 %, 999.9 GB) all fit the same frame.
     @Test func sizeIsStableAcrossValues() {
+        // Before any NSHostingView: AppKit latches font smoothing at first text draw (would skew the goldens).
+        SnapshotRenderer.configureTextRendering()
         func size(_ ctx: ShellContext) -> CGSize {
             TTFormat.$locale.withValue(Locale(identifier: "en_US")) {
                 NSHostingView(rootView: OverlayView().telltaleEnvironment(ctx)).fittingSize
