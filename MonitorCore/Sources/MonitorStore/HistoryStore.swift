@@ -113,6 +113,11 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         defer { maintaining = false }
         lastMaintenance = now
         try await flush()
+        let columns = self.columns
+        let nowMs = now.unixMs
+        try await writer.write { db in
+            try Rollup.run(db, columns: columns, nowMs: nowMs)
+        }
     }
 
     // MARK: HistoryProvider
