@@ -81,6 +81,49 @@ enum Queries {
         return AppIdentity(key: key, displayName: row[name] ?? "", bundlePath: row[bundle])
     }
 
+    // MARK: Events, coverage
+
+    /// Events overlapping [from, to) (open events extend to now), by start. Rows with an unknown kind
+    /// (written by a newer version) are skipped.
+    static func events(_ db: Database, window: Window) throws -> [HistoryEvent] {
+        let rows = try Row.fetchCursor(db, sql: """
+            SELECT e.id, e.kind, e.start, e."end", e.level, e.metric, e.peak, e.label,
+                   app.key_kind, app.key_id, app.name, app.bundle_path
+            FROM event AS e LEFT JOIN app ON app.id = e.app_id
+            WHERE e.start < ? AND (e."end" IS NULL OR e."end" >= ?)
+            ORDER BY e.start, e.id
+            """, arguments: [window.to, window.from])
+        var result: [HistoryEvent] = []
+        while let row = try rows.next() {
+            guard let id = UUID(uuidString: row[0]), let kind = HistoryEvent.Kind(rawValue: row[1]) else { continue }
+            let hasApp = (row[9] as String?) != nil
+            result.append(HistoryEvent(
+                id: id, kind: kind, start: Date(unixMs: row[2]), end: (row[3] as Int64?).map(Date.init(unixMs:)),
+                level: AlertLevel(rawValue: row[4]) ?? .calm,
+                app: hasApp ? identity(row, kind: "key_kind", id: "key_id", name: "name", bundle: "bundle_path") : nil,
+                metric: (row[5] as String?).flatMap(AppMetric.init(rawValue:)),
+                peak: row[6], label: row[7] ?? ""))
+        }
+        return result
+    }
+
+    /// Oldest stored bucket/sample → newest raw sample (or the end of the newest rollup bucket when raw is empty).
+    static func coverage(_ db: Database) throws -> DateInterval? {
+        var oldest: Int64?
+        var newestRolled: Int64?
+        for level in Level.allCases {
+            let row = try Row.fetchOne(db, sql: "SELECT MIN(ts), MAX(ts) FROM \(level.systemTable)")
+            if let min: Int64 = row?[0] { oldest = Swift.min(oldest ?? min, min) }
+            if level != .raw, let max: Int64 = row?[1] {
+                newestRolled = Swift.max(newestRolled ?? Int64.min, max + level.resolutionMs)
+            }
+        }
+        guard let start = oldest else { return nil }
+        let rawNewest = try Int64.fetchOne(db, sql: "SELECT MAX(ts) FROM system_raw")
+        guard let end = rawNewest ?? newestRolled else { return nil }
+        return DateInterval(start: Date(unixMs: start), end: Date(unixMs: Swift.max(start, end)))
+    }
+
     // MARK: App series / aggregates
 
     /// Bucket key → per-column app average over the bucket's samples (absent = 0; nil = unavailable),

@@ -235,9 +235,14 @@ public actor HistoryStore: HistoryProvider, HistoryRecorder {
         return .quarter
     }
 
-    public func events(in interval: DateInterval) async throws -> [HistoryEvent] { [] }
+    public func events(in interval: DateInterval) async throws -> [HistoryEvent] {
+        let window = Window(from: interval.start.unixMs, to: interval.end.unixMs)
+        return try await writer.read { db in try Queries.events(db, window: window) }
+    }
 
-    public func coverage() async throws -> DateInterval? { nil }
+    public func coverage() async throws -> DateInterval? {
+        try await writer.read { db in try Queries.coverage(db) }
+    }
 
     public func exportCSV(range: HistoryRange, end: Date, to url: URL) async throws -> ExportSummary {
         ExportSummary(rows: 0, bytes: 0, url: url)
