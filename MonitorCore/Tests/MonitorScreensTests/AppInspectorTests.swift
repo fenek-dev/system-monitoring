@@ -28,6 +28,26 @@ actor RecordingAppSeriesProvider: HistoryProvider {
     }
 }
 
+/// Records sample/reveal calls; never spawns `sample`.
+final class StubSampler: ProcessSampling {
+    private let state = OSAllocatedUnfairLock(initialState: (calls: [Int32](), revealed: [URL]()))
+    let result: ProcessSampleResult
+    /// What the kernel reports for the pid now (nil = gone).
+    let startTime: UInt64?
+    init(result: ProcessSampleResult, startTime: UInt64? = 1) {
+        self.result = result
+        self.startTime = startTime
+    }
+    var calls: [Int32] { state.withLock { $0.calls } }
+    var revealed: [URL] { state.withLock { $0.revealed } }
+    func startTimeUs(pid: Int32) -> UInt64? { startTime }
+    func sample(pid: Int32, name: String) async -> ProcessSampleResult {
+        state.withLock { $0.calls.append(pid) }
+        return result
+    }
+    func reveal(_ url: URL) { state.withLock { $0.revealed.append(url) } }
+}
+
 @Suite("AppInspector — actions")
 @MainActor
 struct AppInspectorActionTests {
@@ -58,6 +78,83 @@ struct AppInspectorActionTests {
         await c.forceQuit(xcode)
         #expect(log.entries == ["forceQuit Xcode -> done"])
         #expect(c.toast?.text == "Xcode was force quit.")
+    }
+
+    /// [Sample] goes through the injected sampler: success reveals the report, failure toasts; nothing is spawned.
+    @Test func sampleSuccessRevealsFailureToasts() async {
+        let ok = StubSampler(result: .done(URL(fileURLWithPath: "/tmp/Telltale-Xcode-1842.txt")))
+        let c = ProcessActionCoordinator(actions: actions, sampler: ok)
+        let xcodeID = ProcessID(pid: 1842, startTimeUs: 1)
+        await c.sample(xcodeID, name: "Xcode")
+        #expect(ok.calls == [1842])
+        #expect(ok.revealed == [URL(fileURLWithPath: "/tmp/Telltale-Xcode-1842.txt")])
+        #expect(c.toast == nil && c.samplingPID == nil)
+        let bad = StubSampler(result: .failed("sample timed out after 15 s"))
+        c.sampler = bad
+        await c.sample(xcodeID, name: "Xcode")
+        #expect(bad.revealed.isEmpty)
+        #expect(c.samplingPID == nil)                                     // cleared after a timeout too
+        #expect(c.toast?.text == "Couldn’t sample Xcode: sample timed out after 15 s")
+    }
+
+    /// PID reuse: the start time is re-checked right before spawning; a mismatch (or a vanished pid) never samples.
+    @Test func sampleRefusesAReusedOrExitedPid() async {
+        let reused = StubSampler(result: .done(URL(fileURLWithPath: "/tmp/x.txt")), startTime: 999)
+        let c = ProcessActionCoordinator(actions: actions, sampler: reused)
+        await c.sample(ProcessID(pid: 1842, startTimeUs: 1), name: "Xcode")
+        #expect(reused.calls.isEmpty)
+        #expect(c.toast?.text == "Process has exited")
+        let gone = StubSampler(result: .done(URL(fileURLWithPath: "/tmp/x.txt")), startTime: nil)
+        c.sampler = gone
+        await c.sample(ProcessID(pid: 1842, startTimeUs: 1), name: "Xcode")
+        #expect(gone.calls.isEmpty)
+    }
+
+    /// The live runner's timeout path, with a stub executable (`/bin/sleep`) instead of `sample`.
+    @Test func liveSamplerTimesOutAndKills() async {
+        let slow = LiveProcessSampler(executable: URL(fileURLWithPath: "/bin/sleep"), timeout: 0.3,
+                                      arguments: { _, _ in ["30"] })
+        let started = Date()
+        let result = await slow.sample(pid: 1, name: "slow")
+        #expect(result == .failed("sample timed out after 0.3 s"))
+        #expect(Date().timeIntervalSince(started) < 5)
+    }
+
+    /// A leftover or planted file is never trusted: symlinks fail, stale files fail, fresh regular files pass.
+    @Test func reportFileChecks() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tt-sample-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("r.txt")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+        #expect(LiveProcessSampler.isFreshRegularFile(file.path, notBefore: Date().addingTimeInterval(-10)))
+        #expect(!LiveProcessSampler.isFreshRegularFile(file.path, notBefore: Date().addingTimeInterval(60)))
+        let link = dir.appendingPathComponent("link.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        #expect(!LiveProcessSampler.isFreshRegularFile(link.path, notBefore: .distantPast))
+        #expect(!LiveProcessSampler.isFreshRegularFile(dir.appendingPathComponent("none").path, notBefore: .distantPast))
+        let name = LiveProcessSampler.reportName(pid: 1842, name: "Final Cut/Pro", token: "ABCDEF12-3456")
+        #expect(name == "Telltale-Final-Cut-Pro-1842-ABCDEF12.txt")
+    }
+
+    @Test func sampleEnablementByOwnerSelfAndSynthetic() {
+        let procs = ProcessTableModel.build(PT.input(mode: .processes))
+        func availability(_ name: String) -> ProcessActionAvailability {
+            ProcessTableModel.availability(for: procs.lines.first { $0.name == name }!, serviceCanControl: true,
+                                           ownPID: 9, ownBundleID: "dev.telltale.Telltale")
+        }
+        #expect(availability("Xcode").canSample)                           // own user, real pid
+        #expect(!availability("mds_stores").canSample)                     // root
+        let synthetic = procs.lines.first { $0.id == .process(.coalitionResidual(9100)) }!
+        #expect(!ProcessTableModel.availability(for: synthetic, serviceCanControl: true).canSample)
+        let xcode = procs.lines.first { $0.name == "Xcode" }!
+        let selfRow = ProcessTableModel.availability(for: xcode, serviceCanControl: true, ownPID: 1842,
+                                                     ownBundleID: nil)
+        #expect(!selfRow.canSample)                                        // never Telltale itself
+        #expect(procs.lines.first { $0.name == "Xcode" }?.sampleID == ProcessID(pid: 1842, startTimeUs: 1))
+        let apps = ProcessTableModel.build(PT.input())
+        #expect(apps.lines.first { $0.name == "Docker Desktop" }?.sampleID?.pid == 2600)   // responsible process
+        #expect(apps.lines.first { $0.name == "suggestd" }?.sampleID == nil)              // coalition group
     }
 
     @Test func forceQuitWithoutDialogHostDoesNothing() async {

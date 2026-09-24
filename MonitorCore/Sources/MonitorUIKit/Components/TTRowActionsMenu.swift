@@ -109,22 +109,31 @@ public struct TTRowActionsButton: View {
     @Environment(\.onProcessActionResult) private var onResult
 
     public static let side: CGFloat = 24
+    /// Square size (24 `rowAction`; 28 for the Processes inspector's header-style `iconButton`, radius 6).
+    let side: CGFloat
 
     public init(target: ProcessTarget, name: String) {
+        self.init(target: target, name: name, side: Self.side)
+    }
+
+    /// ADDED (W5c, authorized): the whole `side`×`side` square is the hit target.
+    public init(target: ProcessTarget, name: String, side: CGFloat) {
         self.target = target
         self.name = name
+        self.side = side
     }
 
     public var body: some View {
         Button(action: popUp) {
             TTIcon(.ellipsis, size: 16, color: TTColor.textSecondary)
-                .frame(width: Self.side, height: Self.side)
-                .background(RoundedRectangle(cornerRadius: TTRadius.r5, style: .continuous)
+                .frame(width: side, height: side)
+                .background(RoundedRectangle(cornerRadius: side > Self.side ? TTRadius.r6 : TTRadius.r5,
+                                             style: .continuous)
                     .fill(hovering ? TTColor.fillIconButton : .clear))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: Self.side, height: Self.side)
+        .frame(width: side, height: side)
         .background(MenuAnchorView(anchor: anchor))
         .onHover { hovering = $0 }
         .help("Actions for \(name)")

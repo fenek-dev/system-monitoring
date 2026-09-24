@@ -3,9 +3,10 @@ import MonitorModel
 import MonitorUIKit
 import SwiftUI
 
-/// DESIGN §3.12 inspector card. Collapsed (~78 tall): tile 44 · identity (300) · 4 stats · [Quit] [Force Quit…]
-/// [⋯] [chevron]. Expanded (min 391, `.easeInOut(0.2)`): separator (16 above/below) and a 2-column body (min 280):
-/// "Activity" lanes with a compact range control, and "Live connections". No "Sample" button (ruling).
+/// DESIGN §3.12 inspector card. Collapsed (~78 tall): tile 44 · identity (300) · 4 stats · [Sample] [Quit]
+/// [Force Quit…] [⋯] [chevron]. Expanded (min 391, `.easeInOut(0.2)`): separator (16 above/below) and a 2-column
+/// body (min 280): "Activity" lanes with a compact range control, and "Live connections".
+/// [Sample] is back per the design-match ruling (DESIGN §6.23 wins over the ARCHITECTURE "dropped" note).
 struct AppInspector: View {
     let row: ProcessRow?
     let availability: ProcessActionAvailability
@@ -13,6 +14,8 @@ struct AppInspector: View {
     let onToggleDetail: () -> Void
     let onQuit: (ProcessTarget) -> Void
     let onForceQuit: (ProcessTarget) -> Void
+    var samplingPID: Int32? = nil
+    var onSample: (ProcessID, String) -> Void = { _, _ in }
     let model: AppInspectorModel
 
     static let collapsedHeight: CGFloat = 78
@@ -103,6 +106,21 @@ struct AppInspector: View {
 
     private func buttons(_ row: ProcessRow) -> some View {
         HStack(spacing: TTSpace.x8) {
+            let sampling = samplingPID != nil && samplingPID == row.sampleID?.pid
+            Button {
+                if let id = row.sampleID, availability.canSample { onSample(id, row.name) }
+            } label: {
+                HStack(spacing: TTSpace.x6) {
+                    if sampling { ProgressView().controlSize(.mini) }
+                    Text(sampling ? "Sampling…" : "Sample")
+                }
+            }
+            .buttonStyle(.tt(.regularSecondary))
+            .disabled(!availability.canSample || samplingPID != nil)
+            .help("Sample \(row.name) for 3 seconds")
+            .disabledTooltip(availability.canSample || samplingPID != nil ? nil
+                             : (availability.isSelf ? "Telltale can’t sample itself"
+                                : availability.disabledHelp ?? "Only your own processes can be sampled"))
             Button("Quit") { if let t = row.target { onQuit(t) } }
                 .buttonStyle(.tt(.regularSecondary))
                 .disabled(!availability.canQuit)
@@ -115,7 +133,11 @@ struct AppInspector: View {
                     .help("Force quit \(row.name)")
                     .disabledTooltip(availability.canForceQuit ? nil : availability.disabledHelp)
             }
-            InspectorMenuButton(target: row.target, name: row.name)
+            if let target = row.target {
+                // W3's NSMenu-backed button (a SwiftUI `Menu` label keeps only Image/Text, so the drawn ellipsis
+                // vanished — live and in snapshots); 28-pt header slot (DESIGN §2.25/§3.12).
+                TTRowActionsButton(target: target, name: row.name, side: 28)   // whole 28×28 slot is the target
+            }
             TTIconButton(detailExpanded ? .chevronDown : .chevronRight,
                          label: detailExpanded ? "Hide details" : "Show details", variant: .header) {
                 onToggleDetail()
@@ -132,31 +154,6 @@ private extension View {
         overlay {
             if let text { Color.clear.contentShape(Rectangle()).help(text) }
         }
-    }
-}
-
-/// `iconButton` 28 `ellipsis` opening the row actions menu (DESIGN §2.25).
-private struct InspectorMenuButton: View {
-    let target: ProcessTarget?
-    let name: String
-    @State private var hovering = false
-
-    var body: some View {
-        Menu {
-            if let target { TTRowActionsMenu(target: target) }
-        } label: {
-            TTIcon(.ellipsis, size: 16, color: TTColor.textSecondary)
-                .frame(width: 28, height: 28)
-                .background(RoundedRectangle(cornerRadius: TTRadius.r6, style: .continuous)
-                    .fill(hovering ? TTColor.fillIconButton : .clear))
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(target == nil)
-        .onHover { hovering = $0 }
-        .help("Actions for \(name)")
-        .accessibilityLabel("Actions for \(name)")
     }
 }
 

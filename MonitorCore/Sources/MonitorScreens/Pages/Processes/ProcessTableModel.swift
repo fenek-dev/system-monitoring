@@ -141,6 +141,9 @@ public struct ProcessRow: Identifiable, Equatable, Sendable {
     /// ICR-13 "Exited processes" row (`ProcessID.exitedResidual`, pid −2): estimated, no actions, no detail, kept
     /// with its app when sorting.
     public var isExitedResidual: Bool = false
+    /// The concrete process [Sample] targets (the row's own, or the group's responsible process), with its start
+    /// time for the pid-reuse check; nil for synthetic rows.
+    public var sampleID: ProcessID?
 
     public func value(_ c: ProcessColumn) -> Double? {
         switch c {
@@ -204,12 +207,16 @@ public struct ProcessActionAvailability: Equatable, Sendable {
     public var disabledHelp: String?
     /// Telltale itself (DESIGN §2.25): Quit quits Telltale; Force Quit is hidden and never offered.
     public var isSelf: Bool
+    /// [Sample]: own-user, not Telltale, a real pid (DESIGN §3.12 "disabled for non-owned processes").
+    public var canSample: Bool
 
-    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?, isSelf: Bool = false) {
+    public init(canQuit: Bool, canForceQuit: Bool, disabledHelp: String?, isSelf: Bool = false,
+                canSample: Bool = false) {
         self.canQuit = canQuit
         self.canForceQuit = canForceQuit
         self.disabledHelp = disabledHelp
         self.isSelf = isSelf
+        self.canSample = canSample
     }
 }
 
@@ -438,8 +445,10 @@ public extension ProcessTableModel {
             return ProcessActionAvailability(canQuit: false, canForceQuit: false,
                                              disabledHelp: "Owned by \(row.foreignOwner ?? row.user ?? "root")")
         }
+        // Sampling needs no kill permission, only an own-user real pid (not Telltale — handled above).
+        let canSample = row.sampleID.map { !$0.isSynthetic && $0.pid > 0 } ?? false
         return ProcessActionAvailability(canQuit: serviceCanControl, canForceQuit: serviceCanControl,
-                                         disabledHelp: serviceCanControl ? nil : "Not permitted")
+                                         disabledHelp: serviceCanControl ? nil : "Not permitted", canSample: canSample)
     }
 
     /// Deterministic order independent of input order: value (nil last), then name, then row id (pid).
@@ -579,6 +588,7 @@ public extension ProcessTableModel {
             appKey: p.app, ownedByCurrentUser: owned,
             foreignOwner: owned ? nil : (p.user ?? "uid \(p.uid)"), target: target)
         row.isExitedResidual = exited
+        row.sampleID = synthetic ? nil : p.id
         if exited {
             // ICR-13 carries CPU, disk and energy only; the other cells are not tracked (not "Requires root").
             let na = "Not tracked for exited processes"
@@ -656,7 +666,8 @@ public extension ProcessTableModel {
             foreignOwner: owned ? nil : (foreign?.user ?? responsible?.user ?? "another user"),
             target: real.isEmpty ? nil
                 : .app(AppIdentity(key: key, displayName: app.identity.displayName, bundlePath: path),
-                       pids: real.map(\.pid).sorted()))
+                       pids: real.map(\.pid).sorted()),
+            sampleID: coalitionOnly || responsible?.id.isSynthetic != false ? nil : responsible?.id)
     }
 
     private nonisolated static func summaryRow(key: AppKey, hidden: Int, identity: AppIdentity) -> ProcessRow {

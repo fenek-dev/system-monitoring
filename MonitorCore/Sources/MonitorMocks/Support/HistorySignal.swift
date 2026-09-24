@@ -169,7 +169,36 @@ struct HistorySignal {
                                          level: .calm, label: "Paused"))
             }
         }
+        // The alert scenarios are live *now* (the popover shows Thermal: Fair/Critical, memory Warning/Critical), so
+        // the store holds an ongoing episode: open (end nil) since `ongoingEpisodeMinutes` before `end`
+        // (W5c design-match fix: an active episode renders as a band running to now).
+        if let ongoing = ongoingEpisode(scenario: scenario), ongoing.start >= clipped.start, ongoing.start <= clipped.end {
+            out.append(ongoing)
+        }
         return out
+    }
+
+    static let ongoingEpisodeMinutes: Double = 25
+
+    /// The episode behind the scenario's current alert, open-ended (nil for calm scenarios).
+    func ongoingEpisode(scenario: MockScenario) -> HistoryEvent? {
+        let start = end.addingTimeInterval(-Self.ongoingEpisodeMinutes * 60)
+        switch scenario {
+        case .thermalFair:
+            return HistoryEvent(kind: .thermalPressure, start: start, end: nil, level: .elevated,
+                                peak: Double(ThermalPressure.fair.rawValue), label: "Thermal: Fair")
+        case .thermalCritical:
+            return HistoryEvent(kind: .thermalPressure, start: start, end: nil, level: .critical,
+                                peak: Double(ThermalPressure.critical.rawValue), label: "Thermal: Critical")
+        case .memoryWarning:
+            return HistoryEvent(kind: .memoryPressure, start: start, end: nil, level: .elevated,
+                                label: "Memory: Warning")
+        case .memoryCritical:
+            return HistoryEvent(kind: .memoryPressure, start: start, end: nil, level: .critical,
+                                label: "Memory: Critical")
+        default:
+            return nil
+        }
     }
 
     // MARK: - Helpers

@@ -17,16 +17,44 @@ public final class ProcessActionCoordinator {
     public typealias Confirm = @MainActor (String, String, String) async -> Bool
 
     public private(set) var toast: Toast?
+    /// PID being sampled (the [Sample] button shows "Sampling…" and is disabled meanwhile).
+    public private(set) var samplingPID: Int32?
     @ObservationIgnored public var actions: ProcessActions
     @ObservationIgnored public var confirm: Confirm?
+    @ObservationIgnored public var sampler: any ProcessSampling
     @ObservationIgnored private var toastCounter = 0
 
     /// Toast lifetime (DESIGN §3.12).
     public nonisolated static let toastDuration: Duration = .seconds(4)
 
-    public init(actions: ProcessActions = .noop, confirm: Confirm? = nil) {
+    public init(actions: ProcessActions = .noop, confirm: Confirm? = nil,
+                sampler: any ProcessSampling = LiveProcessSampler()) {
         self.actions = actions
         self.confirm = confirm
+        self.sampler = sampler
+    }
+
+    /// [Sample] (DESIGN §3.12, §6.23): 3-s `sample` of the row's (responsible) process through the injected sampler,
+    /// then reveals the report in Finder; failures toast. One sample at a time. The process identity (pid + start
+    /// time) is re-verified right before spawning, so a reused pid is never sampled ("Process has exited").
+    public func sample(_ process: ProcessID, name: String) async {
+        guard samplingPID == nil else { return }
+        let started = sampler.startTimeUs(pid: process.pid)
+        guard let started, process.startTimeUs == 0 || started == process.startTimeUs else {
+            toastCounter += 1
+            toast = Toast(id: toastCounter, text: "Process has exited")
+            return
+        }
+        samplingPID = process.pid
+        let result = await sampler.sample(pid: process.pid, name: name)
+        samplingPID = nil
+        switch result {
+        case .done(let url):
+            sampler.reveal(url)
+        case .failed(let why):
+            toastCounter += 1
+            toast = Toast(id: toastCounter, text: "Couldn’t sample \(name): \(why)")
+        }
     }
 
     public func quit(_ target: ProcessTarget) async {

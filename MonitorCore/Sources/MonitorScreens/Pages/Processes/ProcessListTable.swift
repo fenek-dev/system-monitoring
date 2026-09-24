@@ -1,3 +1,4 @@
+import AppKit
 import MonitorModel
 import MonitorUIKit
 import SwiftUI
@@ -211,15 +212,17 @@ struct ProcessTableRow: View, Equatable {
                 } else {
                     TTAppTile(identity: row.identity, name: row.name, size: 20).padding(.trailing, TTSpace.x8)
                 }
-                // The name yields (middle truncation keeps both ends of "com.apple.audio.Core-Audio-…-XPC");
-                // the kind tag is never clipped: full "App · 7 processes" when it fits, else its short form.
+                // The kind tag is never clipped and keeps its count ("App · 7 processes", DESIGN §3.12): the name
+                // yields first (middle truncation, down to `minNameWidth`); only then does the tag drop to "App".
+                // Chosen by measurement (monotonic in the available width; `kindFit`, tested).
                 if let kind = row.kindLabel, row.depth == 0 {
-                    ViewThatFits(in: .horizontal) {
-                        nameAndKind(kind, truncating: false)
-                        nameAndKind(Self.shortKind(kind), truncating: false)
-                        nameAndKind(Self.shortKind(kind), truncating: true)
-                    }
-                    .help("\(row.name) · \(kind)")
+                    let available = nameWidth - (showsDisclosure ? 18 : 0) - 28
+                    let fit = Self.kindFit(name: Self.textWidth(row.name, size: 12),
+                                           full: Self.textWidth(kind, size: 11),
+                                           short: Self.textWidth(Self.shortKind(kind), size: 11),
+                                           available: available)
+                    nameAndKind(fit.keepsCount ? kind : Self.shortKind(kind), truncating: fit.truncatesName)
+                        .help("\(row.name) · \(kind)")
                 } else if row.isExitedResidual {
                     // ICR-13: italic secondary, estimated (values carry the estimated tooltip).
                     Text(row.name).italic().foregroundStyle(TTColor.textSecondary).lineLimit(1)
@@ -233,14 +236,31 @@ struct ProcessTableRow: View, Equatable {
 
     private func nameAndKind(_ kind: String, truncating: Bool) -> some View {
         HStack(spacing: TTSpace.x8) {
-            if truncating {
-                Text(row.name).lineLimit(1).truncationMode(.middle)
-            } else {
-                Text(row.name).lineLimit(1).fixedSize()
-            }
+            // Always allowed to truncate (a measurement a pixel off must never push the tag out of the cell);
+            // `truncating` only documents what `kindFit` expects.
+            let _ = truncating
+            Text(row.name).lineLimit(1).truncationMode(.middle)
             Text(kind).font(TTFont.caption).foregroundStyle(TTColor.textTertiary).lineLimit(1).fixedSize()
                 .layoutPriority(1)
         }
+    }
+
+    /// Narrowest truncated name kept before the kind tag drops its count.
+    nonisolated static let minNameWidth: CGFloat = 72
+
+    /// Which kind label and whether the name truncates, for measured widths (gap 8). Monotonic: as `available`
+    /// shrinks, the name first truncates (keeping the count) down to `minNameWidth` — or its own width if
+    /// narrower — and only then the tag drops to its short form.
+    nonisolated static func kindFit(name: CGFloat, full: CGFloat, short: CGFloat, available: CGFloat,
+                                    gap: CGFloat = 8) -> (keepsCount: Bool, truncatesName: Bool) {
+        if name + gap + full <= available { return (true, false) }
+        if min(name, minNameWidth) + gap + full <= available { return (true, true) }
+        return (false, name + gap + short > available)
+    }
+
+    /// Text width in the system font (body12 names, caption kinds).
+    static func textWidth(_ s: String, size: CGFloat) -> CGFloat {
+        ceil((s as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: size)]).width)
     }
 
     /// "App · 7 processes" → "App".

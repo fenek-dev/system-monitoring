@@ -203,6 +203,35 @@ struct ProcessTableBuildTests {
     }
 }
 
+@Suite("Processes — name cell kind fit")
+struct ProcessKindFitTests {
+    /// Name 120 pt, "App · 7 processes" 95 pt, "App" 20 pt, gap 8.
+    @Test(arguments: [
+        (CGFloat(260), true, false),   // everything fits
+        (CGFloat(180), true, true),    // name truncates (≥ 72) and keeps the count
+        (CGFloat(150), false, false),  // below 72 + 8 + 95: count drops, "App" fits with the full name
+        (CGFloat(100), false, true),   // even the short tag needs a truncated name
+    ])
+    func monotonic(available: CGFloat, keepsCount: Bool, truncates: Bool) {
+        let fit = ProcessTableRow.kindFit(name: 120, full: 95, short: 20, available: available)
+        #expect(fit.keepsCount == keepsCount && fit.truncatesName == truncates)
+    }
+
+    @Test func countOnlyDropsAfterTheNameReached72() {
+        // Sweep the width downwards: once the count drops it never comes back, and it survives down to 72 + 8 + 95.
+        var dropped = false
+        for w in stride(from: CGFloat(300), through: 40, by: -1) {
+            let fit = ProcessTableRow.kindFit(name: 120, full: 95, short: 20, available: w)
+            if dropped { #expect(!fit.keepsCount) }
+            if !fit.keepsCount { dropped = true }
+            if w >= 72 + 8 + 95 { #expect(fit.keepsCount) }
+        }
+        // A short name (< 72) keeps its full width; the count drops as soon as name + tag no longer fit.
+        #expect(!ProcessTableRow.kindFit(name: 40, full: 95, short: 20, available: 140).keepsCount)
+        #expect(ProcessTableRow.kindFit(name: 40, full: 95, short: 20, available: 143).keepsCount)
+    }
+}
+
 @Suite("ProcessTableModel — ICR-13 exited processes")
 struct ProcessTableExitedTests {
     /// Docker Desktop plus an "Exited processes" residual (pid −2) with the highest CPU of the table.
@@ -256,7 +285,8 @@ struct ProcessTableActionTests {
         let out = ProcessTableModel.build(PT.input(mode: .processes))
         func row(_ n: String) -> ProcessRow { out.lines.first { $0.name == n }! }
         let xcode = ProcessTableModel.availability(for: row("Xcode"), serviceCanControl: true)
-        #expect(xcode == ProcessActionAvailability(canQuit: true, canForceQuit: true, disabledHelp: nil))
+        #expect(xcode == ProcessActionAvailability(canQuit: true, canForceQuit: true, disabledHelp: nil,
+                                                   canSample: true))
         let mds = ProcessTableModel.availability(for: row("mds_stores"), serviceCanControl: true)
         #expect(mds == ProcessActionAvailability(canQuit: false, canForceQuit: false, disabledHelp: "Owned by root"))
         let ws = ProcessTableModel.availability(for: row("WindowServer"), serviceCanControl: true)

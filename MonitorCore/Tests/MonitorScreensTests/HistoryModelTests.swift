@@ -330,6 +330,45 @@ struct HistoryWindowTests {
         #expect(HistoryBandKind.memory(level: 1.0) == nil && HistoryBandKind.memory(level: 2.6) == .memoryCritical)
     }
 
+    /// An ongoing episode (no end event) runs to now: Fair band + legend; an open memory episode shows even when the
+    /// level series (normal) hasn't caught up.
+    @Test func ongoingEpisodesRunToNow() {
+        let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        let fair = HistoryEvent(kind: .thermalPressure, start: w.time(at: w.latest - 5), end: nil, level: .elevated,
+                                peak: Double(ThermalPressure.fair.rawValue))
+        let mem = HistoryEvent(kind: .memoryPressure, start: w.time(at: w.latest - 3), end: nil, level: .elevated)
+        // The store has classified everything up to latest − 2 (normal); the last two buckets aren't stored yet.
+        var levels = [Double?](repeating: 1, count: w.count)
+        levels[w.latest - 1] = nil
+        levels[w.latest] = nil
+        let bands = HistoryBand.layout([fair, mem], memoryLevels: levels, window: w, width: 287, openEnd: w.dataEnd)
+        #expect(bands.map(\.kind) == [.fair, .memory])
+        let nowX = CGFloat(w.fraction(of: w.dataEnd)) * 287
+        #expect(abs(bands[0].x1 - nowX) < 0.001)                             // Fair runs to now
+        let step = 287 / CGFloat(w.count - 1)
+        #expect(abs(bands[1].x0 - (CGFloat(w.latest - 1) * step - step / 2)) < 0.001)  // only the unclassified tail
+    }
+
+    /// Series already warning over the episode's span → one band there, not the series band plus the event band.
+    @Test func openEpisodeNeverDoubleDrawsOverTheSeries() {
+        let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        var levels = [Double?](repeating: 1, count: w.count)
+        for i in (w.latest - 6)...w.latest { levels[i] = 2 }
+        let mem = HistoryEvent(kind: .memoryPressure, start: w.time(at: w.latest - 6), end: nil, level: .elevated)
+        let bands = HistoryBand.layout([mem], memoryLevels: levels, window: w, width: 287, openEnd: w.dataEnd)
+        #expect(bands.count == 1 && bands[0].kind == .memory)
+        for (a, b) in zip(bands, bands.dropFirst()) { #expect(a.x1 <= b.x0 || b.x1 <= a.x0) }
+    }
+
+    @Test func mockThermalFairHasAnOngoingEpisode() async throws {
+        let provider = MockDataProvider(scenario: .thermalFair).history()
+        let w = HistoryWindow.make(.day, now: HT.now, calendar: HT.london)
+        let events = try await provider.events(in: DateInterval(start: w.start, end: w.end))
+        #expect(events.contains { $0.kind == .thermalPressure && $0.end == nil })
+        #expect(HistoryBand.layout(events, memoryLevels: [], window: w, width: 287, openEnd: w.dataEnd)
+            .contains { $0.kind == .fair })
+    }
+
     @Test func treemapSharesFoldSmallAppsIntoOtherLast() {
         let raw = [HT.share("a", 50), HT.share("b", 45), HT.share("c", 1), HT.share("d", 1),
                    AppShare(identity: AppIdentity(key: .other, displayName: "Other"), value: 3, fraction: 0)]

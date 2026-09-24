@@ -92,6 +92,19 @@ struct ProcessesSnapshotTests {
         assertSnapshot(view, size: ScreenSize.dashboard, named: "processes-exited-calm")
     }
 
+    /// Design-match: the header search placeholder is `textSecondary` #A8A8B0, not near-white.
+    @Test func searchFieldPlaceholder() {
+        let view = VStack(alignment: .leading, spacing: 8) {
+            TTSearchField(text: .constant(""), prompt: "Search processes")
+            TTSearchField(text: .constant("xcode"), prompt: "Search processes")
+        }
+        .padding(12)
+        .frame(width: 244, height: 88, alignment: .topLeading)
+        .background(TTColor.bgHeader)
+        .screenEnvironment(.calm, page: .processes)
+        assertSnapshot(view, size: CGSize(width: 244, height: 88), named: "processes-search-field")
+    }
+
     /// CP2: a long name truncates in the middle; the kind tag is never clipped.
     @Test func longNameKeepsKindTag() {
         let key = AppKey(kind: .process, id: "com.apple.audio.Core-Audio-Driver-Service.helper")

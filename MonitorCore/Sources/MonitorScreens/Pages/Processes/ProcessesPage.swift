@@ -18,6 +18,7 @@ public struct ProcessesPage: View {
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.presentConfirmDialog) private var confirmDialog
     @Environment(\.appCommands) private var appCommands
+    @Environment(\.processSampler) private var sampler
     @State private var table = ProcessTableModel()
     @State private var coordinator = ProcessActionCoordinator()
     @State private var inspector = AppInspectorModel()
@@ -56,6 +57,11 @@ public struct ProcessesPage: View {
                              }
                          },
                          onForceQuit: { forceQuit($0) },
+                         samplingPID: coordinator.samplingPID,
+                         onSample: { id, name in
+                             coordinator.sampler = sampler
+                             Task { await coordinator.sample(id, name: name) }
+                         },
                          model: inspector)
                 .layoutPriority(1)
         }
