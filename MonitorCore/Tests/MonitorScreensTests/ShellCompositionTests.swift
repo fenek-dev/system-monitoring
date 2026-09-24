@@ -39,6 +39,14 @@ struct ShellLaunchOptionsTests {
         #expect(unknown.loginItemCommand == "status")
     }
 
+    /// `--overlay` forces the overlay on for this run (never persisted; the app does not touch settings for it).
+    @Test func overlayFlag() {
+        #expect(LaunchOptions.parse(arguments: ["--overlay"], environment: [:]).overlay)
+        #expect(!LaunchOptions.parse(arguments: [], environment: [:]).overlay)
+        #expect(LaunchOptions.parse(arguments: ["--mock", "--overlay"], environment: [:]) ==
+            LaunchOptions(mockScenario: .calm, overlay: true))
+    }
+
     @Test func openDashboardPage() {
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard"], environment: [:]).openDashboard == .overview)
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard", "thermals"], environment: [:]).openDashboard == .thermals)

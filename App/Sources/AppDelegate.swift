@@ -230,17 +230,25 @@ import os
     /// the global hotkey follows `settings.overlayHotKey` and publishes its status for Settings.
     private func installOverlayWiring() {
         let settings = env.settings
-        overlayLoop = ObservationLoop({ settings.overlayEnabled }) { [weak self] on in
-            guard let self else { return }
-            if on { overlay.show() } else { overlay.hide() }
-        }
+        overlayForced = env.options.overlay
+        overlayLoop = ObservationLoop({ settings.overlayEnabled }) { [weak self] _ in self?.applyOverlay() }
         hotKeyLoop = ObservationLoop({ settings.overlayHotKey }) { [weak self] _ in self?.registerHotKey() }
     }
 
-    /// Hotkey, popover footer: flip and persist.
+    /// `--overlay`: shown for this run without touching `settings.overlayEnabled`; the first toggle clears it.
+    private var overlayForced = false
+
+    private func applyOverlay() {
+        if env.settings.overlayEnabled || overlayForced { overlay.show() } else { overlay.hide() }
+    }
+
+    /// Hotkey, popover footer: flip what is on screen and persist it.
     private func toggleOverlay() {
-        env.settings.overlayEnabled.toggle()
-        log.notice("overlay \(self.env.settings.overlayEnabled ? "on" : "off", privacy: .public)")
+        let on = !overlay.isShown
+        overlayForced = false
+        env.settings.overlayEnabled = on
+        applyOverlay()
+        log.notice("overlay \(on ? "on" : "off", privacy: .public)")
     }
 
     private func setHotKeyRecording(_ recording: Bool) {

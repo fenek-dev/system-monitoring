@@ -1156,6 +1156,21 @@ Opened from the Settings button in the popover or header, or with ⌘,. It is a 
 | **First launch** | Popover and Overview during the first 2 s | Values "—", sparklines "Collecting…" |
 | **Store error** | History | Centered in the timeline card: `body12` `textSecondary` "History is unavailable." plus the error in `caption` `textTertiary` |
 
+### 3.16 Overlay (ADDED 2026-09-25)
+
+Spec: `docs/superpowers/specs/2026-09-25-overlay-design.md`.
+
+- **Content** (`OverlayView`, MonitorScreens): one row of three columns, CPU · GPU · MEM, 16 apart, padding 8 × 6.
+  - Column: label (`captionMedium`, category colour `cpu`/`gpu`/`mem`) and value (`body13Value`) on one baseline; below it the 60-s stats row "↓{min} ↑{max} ø{avg}" in `micro` `textSecondary`.
+  - CPU/GPU values are `TTFormat.percent`; their stats are integer percent without "%". MEM value is `memory(.headline)`; its stats use `memoryNumber` (no unit).
+  - MEM value tint follows memory pressure: `statusElevated` (warning), `statusCritical` (critical), else `textPrimary`.
+  - Unavailable: value "—" in `textTertiary`, stats "— — —". No value yet (first tick): value "—" in `textTertiary`; no samples in the window: stats "—".
+  - Each column sits over a hidden worst-case template ("100%", "999.9 GB"; "↓100 ↑100 ø100", "↓999.9 ↑999.9 ø999.9"), so the overlay keeps one size (~333 × 44 pt) whatever the values.
+  - Background: rounded rect radius 8, `bgElevated` at the opacity setting, 1-pt `separator` border. Always dark; no animation. Sampling paused → whole overlay at 50 %.
+- **Window** (App, `OverlayPanelController`): borderless non-activating `NSPanel`, `.statusBar` level, click-through, no shadow, on every Space and over full-screen apps, never key. Placed 8 pt inside the visible frame of the display under the mouse, in the chosen corner (default top-right); it follows the mouse to another display on the next tick.
+- **Toggle**: global hotkey (default ⌥Z, Carbon, no Accessibility permission), the popover footer overlay button (tinted `accent` when on; tooltip "Overlay (⌥Z)"), or Settings. The state persists across launches.
+- **Settings › Overlay** section (after General): "Show overlay" switch; "Shortcut" recorder (Esc cancels; needs ⌘, ⌥ or ⌃; ⌘-only standard shortcuts rejected; "Shortcut unavailable — in use by another app" in `statusElevated` when registration failed; note "⌥Z blocks typing Ω." for the default); "Corner" ↖ ↗ ↙ ↘; "Opacity" 55/70/85/100 % (default 85).
+
 ---
 
 ## 4. Status icon

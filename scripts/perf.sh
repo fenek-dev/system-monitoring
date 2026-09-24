@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Measure this worktree's Telltale (Debug build from scripts/build.sh) and append a section to docs/perf/<date>-<cp>.md.
-# Usage: scripts/perf.sh <minutes> [--interactive] [--mock <scenario>] [--release] [--cp <name>] [--warmup <s>]
-#                        [--no-bench] [--keep]
+# Usage: scripts/perf.sh <minutes> [--interactive] [--overlay] [--mock <scenario>] [--release] [--cp <name>]
+#                        [--warmup <s>] [--no-bench] [--keep]
+#   --overlay: launch with --overlay (stats overlay shown this run, 1-s overlay sampling mode; not persisted)
 #   --release: Release build in .build/xcode-release (launched/stopped by exact path), else scripts/run.sh's Debug app
 #   scripts/perf.sh 10                  UI closed (background, 5 s cadence), live sensors
 #   scripts/perf.sh 2 --interactive     dashboard open on Processes (interactive, 1 s)
@@ -15,10 +16,11 @@ ROOT="$PWD"
 minutes="${1:-}"
 [[ "$minutes" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "usage: scripts/perf.sh <minutes> [--interactive] [--mock <s>] [--cp <name>]" >&2; exit 2; }
 shift
-interactive=0; mock=""; cp="adhoc"; warmup=30; bench=1; keep=0; release=0
+interactive=0; overlay=0; mock=""; cp="adhoc"; warmup=30; bench=1; keep=0; release=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --interactive) interactive=1 ;;
+        --overlay) overlay=1 ;;
         --release) release=1 ;;
         --mock) mock="$2"; shift ;;
         --cp) cp="$2"; shift ;;
@@ -33,6 +35,10 @@ done
 mode="background (UI closed)"
 args=()
 if [[ $interactive -eq 1 ]]; then mode="interactive (dashboard: Processes)"; args+=(--open-dashboard processes); fi
+if [[ $overlay -eq 1 ]]; then
+    if [[ $interactive -eq 1 ]]; then mode="$mode + overlay"; else mode="overlay (UI closed, overlay on)"; fi
+    args+=(--overlay)
+fi
 if [[ -n "$mock" ]]; then mode="$mode, mock $mock"; args+=(--mock "$mock"); fi
 
 # cputime "[[dd-]hh:]mm:ss.cs" → seconds
@@ -149,7 +155,7 @@ echo "perf.sh: visibility changes during the run (incl. launch): ${visibility}"
 
 bench_out=""
 if [[ $bench -eq 1 && -z "$mock" ]]; then
-    bench_mode=background; [[ $interactive -eq 1 ]] && bench_mode=interactive
+    bench_mode=background; [[ $overlay -eq 1 ]] && bench_mode=overlay; [[ $interactive -eq 1 ]] && bench_mode=interactive
     bench_out=$(scripts/probe.sh --bench --ticks 30 --interval 1 --mode "$bench_mode" 2>&1 | tail -45)
 fi
 cleanup
