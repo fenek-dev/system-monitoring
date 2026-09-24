@@ -4,7 +4,9 @@ public struct BatterySnapshot: Sendable, Codable, Equatable {
     public var percent: Double?, isCharging: Bool, onAC: Bool, timeRemaining: Duration?
     public var healthFraction: Double?, cycleCount: Int?, condition: String?
     public var maxCapacityWh: Double?, designCapacityWh: Double?, currentCapacityWh: Double?
-    public var temperatureC: Double?, drainWatts: Double?
+    public var temperatureC: Double?
+    /// Battery power, signed V × A (ruling): negative while discharging ("−18.9 W"), positive while charging ("+W").
+    public var drainWatts: Double?
     /// macOS is still estimating the time remaining (`timeRemaining` nil): UI shows "Calculating…", not "—".
     /// Additive (battery ruling); absent in older encodings → false.
     public var timeRemainingCalculating: Bool
@@ -39,6 +41,8 @@ public struct BatterySnapshot: Sendable, Codable, Equatable {
         self.drainWatts = drainWatts
     }
 
+    /// Hand-written (for `timeRemainingCalculating`'s decodeIfPresent): every NEW stored property must be added here
+    /// and to `init(from:)`, or it silently won't encode/decode.
     private enum CodingKeys: String, CodingKey {
         case percent, isCharging, onAC, timeRemaining, healthFraction, cycleCount, condition
         case maxCapacityWh, designCapacityWh, currentCapacityWh, temperatureC, drainWatts, timeRemainingCalculating

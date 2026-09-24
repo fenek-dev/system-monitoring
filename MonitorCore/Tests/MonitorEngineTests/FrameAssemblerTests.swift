@@ -61,6 +61,7 @@ import Testing
         #expect(f.processes[pid: 418]?.provenance == .restricted)
         #expect(f.processes[pid: 418]?.coalitionLeaderName == "WindowServer")
         // all-visible coalition 9 (1 W measured by coalition vs 1.35 W v6): untouched
+        #expect(!f.processes.contains { $0.id == .exitedResidual(9) })   // 86 vs 85 %: meter noise, no Exited row
         #expect(f.processes[pid: 10]?.energyWatts == 1)
         #expect(f.processes[pid: 10]?.energyEstimated == false)
 
@@ -107,6 +108,40 @@ import Testing
         #expect(exited.app == Self.a.key)                                        // counted in the leader's app
         #expect(abs(exited.energyWatts! - 2) < 1e-9 && exited.energyEstimated)   // 3 W coalition − 1 W v6
         #expect(f.apps.first { $0.identity.key == Self.a.key }?.cpuPercent == 150)
+    }
+
+    @Test func unlistedNewbornChildIsNotCountedTwice() throws {
+        // pid 30 was born mid-interval (child of 10) and is in the process table, but the coalition reading doesn't
+        // list it (born after it was built). Its CPU is in the coalition's Δ AND its own newborn row: it must be
+        // subtracted from the residual (parent's coalition), so Σ apps ≤ system and no Exited row carries it.
+        let w0 = 1_790_000_000.0
+        func tick(_ n: UInt64, child: Bool) -> RawTick {
+            let core = CoreTicks(user: n * 50 + (child ? 40 : 0), system: 0, idle: n * 50 - (child ? 40 : 0))
+            var ps = [own(10, cpuNs: n * sec / 2, energyNJ: n * sec)]
+            var coalCPU = n * sec / 2
+            if child {
+                var c = own(30, start: UInt64((w0 + Double(n) - 0.5) * 1e6), cpuNs: 4 * sec / 10, energyNJ: sec / 10)
+                c.ppid = 10
+                ps.append(c)
+                coalCPU += 4 * sec / 10
+            }
+            return RawTick(wallTime: Date(timeIntervalSince1970: w0 + Double(n)), uptimeNs: n * sec, mode: .interactive,
+                           processes: .fresh(ProcessTableReading(processes: ps), capturedNs: n * sec),
+                           coalitions: .fresh(CoalitionsReading(coalitions: [
+                               CoalitionUsage(id: 4, leaderPID: 10, memberPIDs: [10], cpuTimeNs: coalCPU, energyNJ: n * sec),
+                           ]), capturedNs: n * sec),
+                           hostCPU: .fresh(HostCPUReading(cores: [core], coreKinds: [.performance]), capturedNs: n * sec))
+        }
+        var fa = Self.assembler()
+        _ = fa.assemble(tick(1, child: false), inspectedApp: nil)
+        let f = fa.assemble(tick(2, child: true), inspectedApp: nil)
+        let system = try #require(f.cpu.usage) * 100
+        let appSum = f.apps.reduce(0) { $0 + ($1.cpuPercent ?? 0) }
+        #expect(f.processes[pid: 30]?.cpuPercent == 40)                         // newborn row
+        #expect(f.processes[pid: 30]?.coalitionID == 4)                         // parent's coalition
+        #expect(!f.processes.contains { $0.id == .exitedResidual(4) })         // nothing left over
+        #expect(appSum <= system + 1e-6)
+        #expect(abs(appSum - 90) < 1e-6)
     }
 
     @Test func energyEstimatedPropagatesToAppsInFallbackMode() throws {

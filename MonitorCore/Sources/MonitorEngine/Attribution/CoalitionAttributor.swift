@@ -59,21 +59,34 @@ struct CoalitionTracker: Sendable {
         return out
     }
 
-    /// Membership of the previous reading (one tick of memory, see `pidToCoalition`).
+    /// Membership of the previous fresh/cached reading (one tick of memory, see `pidToCoalition`).
     private var previousMembership: [Int32: UInt64] = [:]
 
-    /// pid → coalition id from the reading's membership lists. A pid missing from this reading keeps the coalition it
-    /// had in the previous one: a member that exited between the process-table read and the coalition read is still
-    /// in the process list (its Δ counted) and in the coalition's Δ — without its coalition it wouldn't be subtracted
-    /// from the residual and would count twice (ICR-13 "Exited processes", seen as Σ apps 119 % of system).
-    mutating func pidToCoalition(_ result: SensorResult<CoalitionsReading>) -> [Int32: UInt64] {
-        guard let reading = result.value else { return [:] }
+    /// pid → coalition id from the reading's membership lists (`current`), plus `sticky`: members of the previous
+    /// reading missing from this one. A member that exited between the process-table read and the coalition read is
+    /// still in the process list (its Δ counted) and in the coalition's Δ — without its coalition it wouldn't be
+    /// subtracted from the residual and would count twice (ICR-13 "Exited processes", seen as Σ apps 119 % of
+    /// system). Kept as a separate small map (not merged into ~600 entries). A missing or failed (stale) reading
+    /// clears the memory, so an old map never merges in after a gap.
+    mutating func pidToCoalition(_ result: SensorResult<CoalitionsReading>)
+        -> (current: [Int32: UInt64], sticky: [Int32: UInt64]) {
+        let reading: CoalitionsReading
+        switch result {
+        case .fresh(let r, _), .cached(let r, _): reading = r
+        case .failed(_, let last, _):
+            previousMembership = [:]
+            guard let last else { return ([:], [:]) }
+            reading = last
+        case .notRequested:
+            previousMembership = [:]
+            return ([:], [:])
+        }
         var map: [Int32: UInt64] = [:]
         for c in reading.coalitions { for pid in c.memberPIDs { map[pid] = c.id } }
-        let current = map
-        for (pid, cid) in previousMembership where map[pid] == nil { map[pid] = cid }
-        previousMembership = current
-        return map
+        var sticky: [Int32: UInt64] = [:]
+        for (pid, cid) in previousMembership where map[pid] == nil { sticky[pid] = cid }
+        if case .failed = result {} else { previousMembership = map }
+        return (map, sticky)
     }
 
     mutating func reset() { self = CoalitionTracker() }
@@ -97,7 +110,8 @@ struct CoalitionTracker: Sendable {
 /// "Exited processes" row (`ProcessID.exitedResidual`) in the leader's app (provenance `.coalition`, CPU + disk
 /// residuals; energy through `EnergyAttributor` step 2, estimated). That is the CPU of members that started and/or
 /// exited between two ticks — invisible to per-pid rusage. Below the thresholds (the ~1 % meter disagreement) nothing
-/// changes.
+/// changes. Note (as spec'd): the row's energy is coalition W − Σ v6 W, so it also carries the coalition-vs-v6 meter
+/// bias (~20 %) — hence estimated.
 public struct CoalitionAttributor: Sendable {
     public let minResidualCPUPercent: Double
     public let minResidualWatts: Double
@@ -198,7 +212,8 @@ public struct CoalitionAttributor: Sendable {
                 .flatMap { indexByPID[$0] }
                 .map { processes[$0] }
                 .flatMap { $0.coalitionID == cid ? $0 : nil }
-            let owner = leader ?? processes[idx[0]]
+            // No live leader → the member with the lowest pid (independent of process-table order).
+            guard let owner = leader ?? idx.map({ processes[$0] }).min(by: { $0.pid < $1.pid }) else { continue }
             synthetic.append(ProcessSample(
                 id: .exitedResidual(cid), name: Self.exitedRowName, user: owner.user, uid: owner.uid,
                 isCurrentUser: owner.isCurrentUser, app: identities[owner.pid]?.key ?? owner.app, provenance: .coalition,
@@ -206,13 +221,5 @@ public struct CoalitionAttributor: Sendable {
                 diskReadBps: d.diskReadBps.map { max(0, $0 - visR) }, diskWriteBps: d.diskWriteBps.map { max(0, $0 - visW) }))
         }
         return synthetic
-    }
-}
-
-extension ProcessID {
-    /// ICR-13 synthetic row: CPU of an all-visible coalition's exited/short-lived members (pid −2, like
-    /// `coalitionResidual`'s −1: synthetic, never controllable).
-    static func exitedResidual(_ coalitionID: UInt64) -> ProcessID {
-        ProcessID(pid: -2, startTimeUs: coalitionID)
     }
 }

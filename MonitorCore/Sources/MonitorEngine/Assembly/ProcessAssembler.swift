@@ -7,6 +7,9 @@ struct ProcessDelta: Sendable, Equatable {
     var gpuNs: UInt64 = 0
     var rx: UInt64 = 0
     var tx: UInt64 = 0
+    /// Disk bytes read/written (ICR-14 app session).
+    var diskR: UInt64 = 0
+    var diskW: UInt64 = 0
 }
 
 /// The sensor results `ProcessAssembler` consumes for one tick.
@@ -18,6 +21,8 @@ struct ProcessInputs {
     var assertions: SensorResult<SleepAssertionsReading> = .notRequested
     /// pid → resource coalition id (from the coalitions reading).
     var coalitionOf: [Int32: UInt64] = [:]
+    /// Members of the previous coalition reading that are missing from this one (just exited): small, separate.
+    var stickyCoalitionOf: [Int32: UInt64] = [:]
     var uptimeNs: UInt64
     /// Tick wall time: dates the process table's capture against `ProcessID.startTimeUs` (processes born within
     /// the interval). nil → no newborn fill-in.
@@ -91,8 +96,14 @@ struct ProcessAssembler {
     /// Wall-clock µs (and uptime capturedNs) of the last process-table capture: a process whose start time is at or
     /// after it was born inside the current interval.
     private var lastCapture: (capturedNs: UInt64, wallUs: UInt64)?
+    /// Telltale's own start (session start, ruling).
+    let sessionStartUs: UInt64
     /// ICR-14 disk session baselines; not cleared by `reset()` (the session spans sleep/wake).
-    private var diskSession = DiskSessionBaselines()
+    private var diskSession: DiskSessionBaselines
+    /// Processes/net keys seen since the session started — survives `reset()`, so a first sight after wake isn't
+    /// mistaken for a newborn's (whose full counters count toward the session). Pruned on exit.
+    private var sessionSeen = Set<ProcessID>()
+    private var sessionSeenNet = Set<ProcessID>()
     private var gpuClock = CaptureClock()
     private var netClock = CaptureClock()
     /// NStat `ProcessID(pid, 0)` → the live process it was first matched to. Pins the loose id to that process, so a
@@ -100,8 +111,10 @@ struct ProcessAssembler {
     private var looseOwners: [Int32: ProcessID] = [:]
     private var userNames: [UInt32: String] = [:]
 
-    init(currentUID: uid_t = getuid()) {
+    init(currentUID: uid_t = getuid(), sessionStartUs: UInt64 = SessionStart.ownProcessStartUs) {
         self.currentUID = currentUID
+        self.sessionStartUs = sessionStartUs
+        self.diskSession = DiskSessionBaselines(sessionStartUs: sessionStartUs)
     }
 
     var trackedKeyCount: Int {
@@ -120,11 +133,24 @@ struct ProcessAssembler {
     /// (launchd-spawned services get their own, but those are long-lived and listed) — else its responsible
     /// process's. Without this, a short-lived build child counts twice: its own delta, and again inside the
     /// coalition's residual (ICR-13 "Exited processes").
-    static func coalition(of r: RawProcess, in map: [Int32: UInt64]) -> UInt64? {
-        if let c = map[r.id.pid] { return c }
+    static func coalition(of r: RawProcess, in map: [Int32: UInt64], sticky: [Int32: UInt64] = [:]) -> UInt64? {
+        if let c = map[r.id.pid] ?? sticky[r.id.pid] { return c }
         if r.ppid > 1, let c = map[r.ppid] { return c }
         if let resp = r.responsiblePID, resp != r.id.pid, let c = map[resp] { return c }
         return nil
+    }
+
+    /// Disk rate (B/s) and session delta for one counter: the calculator's delta when it has a baseline (delta only
+    /// when the reading advanced); on explicit first sight the newborn rate and, for a session newborn, the full count.
+    private static func disk(_ calc: inout RateCalculator<ProcessID>, _ id: ProcessID, _ counter: UInt64,
+                             _ capturedNs: UInt64, advanced: Bool, newbornSec: Double?, sessionNewborn: Bool)
+        -> (bps: Double?, delta: UInt64) {
+        let tracked = calc.isTracking(id)
+        if let d = calc.delta(for: id, counter: counter, capturedNs: capturedNs) {
+            return (d.seconds > 0 ? Double(d.delta) / d.seconds : nil, advanced ? d.delta : 0)
+        }
+        guard !tracked else { return (nil, 0) }                     // counter went backwards: rebaselined
+        return (newbornSec.map { Double(counter) / $0 }, sessionNewborn ? counter : 0)
     }
 
     mutating func assemble(_ input: ProcessInputs, resolver: any AppResolving) -> ProcessAssembly {
@@ -146,7 +172,6 @@ struct ProcessAssembler {
             let captureWallUs = wallUs >= back ? wallUs - back : 0
             if clock.advanced, let last = lastCapture { bornAfterUs = last.wallUs }
             if lastCapture?.capturedNs != capturedNs { lastCapture = (capturedNs, captureWallUs) }
-            diskSession.start(atUs: captureWallUs)
         }
         let newbornSeconds = clock.advanced ? clock.seconds.flatMap { $0 > 0 ? $0 : nil } : nil
 
@@ -171,36 +196,51 @@ struct ProcessAssembler {
             var s = ProcessSample(
                 id: r.id, name: Self.displayName(r), path: r.path, user: userName(r.uid), uid: r.uid,
                 isCurrentUser: r.uid == currentUID, app: identity.key,
-                provenance: r.restricted ? .restricted : .measured, coalitionID: Self.coalition(of: r, in: input.coalitionOf),
+                provenance: r.restricted ? .restricted : .measured,
+                coalitionID: Self.coalition(of: r, in: input.coalitionOf, sticky: input.stickyCoalitionOf),
                 cpuTimeNs: r.cpuTimeNs, threads: r.threads,
                 diskReadTotal: r.diskReadBytes, diskWriteTotal: r.diskWriteBytes,
                 preventsSleep: !(assertions?[r.id.pid]?.isEmpty ?? true))
 
-            // Newborn: first sight, started at/after the previous capture (seconds = this interval).
-            let newborn: Double? = bornAfterUs.flatMap { r.id.startTimeUs >= $0 ? newbornSeconds : nil }
+            // Newborn (rates): explicit first sight (no baseline — not a counter reset) of a process started at/after
+            // the previous capture → counter / this interval.
+            // Session newborn: first sight since Telltale started (survives wake) of a process started after it →
+            // its whole counters are this session's (CPU, disk; network in assembleNetwork).
+            let bornInInterval = bornAfterUs.map { r.id.startTimeUs >= $0 } ?? false
+            let newbornSec = bornInInterval ? newbornSeconds : nil
+            let sessionNewborn = !sessionSeen.contains(r.id) && r.id.startTimeUs >= sessionStartUs
+            sessionSeen.insert(r.id)
             if let ns = r.cpuTimeNs {
+                let tracked = cpu.isTracking(r.id)
                 if let d = cpu.delta(for: r.id, counter: ns, capturedNs: capturedNs) {
                     if d.seconds > 0 {
                         s.cpuPercent = Double(d.delta) / d.seconds / 1e7
                         if clock.advanced { out.deltas[r.id, default: ProcessDelta()].cpuNs = d.delta }
                     }
-                } else if let sec = newborn {
-                    s.cpuPercent = Double(ns) / sec / 1e7
-                    out.deltas[r.id, default: ProcessDelta()].cpuNs = ns
+                } else if !tracked {
+                    if let sec = newbornSec { s.cpuPercent = Double(ns) / sec / 1e7 }
+                    if sessionNewborn { out.deltas[r.id, default: ProcessDelta()].cpuNs = ns }
                 }
             }
             if let nj = r.energyNJ {
+                let tracked = energy.isTracking(r.id)
                 if let w = energy.rate(for: r.id, counter: nj, capturedNs: capturedNs) {
                     s.energyWatts = w / 1e9
-                } else if let sec = newborn {
+                } else if !tracked, let sec = newbornSec {
                     s.energyWatts = Double(nj) / sec / 1e9
                 }
             }
             if let b = r.diskReadBytes {
-                s.diskReadBps = diskRead.rate(for: r.id, counter: b, capturedNs: capturedNs) ?? newborn.map { Double(b) / $0 }
+                let (bps, delta) = Self.disk(&diskRead, r.id, b, capturedNs, advanced: clock.advanced,
+                                             newbornSec: newbornSec, sessionNewborn: sessionNewborn)
+                s.diskReadBps = bps
+                if delta > 0 { out.deltas[r.id, default: ProcessDelta()].diskR = delta }
             }
             if let b = r.diskWriteBytes {
-                s.diskWriteBps = diskWrite.rate(for: r.id, counter: b, capturedNs: capturedNs) ?? newborn.map { Double(b) / $0 }
+                let (bps, delta) = Self.disk(&diskWrite, r.id, b, capturedNs, advanced: clock.advanced,
+                                             newbornSec: newbornSec, sessionNewborn: sessionNewborn)
+                s.diskWriteBps = bps
+                if delta > 0 { out.deltas[r.id, default: ProcessDelta()].diskW = delta }
             }
             (s.diskReadSession, s.diskWriteSession) = diskSession.session(r)
 
@@ -226,6 +266,7 @@ struct ProcessAssembler {
         diskRead.prune(keeping: live)
         diskWrite.prune(keeping: live)
         diskSession.prune(keeping: live)
+        for id in sessionSeen.filter({ !live.contains($0) }) { sessionSeen.remove(id) }
         resolver.prune(keeping: live)
         return out
     }
@@ -314,8 +355,20 @@ struct ProcessAssembler {
                 out.samples[i].netRxTotal = Self.saturatingAdd(out.samples[i].netRxTotal ?? 0, bytes.rx)
                 out.samples[i].netTxTotal = Self.saturatingAdd(out.samples[i].netTxTotal ?? 0, bytes.tx)
             }
+            let tracked = netRx.isTracking(key)
             let rx = netRx.delta(for: key, counter: bytes.rx, capturedNs: capturedNs)
             let tx = netTx.delta(for: key, counter: bytes.tx, capturedNs: capturedNs)
+            // Session newborn (ruling: session = Telltale start): first sight since then of a process started after
+            // it → all its bytes are this session's.
+            var sessionNewborn = false
+            if case .process(let id) = key {
+                sessionNewborn = !tracked && !sessionSeenNet.contains(id) && (owner?.startTimeUs ?? 0) >= sessionStartUs
+                sessionSeenNet.insert(id)
+            }
+            if sessionNewborn {
+                let full = ProcessDelta(rx: bytes.rx, tx: bytes.tx)
+                if let owner { out.deltas[owner, default: ProcessDelta()].accumulate(full) }
+            }
             guard let seconds else { return }
             let rxBps = Double(rx?.delta ?? 0) / seconds, txBps = Double(tx?.delta ?? 0) / seconds
             let delta = ProcessDelta(rx: clock.advanced ? rx?.delta ?? 0 : 0, tx: clock.advanced ? tx?.delta ?? 0 : 0)

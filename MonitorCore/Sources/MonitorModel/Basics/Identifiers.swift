@@ -19,8 +19,17 @@ public struct ProcessID: Hashable, Sendable, Codable {
         ProcessID(pid: -1, startTimeUs: coalitionID)
     }
 
+    /// ICR-13 synthetic row "Exited processes": CPU/disk/energy of an all-visible coalition's members that started
+    /// and/or exited between ticks. pid -2, `startTimeUs` = coalition id. Never controllable.
+    public static func exitedResidual(_ coalitionID: UInt64) -> ProcessID {
+        ProcessID(pid: -2, startTimeUs: coalitionID)
+    }
+
     /// True for synthetic rows (pid < 0).
     public var isSynthetic: Bool { pid < 0 }
+
+    /// True for the ICR-13 "Exited processes" row (label "Exited processes", not "System").
+    public var isExitedResidual: Bool { pid == -2 }
 }
 
 /// Grouping key of an app (see ARCHITECTURE §5.1 grouping rules).

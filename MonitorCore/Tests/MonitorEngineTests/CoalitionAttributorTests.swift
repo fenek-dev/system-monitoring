@@ -193,6 +193,8 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
         #expect(run(coalitionCPU: 55.5, visible: [40, 10]).isEmpty)          // 5.5 > 5 but < 10 % of 55.5
         #expect(run(coalitionCPU: 7, visible: [1, 1]).isEmpty)               // 5 % of a core: not > 5
         #expect(run(coalitionCPU: 50.5, visible: [40, 10]).isEmpty)          // ~1 % meter noise
+        #expect(run(coalitionCPU: 60, visible: [54]).isEmpty)                 // 6 > 5 but exactly 10 % of 60: not >
+        #expect(run(coalitionCPU: 60, visible: [53.9]).count == 1)            // just above 10 %
         let row = try #require(run(coalitionCPU: 56, visible: [40, 10]).first)   // 6 > 5 and > 5.6
         #expect(row.id == .exitedResidual(3) && row.id.isSynthetic)
         #expect(row.name == "Exited processes")
@@ -415,19 +417,35 @@ private func deltas(_ d: [UInt64: (CoalitionDelta, leader: Int32?, members: [Int
         #expect(c.energyNJ == nil)
         #expect(c.diskR == 4_000 && c.diskW == 0)
         #expect(d.membership[5]?.memberPIDs == [1, 2])
-        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [u1]), capturedNs: 3 * sec)) == [1: 5, 2: 5])
+        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [u1]), capturedNs: 3 * sec)).current == [1: 5, 2: 5])
     }
 
     @Test func memberThatJustExitedKeepsItsCoalitionForOneTick() {
-        // pid 2 is in the process table but exited before the coalition read: it keeps coalition 5 so its Δ is
-        // subtracted from the residual (no double count); one tick later it's forgotten.
+        // pid 2 is in the process table but exited before the coalition read: it keeps coalition 5 (sticky, a
+        // separate small map) so its Δ is subtracted from the residual (no double count); one tick later it's forgotten.
         var t = CoalitionTracker()
         let full = CoalitionUsage(id: 5, leaderPID: 1, memberPIDs: [1, 2], cpuTimeNs: sec)
         var gone = full
         gone.memberPIDs = [1]
         _ = t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [full]), capturedNs: sec))
-        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 2 * sec)) == [1: 5, 2: 5])
-        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 3 * sec)) == [1: 5])
+        let m = t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 2 * sec))
+        #expect(m.current == [1: 5] && m.sticky == [2: 5])
+        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 3 * sec)).sticky.isEmpty)
+    }
+
+    @Test func stickyMembershipIsClearedAcrossAGap() {
+        var t = CoalitionTracker()
+        let full = CoalitionUsage(id: 5, leaderPID: 1, memberPIDs: [1, 2], cpuTimeNs: sec)
+        var gone = full
+        gone.memberPIDs = [1]
+        _ = t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [full]), capturedNs: sec))
+        #expect(t.pidToCoalition(.notRequested) == ([:], [:]))
+        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 3 * sec)).sticky.isEmpty)
+        // A failed reading (stale last value) also clears it.
+        _ = t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [full]), capturedNs: 4 * sec))
+        let failed = t.pidToCoalition(.failed(.timeout, last: CoalitionsReading(coalitions: [gone]), capturedNs: 4 * sec))
+        #expect(failed.current == [1: 5] && failed.sticky.isEmpty)
+        #expect(t.pidToCoalition(.fresh(CoalitionsReading(coalitions: [gone]), capturedNs: 5 * sec)).sticky.isEmpty)
     }
 
     @Test func trackerFirstSightHasNoDelta() {

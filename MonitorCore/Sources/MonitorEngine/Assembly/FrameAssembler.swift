@@ -20,10 +20,12 @@ public struct FrameAssembler {
     /// Scratch, reused across ticks.
     private var byApp: [AppKey: ProcessDelta] = [:]
 
-    public init(resolver: any AppResolving, energy: any EnergyAttributor = RulingEnergyAttributor(), currentUID: uid_t = getuid()) {
+    /// `sessionStartUs`: session totals count from here (ruling: Telltale's own process start).
+    public init(resolver: any AppResolving, energy: any EnergyAttributor = RulingEnergyAttributor(), currentUID: uid_t = getuid(),
+                sessionStartUs: UInt64 = SessionStart.ownProcessStartUs) {
         self.resolver = resolver
         self.energy = energy
-        self.processes = ProcessAssembler(currentUID: currentUID)
+        self.processes = ProcessAssembler(currentUID: currentUID, sessionStartUs: sessionStartUs)
     }
 
     /// Drops every baseline (sleep/wake, unpause): the next frame has no rates. Session totals are kept.
@@ -50,9 +52,10 @@ public struct FrameAssembler {
         let coalitionAdvanced = coalitionClock.advance(to: tick.coalitions.capturedNs).advanced
 
         // Processes.
+        let membership = coalitionTracker.pidToCoalition(tick.coalitions)
         var pa = processes.assemble(ProcessInputs(
             processes: tick.processes, gpuClients: tick.gpuClients, flows: tick.networkFlows, rootMemory: tick.rootMemory,
-            assertions: tick.sleepAssertions, coalitionOf: coalitionTracker.pidToCoalition(tick.coalitions),
+            assertions: tick.sleepAssertions, coalitionOf: membership.current, stickyCoalitionOf: membership.sticky,
             uptimeNs: tick.uptimeNs, wallTime: tick.wallTime), resolver: resolver)
 
         // Coalition residual (restricted coalitions only). Rows are moved out of `pa` so mutations don't copy them.
@@ -82,9 +85,13 @@ public struct FrameAssembler {
         byApp.removeAll(keepingCapacity: true)
         for r in rows {
             if let d = pa.deltas[r.id] { byApp[r.app, default: ProcessDelta()].accumulate(d) }
+            // Residual rows (filled restricted, coalition synthetic, ICR-13 exited): rate × the coalition's interval.
             if r.provenance == .coalition, coalitionAdvanced, let cid = r.coalitionID,
-               let secs = coalitionDeltas?.byID[cid]?.seconds, let cpu = r.cpuPercent {
-                byApp[r.app, default: ProcessDelta()].accumulate(ProcessDelta(cpuNs: UInt64((cpu / 100 * secs * 1e9).rounded())))
+               let secs = coalitionDeltas?.byID[cid]?.seconds {
+                func bytes(_ bps: Double?) -> UInt64 { UInt64(max(0, ((bps ?? 0) * secs).rounded())) }
+                byApp[r.app, default: ProcessDelta()].accumulate(ProcessDelta(
+                    cpuNs: UInt64(max(0, ((r.cpuPercent ?? 0) / 100 * secs * 1e9).rounded())),
+                    diskR: bytes(r.diskReadBps), diskW: bytes(r.diskWriteBps)))
             }
         }
         if pa.unattributedDelta != ProcessDelta() { byApp[.system, default: ProcessDelta()].accumulate(pa.unattributedDelta) }
@@ -97,6 +104,9 @@ public struct FrameAssembler {
             apps[i].gpuTimeNs = t.gpuNs
             apps[i].netRxSession = t.rx
             apps[i].netTxSession = t.tx
+            let disk = session.diskTotals(apps[i].identity.key)                     // ICR-14: accumulated, never drops
+            apps[i].diskReadSession = disk.read
+            apps[i].diskWriteSession = disk.write
         }
 
         frame.connections = connections(tick.networkFlows, inspectedApp: inspectedApp, rows: rows,

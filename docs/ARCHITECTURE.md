@@ -234,7 +234,9 @@ public struct ProcessID: Hashable, Sendable, Codable {
     // ProcessID(pid, 0) (start time unknown, e.g. NStat before resolution) matches the live process with that pid
     // in the current process list (any start time); if none exists, its data goes to AppKey.system (unattributed).
     public static func coalitionResidual(_ coalitionID: UInt64) -> ProcessID   // pid -1, startTimeUs = id
+    public static func exitedResidual(_ coalitionID: UInt64) -> ProcessID      // ICR-13 "Exited processes": pid -2
     public var isSynthetic: Bool { get }      // pid < 0
+    public var isExitedResidual: Bool { get } // pid == -2
 }
 
 public struct AppKey: Hashable, Sendable, Codable, CustomStringConvertible {
@@ -736,7 +738,8 @@ public struct BatterySnapshot: Sendable, Codable, Equatable {
     public var percent: Double?, isCharging: Bool, onAC: Bool, timeRemaining: Duration?
     public var healthFraction: Double?, cycleCount: Int?, condition: String?
     public var maxCapacityWh: Double?, designCapacityWh: Double?, currentCapacityWh: Double?
-    public var temperatureC: Double?, drainWatts: Double?
+    public var temperatureC: Double?, drainWatts: Double?     // drainWatts signed V×A: negative discharging, positive charging
+    public var timeRemainingCalculating: Bool                 // ICR-15: macOS still estimating → "Calculating…"
 }
 public struct PowerSnapshot: Sendable, Codable, Equatable {
     public var packageWatts: Double?, cpuWatts: Double?, gpuWatts: Double?, aneWatts: Double?, dramWatts: Double?
@@ -1430,7 +1433,7 @@ Test running rule (user): rerun only failing tests + suites whose sources change
 | 11 | `BlockDriverCounter.isDiskImage: Bool` (default false); engine excludes disk-image drivers from disk totals. | W6d / W7 |
 | 12 | `HistoryMetric.memPressureLevel` (1/2/4); rollups keep time-weighted avg; consumers map > 2.5 critical, > 1.0 warning. | W7 / W5a |
 | 13 | "Exited processes" synthetic row (`ProcessID.exitedResidual`, pid −2) in the leader's app for all-visible coalitions when residual > 5% of a core AND > 10% of Δcoalition; CPU + disk, energy via EnergyAttributor step 2; estimated, provenance `.coalition`, no row actions. One-tick sticky pid→coalition membership. | W7 / W5c |
-| 14 | `ProcessSample`/`AppSample.diskReadSession`/`diskWriteSession: UInt64?` (bytes since Telltale start); engine baseline per ProcessID (born after engine start → 0, else first-sample counter; counter regress rebases; pruned on exit). | W7 / Wm / W5b |
-| 15 | `BatteryReading.timeRemainingCalculating: Bool` (decodeIfPresent, default false); UI shows "Calculating…". | W6b / W7 / W5b |
+| 14 | `ProcessSample`/`AppSample.diskReadSession`/`diskWriteSession: UInt64?` (bytes since Telltale start = Telltale's own `p_starttime`). Process: baseline per ProcessID (born at/after Telltale start → 0, else first-sample counter; a counter regress rebases with an accumulated offset, so the value never drops; pruned on exit). App: accumulated per `AppKey` like CPU/network session (per-tick deltas incl. synthetic rows' disk × seconds), never drops when a helper exits. | W7 / Wm / W5b |
+| 15 | `BatteryReading.timeRemainingCalculating: Bool` (decodeIfPresent, default false) → `BatterySnapshot.timeRemainingCalculating` (same decoding); UI shows "Calculating…". | W6b / W7 / W5b |
 
 Grouping rule 3 (§5.1) changed 2026-09-24: all bundle-less processes (any uid) are their own `.process` group.

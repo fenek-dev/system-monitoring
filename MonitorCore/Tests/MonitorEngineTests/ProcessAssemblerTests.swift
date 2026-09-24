@@ -48,8 +48,8 @@ import Testing
     @Test func processBornWithinTheIntervalContributes() throws {
         // Spawn-heavy loads (builds): a process started after the previous capture accrued all its counters inside
         // this interval → counter / interval. One seen for the first time but older than that stays nil.
-        var pa = ProcessAssembler(currentUID: testUID)
         let w0 = Date(timeIntervalSince1970: 1_790_000_000)
+        var pa = ProcessAssembler(currentUID: testUID, sessionStartUs: UInt64((w0.timeIntervalSince1970 - 10) * 1e6))
         func inputs(_ ps: [RawProcess], at t: UInt64, wall: Date) -> ProcessInputs {
             ProcessInputs(processes: table(ps, at: t), uptimeNs: t, wallTime: wall)
         }
@@ -84,6 +84,44 @@ import Testing
         #expect(run(&legacy, [own(20, start: us(1), cpuNs: sec)], at: 2 * sec).samples[pid: 20]?.cpuPercent == nil)
     }
 
+    @Test func sessionNewbornCountsFullCountersOnceEvenAfterWake() throws {
+        // Session start = Telltale's start. A process started exactly then, first seen at the first tick (no rates
+        // yet): its whole CPU/disk goes to the session once — not again at the first sight after a wake reset.
+        let startUs: UInt64 = 1_790_000_000_000_000
+        var pa = ProcessAssembler(currentUID: testUID, sessionStartUs: startUs)
+        let w0 = Date(timeIntervalSince1970: 1_790_000_002)
+        func run(_ cpuNs: UInt64, at t: UInt64) -> ProcessAssembly {
+            pa.assemble(ProcessInputs(processes: table([own(10, start: startUs, cpuNs: cpuNs, diskR: 0, diskW: cpuNs / 1_000)],
+                                                       at: t),
+                                      uptimeNs: t, wallTime: w0.addingTimeInterval(Double(t / sec))), resolver: resolver)
+        }
+        let first = run(2 * sec, at: sec)
+        #expect(first.samples[pid: 10]?.cpuPercent == nil)                    // no rate on the first frame
+        #expect(first.deltas[ProcessID(pid: 10, startTimeUs: startUs)]?.cpuNs == 2 * sec)
+        #expect(first.deltas[ProcessID(pid: 10, startTimeUs: startUs)]?.diskW == 2 * sec / 1_000)
+        pa.reset()                                                             // wake: baselines gone
+        let afterWake = run(3 * sec, at: 2 * sec)
+        #expect(afterWake.deltas[ProcessID(pid: 10, startTimeUs: startUs)] == nil)   // not counted again
+    }
+
+    @Test func counterGoingBackwardsOnARecentProcessIsNotOvercounted() {
+        // A newborn's counter regressing later is a rebaseline (nil), never "first sight" again.
+        let w0 = Date(timeIntervalSince1970: 1_790_000_000)
+        var pa = ProcessAssembler(currentUID: testUID, sessionStartUs: UInt64((w0.timeIntervalSince1970 - 10) * 1e6))
+        let born = UInt64((w0.timeIntervalSince1970 + 1.5) * 1e6)
+        func run(_ ps: [RawProcess], _ n: Double) -> ProcessAssembly {
+            pa.assemble(ProcessInputs(processes: table(ps, at: UInt64(n) * sec), uptimeNs: UInt64(n) * sec,
+                                      wallTime: w0.addingTimeInterval(n)), resolver: resolver)
+        }
+        _ = run([own(10, cpuNs: 0)], 1)
+        let a = run([own(10, cpuNs: 0), own(20, start: born, cpuNs: sec / 2, diskR: 0, diskW: 8_000)], 2)
+        #expect(a.samples[pid: 20]?.cpuPercent == 50)                         // newborn: 0.5 s over 1 s
+        let b = run([own(10, cpuNs: 0), own(20, start: born, cpuNs: sec / 10, diskR: 0, diskW: 100)], 3)
+        #expect(b.samples[pid: 20]?.cpuPercent == nil)                        // regressed: rebaseline, not 10 %
+        #expect(b.samples[pid: 20]?.diskWriteBps == nil)
+        #expect(b.deltas[ProcessID(pid: 20, startTimeUs: born)] == nil)
+    }
+
     @Test func processMissingFromMembershipInheritsItsParentsCoalition() {
         // A build child born after (or exited before) the coalition read: parent's coalition, else responsible's.
         let map: [Int32: UInt64] = [10: 7, 20: 9]
@@ -96,6 +134,7 @@ import Testing
         child.responsiblePID = nil
         #expect(ProcessAssembler.coalition(of: child, in: map) == nil)
         #expect(ProcessAssembler.coalition(of: own(10), in: map) == 7)     // listed members use their own
+        #expect(ProcessAssembler.coalition(of: own(40), in: map, sticky: [40: 9]) == 9)   // just exited: sticky
     }
 
     @Test func cachedReadingKeepsPreviousRates() throws {

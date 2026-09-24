@@ -1,22 +1,22 @@
 import Foundation
-import MonitorEngine
 import MonitorModel
 
-/// `--record --trim-idle`: shrinks a recording (a busy Mac has ~900 processes, ~450 KB per tick) without changing what
-/// the engine computes from it. Kept:
+/// `telltale-probe --record --trim-idle` (W7): shrinks a recording (a busy Mac has ~900 processes, ~450 KB per tick)
+/// without changing what the engine computes from it. Kept:
 /// - coalitions whose counters (CPU, energy, disk) change during the recording;
-/// - processes whose counters change; every restricted member and the leader of a kept coalition (the residual goes
-///   to them); pids seen by the GPU or network sensors; the responsible process of anything kept (grouping).
+/// - processes whose counters change, or that first appear after tick 0 with non-zero counters (a newborn — even one
+///   seen for a single tick — counts in full); every restricted member and the leader of a kept coalition (the
+///   residual goes to them); pids seen by the GPU or network sensors; the responsible process of anything kept.
 /// Dropped rows never change, so their deltas are 0: per-app CPU/energy/disk, coalition residuals and system totals
 /// stay exact. What changes: app memory sums and process/app counts (dropped rows are gone).
-enum FixtureTrim {
-    struct Result {
-        var ticks: [RawTick]
-        var processes: (kept: Int, total: Int)
-        var coalitions: (kept: Int, total: Int)
+public enum FixtureTrim {
+    public struct Result {
+        public var ticks: [RawTick]
+        public var processes: (kept: Int, total: Int)
+        public var coalitions: (kept: Int, total: Int)
     }
 
-    static func trimIdle(_ ticks: [RawTick]) -> Result {
+    public static func trimIdle(_ ticks: [RawTick]) -> Result {
         // 1. Which counters move?
         var firstProc: [ProcessID: [UInt64?]] = [:]
         var changedPIDs: Set<Int32> = []
@@ -106,7 +106,7 @@ enum FixtureTrim {
 extension FixtureTrim {
     /// Replays both recordings through fresh `FrameAssembler`s; returns the worst per-tick differences in
     /// per-app CPU % (apps kept in both), Σ app CPU %, system CPU fraction and Σ app watts.
-    static func verify(full: [RawTick], trimmed: [RawTick])
+    public static func verify(full: [RawTick], trimmed: [RawTick])
         -> (appCPU: Double, sumCPU: Double, systemCPU: Double, sumWatts: Double) {
         var a = FrameAssembler(resolver: BundleAppResolver())
         var b = FrameAssembler(resolver: BundleAppResolver())
