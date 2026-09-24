@@ -14,7 +14,7 @@ import Testing
 /// Hardware smoke tests are opt-in and run one suite at a time, at checkpoints (ruling). Measurements are
 /// load-sensitive, so never run them in parallel with other suites or builds:
 /// `TELLTALE_HW_TESTS=1 swift test --no-parallel --filter ProcessTableGPUEnergySmokeTests`.
-@Suite(.enabled(if: W6aFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6aFixture.hardwareTests), .serialized, .offCooperativePool)
 struct ProcessTableGPUEnergySmokeTests {
     struct Sample {
         var energyNJ: UInt64; var penergyNJ: UInt64; var cpuNs: UInt64; var gpuNs: UInt64; var t: UInt64

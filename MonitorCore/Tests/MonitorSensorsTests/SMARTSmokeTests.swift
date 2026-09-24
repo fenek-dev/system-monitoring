@@ -12,7 +12,7 @@ import MonitorModel
 /// physical controller is a genuine race (confirmed: `benchThirtySamples` passes reliably alone, but
 /// intermittently threw `.unavailable` when run alongside `matchesSmartctlOnTheInternalSSD`). Not a
 /// production concern — `SensorSlot` only ever drives one sensor instance from one sampler executor.
-@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
+@Suite(.serialized, .offCooperativePool, .enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
 struct SMARTSmokeTests {
     @Test func matchesSmartctlOnTheInternalSSD() throws {
         let smartctlPath = "/opt/homebrew/bin/smartctl"

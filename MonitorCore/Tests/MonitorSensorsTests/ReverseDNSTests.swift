@@ -77,7 +77,8 @@ import Testing
 
     @Test func nameNeverBlocksAndRespectsConcurrency() async {
         let gate = Gate()
-        let dns = ReverseDNS(maxConcurrent: 4, resolve: { gate.resolve($0) }, now: { 0 })
+        let dns = ReverseDNS(maxConcurrent: 4, resolve: { gate.resolve($0) }, now: { 0 },
+                             spawn: TestSpawn.dedicatedThread)
         let t0 = W6cClock.uptimeNs()
         for i in 0..<10 { #expect(dns.name(for: "10.0.0.\(i)") == nil) }
         #expect(W6cClock.uptimeNs() - t0 < 250_000_000) // resolvers are blocked; name() is not (functional, not perf)
@@ -109,7 +110,7 @@ import Testing
         let dns = ReverseDNS(resolve: { a in
             calls.withLock { $0[a, default: 0] += 1 }
             return a == "10.0.0.1" ? .failed : .noName
-        }, now: { clock.withLock { $0 } })
+        }, now: { clock.withLock { $0 } }, spawn: TestSpawn.dedicatedThread)
         _ = dns.name(for: "10.0.0.1")
         _ = dns.name(for: "10.0.0.2")
         await Self.waitUntil { dns.cacheCount == 2 }
@@ -124,7 +125,7 @@ import Testing
         let clock = OSAllocatedUnfairLock(initialState: UInt64(0))
         let calls = OSAllocatedUnfairLock(initialState: 0)
         let dns = ReverseDNS(ttlNs: 1_000, resolve: { a in calls.withLock { $0 += 1 }; return .name("n-\(a)") },
-                             now: { clock.withLock { $0 } })
+                             now: { clock.withLock { $0 } }, spawn: TestSpawn.dedicatedThread)
         _ = dns.name(for: "1.2.3.4")
         await Self.waitUntil { dns.name(for: "1.2.3.4") != nil }
         #expect(calls.withLock { $0 } == 1)
@@ -138,7 +139,7 @@ import Testing
 }
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh ReverseDNSSmokeTests`.
-@Suite(.enabled(if: W6cFixture.hardwareTests))
+@Suite(.enabled(if: W6cFixture.hardwareTests), .offCooperativePool)
 struct ReverseDNSSmokeTests {
     @Test func resolvesLoopbackAsync() {
         let dns = ReverseDNS()

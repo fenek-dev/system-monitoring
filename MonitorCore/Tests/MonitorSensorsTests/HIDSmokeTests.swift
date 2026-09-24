@@ -4,7 +4,7 @@ import Testing
 @testable import MonitorSensors
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh HIDSmokeTests`.
-@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive)
+@Suite(.enabled(if: W6bFixture.hardwareTests), .serialized, .w6bExclusive, .offCooperativePool)
 struct HIDSmokeTests {
     @Test func rawListVsSmartctlAndBatteryAndSMC() async throws {
         if W6bFixture.capture, case let .success(samples) = HIDTemperatureBox.readAll() {

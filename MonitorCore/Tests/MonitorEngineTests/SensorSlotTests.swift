@@ -222,7 +222,7 @@ private func isNotRequested<R>(_ r: SensorResult<R>) -> Bool { if case .notReque
     }
 
     /// The marker must be visible to another process right after `arm` (cfprefsd holds it even if we abort next).
-    @Test func armedMarkerIsVisibleOutOfProcess() throws {
+    @Test func armedMarkerIsVisibleOutOfProcess() async throws {
         let suite = "dev.telltale.tests.canary.\(UUID().uuidString)"
         defer { UserDefaults().removePersistentDomain(forName: suite) }
         let canary = CrashCanary.defaults(suite: suite)
@@ -233,8 +233,14 @@ private func isNotRequested<R>(_ r: SensorResult<R>) -> Bool { if case .notReque
         let out = Pipe()
         p.standardOutput = out
         p.standardError = Pipe()
-        try p.run()
-        p.waitUntilExit()
+        // Await the exit (terminationHandler), not `waitUntilExit()`: that parks a cooperative-pool thread.
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
+            p.terminationHandler = { _ in c.resume() }
+            do { try p.run() } catch {
+                p.terminationHandler = nil
+                c.resume(throwing: error)
+            }
+        }
         let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         #expect(text.trimmingCharacters(in: .whitespacesAndNewlines) == "1")
         canary.disarm(.smc)

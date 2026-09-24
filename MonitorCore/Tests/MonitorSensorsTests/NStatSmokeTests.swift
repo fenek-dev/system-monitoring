@@ -7,7 +7,7 @@ import Testing
 @testable import MonitorSensors
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh NStatSmokeTests` (soak: add `TELLTALE_SOAK=1`).
-@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized, .offCooperativePool)
 struct NStatSmokeTests {
     static let interactive = SampleContext(mode: .interactive)
     static let inspecting = SampleContext(mode: .interactive, demand: .connections)

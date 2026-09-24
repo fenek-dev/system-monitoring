@@ -80,16 +80,23 @@ final class RootMemoryBox: Sendable {
         var runsStarted = 0
     }
 
-    private let runQueue = DispatchQueue(label: "dev.telltale.sensors.rootMemory", qos: .utility, attributes: .concurrent)
+    /// Starts a run's work somewhere off the caller. Test seam only: the default is the `.utility` concurrent run
+    /// queue; tests pass dedicated threads, because a non-overcommit queue gets no thread while other suites keep
+    /// the cooperative pool busy, and the box's timing tests would measure that instead of the box.
+    typealias Spawn = @Sendable (@escaping @Sendable () -> Void) -> Void
+
+    private let spawn: Spawn
     private let deadlineQueue = DispatchQueue(label: "dev.telltale.sensors.rootMemory.deadline", qos: .utility)
     private let inflight = DispatchGroup()
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let runner: Runner
     private let deadline: Duration
 
-    init(runner: @escaping Runner, deadline: Duration = .seconds(2)) {
+    init(runner: @escaping Runner, deadline: Duration = .seconds(2), spawn: Spawn? = nil) {
         self.runner = runner
         self.deadline = deadline
+        let runQueue = DispatchQueue(label: "dev.telltale.sensors.rootMemory", qos: .utility, attributes: .concurrent)
+        self.spawn = spawn ?? { runQueue.async(execute: $0) }
     }
 
     var runsStarted: Int { state.withLock { $0.runsStarted } }
@@ -157,7 +164,7 @@ final class RootMemoryBox: Sendable {
             inflight.leave()
         }
         let runner = self.runner
-        runQueue.async { [self] in
+        spawn { [self] in
             let outcome: Result<RootMemoryReading, SensorError>
             do {
                 outcome = .success(try RootMemoryParser.reading(try runner(token)))

@@ -7,7 +7,9 @@ import MonitorUIKit
 import SwiftUI
 import Testing
 
-@Suite("Shell confirm dialog host", .serialized) @MainActor
+/// `.idleMainActor`: `pageChangeInDashboardCancelsExactlyOnce` has a 5 s deadline and re-queues on the main actor
+/// every turn; inside the initial main-queue backlog of a full run it gets only a few turns.
+@Suite("Shell confirm dialog host", .serialized, .idleMainActor) @MainActor
 struct ShellConfirmDialogTests {
     final class Log { var events: [String] = [] }
 

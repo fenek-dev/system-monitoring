@@ -5,7 +5,7 @@ import Testing
 @testable import MonitorSensors
 
 /// `TELLTALE_HW_TESTS=1 scripts/test.sh InterfaceSmokeTests` (fixture capture: add `TELLTALE_CAPTURE=1`).
-@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized)
+@Suite(.enabled(if: W6cFixture.hardwareTests), .serialized, .offCooperativePool)
 struct InterfaceSmokeTests {
     /// `netstat -ibn` link rows → name → (Ibytes, Obytes). The Address column is empty for some interfaces.
     static func netstatLinkRows(_ text: String) -> [String: (rx: UInt64, tx: UInt64)] {

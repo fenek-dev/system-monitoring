@@ -75,7 +75,9 @@ struct RuntimeHarness {
     }
 }
 
-@MainActor @Suite(.serialized) struct RuntimeTests {
+/// `.idleMainActor`: pipeline commands and frames hop through the main actor, and the harness waits a bounded time
+/// for ticks; inside the initial main-queue backlog of a full run (other targets' renders) those waits time out.
+@MainActor @Suite(.serialized, .idleMainActor) struct RuntimeTests {
     @Test func tenTicksWriteTenRowsAndShutdownFlushes() async throws {
         let h = try RuntimeHarness()
         h.pipeline.start()
@@ -164,8 +166,9 @@ struct RuntimeHarness {
     }
 
     /// `n` buffered one-app records, 1 s apart (unique `ts`), so the shutdown flush has real work.
-    static func buffer(_ n: Int, into store: HistoryStore) async {
-        let base = Date(timeIntervalSince1970: 1_790_000_000)
+    /// Pass `base: Date()` for a store with maintenance on: raw rows older than `rawRetention` (24 h) are deleted.
+    static func buffer(_ n: Int, into store: HistoryStore,
+                       base: Date = Date(timeIntervalSince1970: 1_790_000_000)) async {
         let app = AppRecord(identity: AppIdentity(key: AppKey(kind: .process, id: "/usr/bin/a"), displayName: "a"))
         for i in 0..<n {
             await store.append(RecordBatch(record: HistoryRecord(time: base.addingTimeInterval(Double(i)),
@@ -234,7 +237,9 @@ struct RuntimeHarness {
         defer { try? FileManager.default.removeItem(at: dir) }
         let (store, persistent) = LivePipeline.openStore(in: dir)
         #expect(persistent && store != nil)
-        if let store { await Self.buffer(25, into: store) }
+        // Recent timestamps: `openStore` uses the default config, whose maintenance pass at open (racing the appends
+        // here and the count below) drops raw rows older than 24 h; a fixed past date made the count flaky.
+        if let store { await Self.buffer(25, into: store, base: Date()) }
         try await store?.shutdown()
 
         let (reopened, again) = LivePipeline.openStore(in: dir)   // relaunch
