@@ -1,0 +1,14 @@
+{
+  "_source": "a mounted disk image (/Volumes/Comfy Desktop), captured on MacBookPro18,4 2026-09-24",
+  "mountPath": "/Volumes/Comfy Desktop",
+  "name": "Comfy Desktop",
+  "bsdName": "disk8s1",
+  "fsType": "hfs",
+  "busLabel": "Virtual Interface",
+  "isInternal": false,
+  "isEjectable": true,
+  "isEncrypted": false,
+  "totalBytes": 506408960,
+  "availableBytes": 48492544,
+  "availableImportantBytes": 0
+}

@@ -25,7 +25,8 @@ public struct StatusGlyphSpec: Hashable, Sendable {
     public var isTemplate: Bool
     /// Whole-glyph alpha: 0.5 while paused.
     public var alpha: Double
-    /// Alpha of the stressed (non-label) arcs only: the critical pulse goes 1 → 0.45 → 1.
+    /// Alpha of the **critical** arcs only (their own transparency layer): the pulse goes 1 → 0.45 → 1.
+    /// Elevated arcs, label arcs and the dot stay at full alpha.
     public var stressedAlpha: Double
 
     public static func make(_ state: AlertState, pulse: StatusPulse.Frame? = nil) -> StatusGlyphSpec {
@@ -106,5 +107,46 @@ public enum StatusLine {
         case .runawayApp(let key, _):
             return "Runaway app: " + (a.culprit?.displayName ?? key.id)
         }
+    }
+}
+
+/// Status item change filter: `live.alert` changes every tick while a runaway alert is active (its
+/// `cpuPercent` moves), so the controller redraws only when the glyph spec changes, updates tooltip/a11y only
+/// when the status line changes, and cancels a running pulse only when the spec or level changes.
+public struct StatusItemPresenter: Sendable {
+    public struct Update: Equatable, Sendable {
+        /// New static glyph to show, nil = keep the current image.
+        public var glyph: StatusGlyphSpec?
+        /// New status line (tooltip + accessibility label), nil = unchanged.
+        public var statusLine: String?
+        public var startPulse = false
+        public var cancelPulse = false
+        public var isEmpty: Bool { glyph == nil && statusLine == nil && !startPulse && !cancelPulse }
+    }
+
+    public private(set) var spec: StatusGlyphSpec?
+    public private(set) var line: String?
+    public private(set) var level: AlertLevel?
+    public private(set) var token: Int?
+
+    public init() {}
+
+    public mutating func apply(_ state: AlertState, reduceMotion: Bool) -> Update {
+        var u = Update()
+        let newSpec = StatusGlyphSpec.make(state)
+        let newLine = StatusLine.text(for: state)
+        let pulse = StatusPulse.shouldPulse(previousToken: token, state: state, reduceMotion: reduceMotion)
+        if newSpec != spec || state.level != level { u.cancelPulse = spec != nil }
+        if newSpec != spec { u.glyph = newSpec }
+        if newLine != line { u.statusLine = newLine }
+        if pulse {
+            u.startPulse = true
+            u.cancelPulse = true                                     // restart from frame 0
+        }
+        spec = newSpec
+        line = newLine
+        level = state.level
+        token = state.pulseToken
+        return u
     }
 }

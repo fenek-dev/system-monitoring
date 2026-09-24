@@ -67,9 +67,10 @@ public enum ScreenCatalog {
                             appCommands: .noop, isSnapshot: true, now: MockDataProvider.referenceDate)
     }
 
-    /// Fresh default settings on a scratch suite (never the user's defaults).
+    /// Fresh default settings on a scratch suite of its own (never the user's defaults; parallel tests never
+    /// share one). Nothing is written unless a test mutates settings.
     @MainActor public static func snapshotSettings() -> SettingsStore {
-        let name = "dev.telltale.Telltale.snapshot"
+        let name = "dev.telltale.Telltale.snapshot.\(UUID().uuidString)"
         let d = UserDefaults(suiteName: name) ?? .standard
         d.removePersistentDomain(forName: name)
         return SettingsStore(defaults: d)
@@ -82,11 +83,13 @@ public enum ScreenCatalog {
             .telltaleEnvironment(ctx))
     }
 
-    /// The popover as the MenuBar artboard shows it: 360-pt panel at (68, 34) over the artboard backdrop.
+    /// The MenuBar/MenuBarAlert artboard (440×720): desktop `#121317`, 26-pt fake menu bar with the highlighted
+    /// status item (16-pt glyph) and the clock, and the 360-pt panel at (68, 34).
     @MainActor static func popoverStage(_ scenario: MockScenario) -> AnyView {
         let ctx = context(for: scenario)
         return AnyView(ZStack(alignment: .topLeading) {
             ShellStyle.hex(0x121317)
+            ArtboardMenuBar(alert: ctx.live.alert)
             PopoverContainer { PopoverRoot() }
                 .offset(x: 68, y: 34)
         }
@@ -95,29 +98,87 @@ public enum ScreenCatalog {
     }
 }
 
-/// StatusIcon artboard: calm / elevated (thermals) / critical (thermals) glyphs at 72 pt.
-struct StatusIconsBoard: View {
-    static let states: [(String, AlertState)] = [
-        ("Calm", .calm),
-        ("Elevated", AlertState.preview(.elevated)),
-        ("Critical", AlertState.preview(.critical)),
-    ]
+/// Artboard-only fake menu bar (DESIGN §1.1 "Artboard-only values": `rgba(28,28,32,0.92)`), 26 pt.
+struct ArtboardMenuBar: View {
+    let alert: AlertState
 
     var body: some View {
-        HStack(spacing: 20) {
-            ForEach(Self.states, id: \.0) { title, state in
-                VStack(alignment: .leading, spacing: 12) {
-                    TTStatusGlyph(state: state, size: 72, template: false)
-                        .frame(maxWidth: .infinity, minHeight: 120)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(ShellStyle.hex(0x1D1E22)))
-                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(ShellStyle.textPrimary)
+        HStack(spacing: 0) {
+            Spacer()
+            Color.clear.frame(width: 16, height: 16)                // (keeps its size while W3's glyph is a stub)
+                .overlay(TTStatusGlyph(state: alert, size: 16, template: false))
+                .padding(.horizontal, 5)
+                .frame(height: 22)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.2)))
+            Text("Thu 24 Sep 2:32 PM")
+                .font(.system(size: 13)).monospacedDigit()
+                .foregroundStyle(ShellStyle.textPrimary)
+                .padding(.leading, 14)
+                .padding(.trailing, 12)
+        }
+        .frame(width: ScreenCatalog.popoverArtboardSize.width, height: 26)
+        .background(Color(.sRGB, red: 28 / 255, green: 28 / 255, blue: 32 / 255, opacity: 0.92))
+    }
+}
+
+/// StatusIcon artboard (640×330): three cards (72-pt glyph on `#1D1E22`, 1-pt border), each with a menu-bar
+/// strip (16-pt glyph + "2:32 PM"), a title and the §3.3 caption.
+struct StatusIconsBoard: View {
+    static let states: [(title: String, state: AlertState, caption: String)] = [
+        ("Calm", .calm,
+         "Monochrome, follows the menu bar tint. Five arcs: CPU, GPU, memory, network, thermals."),
+        ("Elevated", AlertState.preview(.elevated),
+         "The stressed category’s arc and the center turn amber. Here, thermals is at Fair."),
+        ("Critical", AlertState.preview(.critical),
+         "Arc and center turn red and the icon pulses once. It stays red until the stress clears."),
+    ]
+
+    private static let cardFill = ShellStyle.hex(0x1D1E22)
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 20) {
+            ForEach(Self.states, id: \.title) { item in
+                VStack(alignment: .leading, spacing: 0) {
+                    ZStack {
+                        card(12)
+                        TTStatusGlyph(state: item.state, size: 72, template: false)
+                    }
+                    .frame(height: 122)
+                    HStack(spacing: 0) {
+                        Spacer()
+                        Color.clear.frame(width: 16, height: 16)
+                            .overlay(TTStatusGlyph(state: item.state, size: 16, template: false))
+                        Text("2:32 PM")
+                            .font(.system(size: 13)).monospacedDigit()
+                            .foregroundStyle(ShellStyle.textSecondary)
+                            .padding(.leading, 12)
+                    }
+                    .padding(.horizontal, 11)
+                    .frame(height: 28)
+                    .background(card(8))
+                    .padding(.top, 12)
+                    Text(item.title)
+                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(ShellStyle.textPrimary)
+                        .padding(.top, 11)
+                    Text(item.caption)
+                        .font(.system(size: 12)).lineSpacing(4)                  // body12Para
+                        .foregroundStyle(ShellStyle.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 10)
                 }
+                .frame(width: 184)
             }
         }
         .padding(24)
         .frame(width: ScreenCatalog.statusIconsSize.width, height: ScreenCatalog.statusIconsSize.height,
-               alignment: .top)
+               alignment: .topLeading)
         .background(ShellStyle.hex(0x121317))
+    }
+
+    private func card(_ r: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: r, style: .continuous)
+            .fill(Self.cardFill)
+            .overlay(RoundedRectangle(cornerRadius: r, style: .continuous).strokeBorder(ShellStyle.borderCard, lineWidth: 1))
     }
 }
 

@@ -24,6 +24,19 @@ struct ShellLaunchOptionsTests {
                                     environment: ["TELLTALE_MOCK": "runaway"]).mockScenario == .paused)
     }
 
+    @Test func verificationArgs() {
+        #expect(LaunchOptions.parse(arguments: ["--status-preview", "critical", "--open-settings"], environment: [:])
+            == LaunchOptions(openSettings: true, statusPreview: .critical))
+        #expect(LaunchOptions.parse(arguments: ["--status-preview"], environment: [:]).statusPreview == .elevated)
+        #expect(LaunchOptions.parse(arguments: ["--login-item", "register"], environment: [:]).loginItemCommand == "register")
+        #expect(LaunchOptions.parse(arguments: ["--login-item"], environment: [:]).loginItemCommand == "status")
+        // a following flag is never consumed as the command
+        let o = LaunchOptions.parse(arguments: ["--login-item", "--mock", "runaway"], environment: [:])
+        #expect(o.loginItemCommand == "status" && o.mockScenario == .runaway)
+        let unknown = LaunchOptions.parse(arguments: ["--login-item", "bogus"], environment: [:])
+        #expect(unknown.loginItemCommand == "status")
+    }
+
     @Test func openDashboardPage() {
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard"], environment: [:]).openDashboard == .overview)
         #expect(LaunchOptions.parse(arguments: ["--open-dashboard", "thermals"], environment: [:]).openDashboard == .thermals)
@@ -93,15 +106,16 @@ struct ShellSettingsStoreTests {
         #expect(s.popoverLayout.order == [.power, .disk, .gpu, .memory, .cpu, .network, .thermals])
     }
 
-    @Test func reenableSensorsClearsKillSwitchAndCrashMarkers() {
+    @Test func reenableSensorsClearsKillSwitchAndCallsCanary() {
         let (s, d) = ScreenFixture.settings()
         s.setDisabled(.coalitions, true)
-        d.set(true, forKey: SettingsStore.crashMarkerPrefix + "smc")
         d.set(true, forKey: "unrelated")
+        var canaryCalls = 0
+        s.reenableCrashedSensors = { canaryCalls += 1 }
         s.reenableSensors()
         #expect(s.disabledSensors.isEmpty)
-        #expect(d.object(forKey: SettingsStore.crashMarkerPrefix + "smc") == nil)
-        #expect(d.bool(forKey: "unrelated"))
+        #expect(canaryCalls == 1)
+        #expect(d.bool(forKey: "unrelated"))                    // nothing else in the suite is touched
         #expect(SettingsStore(defaults: d).disabledSensors.isEmpty)
     }
 
