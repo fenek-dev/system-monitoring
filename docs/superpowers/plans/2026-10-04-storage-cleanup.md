@@ -18,7 +18,7 @@ Paths are under `MonitorCore/` unless they start with `App/`, `Config/`, `script
 - **Ownership:** §2 matrix. Need a change in a file you don't own → note it in your progress file, local extension in your own files, orchestrator routes it. W1 types frozen after W1 merges; changes = ICR 018 addendum via orchestrator.
 - **No AppKit** in `MonitorDiskTools`, `MonitorRuntime`, `MonitorLive`. AppKit needs → `@Sendable` closures in `StoragePlatform` (W1), built by `StorageActionsLive` (W3b).
 - **Concurrency:** ARCH §4 bans (`docs/ARCHITECTURE.md:216`). Locks: `Mutex` (Synchronization; allowed now that the target is macOS 15 — W1 updates the "`Mutex` is macOS 15+, so not used" note at `docs/ARCHITECTURE.md:205`) or `OSAllocatedUnfairLock` (precedent `Sources/MonitorScreens/Shell/InMemoryDefaults.swift:13`). **Never add `@unchecked`.**
-- **`@unchecked` gate:** `scripts/ci.sh:50-56` currently fails on pre-existing `Sources/MixerCore/TapVolumeController.swift:6` (Mixer, not storage). Gate fix pending user decision. Until then streams run `ci.sh` and treat **only that exact hit** as known; any other `@unchecked` hit = failure. Quote the ci output.
+- **`@unchecked` gate:** `scripts/ci.sh:50-56` is green on dev (Mixer fixed in f08eb24). Any hit = failure. Quote the ci output.
 - **Logging:** `Logger(subsystem: "dev.telltale", category: "storage")` (subsystem precedent `Sources/MonitorRuntime/LivePipeline.swift:41`).
 - **Tests:** only tests that catch a named bug (listed per stream). Rerun only failed suites + suites of touched sources. HW smoke suites (`TELLTALE_HW_TESTS=1`, precedent `Tests/MonitorSensorsTests/VolumeSmokeTests.swift:6`) never in `ci.sh` args (`scripts/test.sh:35` fails on zero tests).
 - **Gate per stream:** `scripts/ci.sh <your suites>`; perf numbers advisory, reported not tuned.
@@ -461,6 +461,4 @@ Rejected/adjusted from review r1: item 17 — cache not rewritten after clean; o
 
 ## 8. Unresolved questions
 
-1. ICR number 018 (016 used, 017 reserved by network spec) — OK?
-2. `@unchecked` gate red on Mixer's `TapVolumeController.swift:6`: allow-list it in `ci.sh`, or fix MixerCore? (Streams proceed treating it as known.)
-3. Scan perf target: keep spec's 1M ≤ 5 s (advisory, measured ≈ 8 s) or restate as ~125k entries/s?
+None. Resolved 2026-10-04: ICR 018; `@unchecked` gate fixed in MixerCore (f08eb24); perf target stays advisory, report measured entries/s.
