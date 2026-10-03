@@ -2,16 +2,18 @@ import CoreAudio
 import Foundation
 import Synchronization
 
-/// Shared with the IO thread. `target` is written from the main thread; the rest is IO-thread only.
-private final class RenderState: @unchecked Sendable {
+/// Shared with the IO thread. `target` is written from the main thread; `current` and `step` are
+/// IO-thread only. All are float bit patterns in relaxed atomics so the render path stays lock-free.
+private final class RenderState: Sendable {
     let target: Atomic<UInt32>
-    var current: Float
-    var step: Float = 1
+    let current: Atomic<UInt32>
+    let step: Atomic<UInt32>
 
     init(gain: Float) {
         target = Atomic(gain.bitPattern)
         // The app was at full volume until now, so ramp down from there instead of jumping.
-        current = 1
+        current = Atomic(Float(1).bitPattern)
+        step = Atomic(Float(1).bitPattern)
     }
 }
 
@@ -80,12 +82,15 @@ public final class TapVolumeController: VolumeControlling {
         try check(AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateID), "create aggregate device")
 
         let sampleRate = (try? aggregateID.readValue(kAudioDevicePropertyNominalSampleRate, initial: Float64(48000))) ?? 48000
-        state.step = Gain.rampStep(sampleRate: sampleRate)
+        state.step.store(Gain.rampStep(sampleRate: sampleRate).bitPattern, ordering: .relaxed)
 
         let state = self.state
         try check(AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, nil) { _, input, _, output, _ in
             let target = Float(bitPattern: state.target.load(ordering: .relaxed))
-            Renderer.process(input: input, output: output, current: &state.current, target: target, step: state.step)
+            let step = Float(bitPattern: state.step.load(ordering: .relaxed))
+            var current = Float(bitPattern: state.current.load(ordering: .relaxed))
+            Renderer.process(input: input, output: output, current: &current, target: target, step: step)
+            state.current.store(current.bitPattern, ordering: .relaxed)
         }, "create IO proc")
         disableDeviceInputs(of: output)
         try check(AudioDeviceStart(aggregateID, ioProcID), "start device")
