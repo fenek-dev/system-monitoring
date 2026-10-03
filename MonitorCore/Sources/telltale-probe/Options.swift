@@ -4,7 +4,7 @@ import MonitorModel
 /// Command line of `telltale-probe` (W7 T2). One command per run; see `ProbeOptions.usage`.
 struct ProbeOptions: Sendable {
     enum Command: Sendable, Equatable {
-        case list, sensor(SensorID), bench, record(String), replay(String), frames, maintainNow, crash(SensorID), help
+        case list, sensor(SensorID), bench, record(String), replay(String), frames, maintainNow, crash(SensorID), brightness, help
     }
 
     var command: Command = .help
@@ -36,6 +36,8 @@ struct ProbeOptions: Sendable {
       --frames                       engine ticks → frame summaries (system + top apps)
       --maintain-now [--data-dir d]  flush + rollup + retention + vacuum on d/history.sqlite
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
+      brightness / --brightness      Extra Dim: DisplayServices availability, built-in display ID, backlight level,
+                                     gamma table capacity and size
 
     options:
       --ticks N (5)  --interval S (1)  --mode background|interactive|overlay
@@ -75,6 +77,7 @@ struct ProbeOptions: Sendable {
             case "--frames": command = .frames
             case "--maintain-now": command = .maintainNow
             case "--crash-sensor": command = .crash(try sensorID(try value(a)))
+            case "brightness", "--brightness": command = .brightness
             case "--ticks":
                 guard let n = Int(try value(a)), n > 0 else { throw ParseError(description: "--ticks N > 0") }
                 o.ticks = n

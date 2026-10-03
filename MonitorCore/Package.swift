@@ -10,6 +10,7 @@ let privateLinks: [LinkerSetting] = [
         "-F/System/Library/PrivateFrameworks",
         "-Xlinker", "-weak-lIOReport",
         "-Xlinker", "-weak_framework", "-Xlinker", "NetworkStatistics",
+        "-Xlinker", "-weak_framework", "-Xlinker", "DisplayServices",
     ]),
 ]
 
@@ -22,6 +23,9 @@ let package = Package(
         .library(name: "MonitorRuntime", targets: ["MonitorRuntime"]),
         .library(name: "MonitorScreens", targets: ["MonitorScreens"]),
         .library(name: "MonitorUIKit", targets: ["MonitorUIKit"]),
+        .library(name: "MonitorExtraDim", targets: ["MonitorExtraDim"]),
+        // The app's Extra Dim adapters read the backlight through DisplayServices.h (weak, tt_*_available()).
+        .library(name: "CPrivate", targets: ["CPrivate"]),
         .executable(name: "telltale-render", targets: ["telltale-render"]),
         .executable(name: "telltale-probe", targets: ["telltale-probe"]),
     ],
@@ -36,6 +40,8 @@ let package = Package(
         .target(name: "MonitorModel"),
 
         .target(name: "MonitorLive", dependencies: ["MonitorModel"]),
+        // Pure Extra Dim logic (state machine, dim curve, gamma table math); no AppKit/CoreGraphics/time.
+        .target(name: "MonitorExtraDim"),
         .target(name: "MonitorEngine", dependencies: ["MonitorModel"]),
         .target(
             name: "MonitorSensors",
@@ -73,12 +79,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "telltale-probe",
-            dependencies: ["MonitorModel", "MonitorEngine", "MonitorSensors", "MonitorStore"]
+            dependencies: ["MonitorModel", "MonitorEngine", "MonitorSensors", "MonitorStore", "CPrivate"]
         ),
 
         // Tests
         .testTarget(name: "MonitorModelTests", dependencies: ["MonitorModel"]),
         .testTarget(name: "MonitorLiveTests", dependencies: ["MonitorLive", "MonitorModel"]),
+        .testTarget(name: "MonitorExtraDimTests", dependencies: ["MonitorExtraDim"]),
         .testTarget(
             name: "MonitorEngineTests",
             dependencies: ["MonitorEngine", "MonitorModel"],
