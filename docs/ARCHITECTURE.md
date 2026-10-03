@@ -142,6 +142,7 @@ Target graph (Package.swift, W0):
 CPrivate        (C)                                         linkerSettings: weak private libs
 MonitorModel    → —                                         Foundation
 MonitorLive     → MonitorModel                              + Observation
+MonitorExtraDim → —                                         pure Extra Dim machine/curve/gamma math (spec 2026-09-24 extra dim)
 MonitorEngine   → MonitorModel
 MonitorSensors  → MonitorModel, CPrivate                    + IOKit, CoreWLAN, SystemConfiguration; resources: SoC/Resources, Thermal/Resources
 MonitorStore    → MonitorModel, GRDB (from: "7.0.0")
@@ -151,8 +152,8 @@ MonitorMocks    → MonitorModel
 MonitorScreens  → MonitorModel, MonitorLive, MonitorUIKit, MonitorMocks
 MonitorRuntime  → MonitorModel, MonitorLive, MonitorEngine, MonitorSensors, MonitorStore, MonitorMocks
 telltale-render → MonitorScreens, MonitorUIKit, MonitorMocks, MonitorLive
-telltale-probe  → MonitorEngine, MonitorSensors, MonitorStore   (builds SensorFactory.live itself; uses sampleOnceRaw)
-App (Xcode)     → MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit
+telltale-probe  → MonitorEngine, MonitorSensors, MonitorStore, CPrivate   (builds SensorFactory.live itself; uses sampleOnceRaw)
+App (Xcode)     → MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit, MonitorExtraDim, CPrivate (Extra Dim adapters only)
 ```
 
 Rules: UI targets never import `MonitorEngine`, `MonitorSensors` or `MonitorStore`; they see data only through `LiveModel` and `HistoryProvider`.

@@ -54,6 +54,7 @@ public struct SettingsView: View {
     @State private var loginError: String?
     @State private var sensorsReenabled = false
     @State private var historySize: String?
+    @State private var extraDimStatus: SettingsStore.ExtraDimStatus = .off
 
     private let maxHeight: CGFloat?
 
@@ -82,7 +83,10 @@ public struct SettingsView: View {
 
     private var sections: some View {
         VStack(alignment: .leading, spacing: 16) {
-            section("General") { launchAtLoginRow }
+            section("General") {
+                launchAtLoginRow
+                extraDimRow
+            }
             section("Overlay") { overlayRows }
             section("Units") { unitRows }
             section("Popover") { popoverRows }
@@ -169,6 +173,57 @@ public struct SettingsView: View {
                 .accessibilityLabel("Launch at login")
         }
         .padding(.vertical, 4)
+    }
+
+    // Extra Dim (spec 2026-09-24 extra dim §5.7, §7)
+
+    /// Sub-text for the app-reported state; nil when there is nothing to report.
+    public static func extraDimStatusText(_ status: SettingsStore.ExtraDimStatus) -> String? {
+        switch status {
+        case .needsAccessibility: "Needs Accessibility"
+        case .tapFailed: "Keyboard hook failed"
+        case .off, .active, .unavailable: nil
+        }
+    }
+
+    @ViewBuilder private var extraDimRow: some View {
+        @Bindable var settings = settings
+        let unavailable = extraDimStatus == .unavailable
+        row {
+            VStack(alignment: .leading, spacing: 2) {
+                label("Extra dim")
+                Text("Brightness down at the minimum dims the built-in display further")
+                    .font(ShellStyle.caption).foregroundStyle(ShellStyle.textTertiary).lineLimit(2)
+                if let status = Self.extraDimStatusText(extraDimStatus) {
+                    Text(status).font(ShellStyle.caption).foregroundStyle(TTColor.statusElevated).lineLimit(2)
+                }
+            }
+            Spacer()
+            if extraDimStatus == .needsAccessibility {
+                Button("Open System Settings") { settings.openAccessibilitySettings?() }
+                    .controlSize(.small)
+                    .help("Allow Warden in System Settings › Privacy & Security › Accessibility")
+            }
+            Toggle("", isOn: $settings.extraDimEnabled)
+                .toggleStyle(.switch).controlSize(.small).tint(ShellStyle.accent).labelsHidden()
+                .disabled(unavailable)
+                .help(unavailable ? "Not supported on this macOS" : "")
+                .accessibilityLabel("Extra dim")
+        }
+        .padding(.vertical, 4)
+        .task(id: settings.extraDimEnabled) { await pollExtraDim() }
+    }
+
+    /// No trust-change notification exists: while the window is open and the toggle is on, ask the app every 1 s
+    /// (it creates the tap as soon as Accessibility is granted, and reports a revoked grant).
+    private func pollExtraDim() async {
+        guard let refresh = settings.refreshExtraDimStatus else { return }
+        extraDimStatus = refresh()
+        while settings.extraDimEnabled {
+            try? await Task.sleep(for: .seconds(1))
+            if Task.isCancelled { return }
+            extraDimStatus = refresh()
+        }
     }
 
     // Overlay (spec 2026-09-25 overlay, "Hotkey"; plan R5: opacity is 4 segments, not a slider)

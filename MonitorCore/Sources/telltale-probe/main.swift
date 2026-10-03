@@ -26,4 +26,5 @@ case .replay(let path): Commands.replay(path, options)
 case .frames: await Commands.frames(options)
 case .maintainNow: await Commands.maintainNow(options)
 case .crash(let id): await Commands.crash(id, options)
+case .brightness: Commands.brightness()
 }

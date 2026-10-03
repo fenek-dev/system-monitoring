@@ -37,4 +37,4 @@ targets:
         LSMinimumSystemVersion: "14.0"
     dependencies:
       - package: MonitorCore
-        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit]
+        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit, MonitorExtraDim, CPrivate]

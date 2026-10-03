@@ -154,6 +154,24 @@ struct ShellSettingsStoreTests {
         #expect(s2.overlayHotKey == HotKeySpec(keyCode: 0, modifiers: 4352))
     }
 
+    @Test func extraDimOffByDefaultAndPersists() {
+        let (s, d) = ScreenFixture.settings()
+        #expect(!s.extraDimEnabled)
+        s.extraDimEnabled = true
+        #expect(d.bool(forKey: SettingsStore.Key.extraDimEnabled))
+        #expect(SettingsStore(defaults: d).extraDimEnabled)
+        d.set("yes", forKey: SettingsStore.Key.extraDimEnabled)          // garbage → default
+        #expect(!SettingsStore(defaults: d).extraDimEnabled)
+    }
+
+    @Test func extraDimStatusText() {
+        #expect(SettingsView.extraDimStatusText(.needsAccessibility) == "Needs Accessibility")
+        #expect(SettingsView.extraDimStatusText(.tapFailed) == "Keyboard hook failed")
+        #expect(SettingsView.extraDimStatusText(.active) == nil)
+        #expect(SettingsView.extraDimStatusText(.off) == nil)
+        #expect(SettingsView.extraDimStatusText(.unavailable) == nil)
+    }
+
     @Test func overlayGarbageFallsBackToDefaults() {
         let (_, d) = ScreenFixture.settings()
         d.set("sideways", forKey: SettingsStore.Key.overlayCorner)
