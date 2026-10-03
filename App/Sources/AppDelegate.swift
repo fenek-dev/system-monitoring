@@ -21,6 +21,7 @@ import os
     private var overlayLoop: ObservationLoop<OverlayKey>?
     private var hotKeyLoop: ObservationLoop<HotKeySpec>?
     private var power: PowerEvents?
+    private var extraDim: ExtraDimService?
     private var termination: TerminationController?
     /// Held for the process lifetime: one instance per data dir (A-M1 ruling).
     private var instanceLock: InstanceLock?
@@ -103,6 +104,7 @@ import os
         })
         installOverlayWiring()
         power = PowerEvents(willSleep: { env.runtime.systemWillSleep() }, didWake: { env.runtime.systemDidWake() })
+        extraDim = ExtraDimService(settings: env.settings)
         NSApp.mainMenu = mainMenu()
         installTerminationSignal()
         serveActivation()
@@ -159,6 +161,12 @@ import os
         }
         termination?.requestTermination()
         return .terminateLater
+    }
+
+    /// Extra Dim: restore the built-in display's gamma on a normal quit (a crash needs nothing: Quartz restores
+    /// ColorSync gamma when the process exits).
+    func applicationWillTerminate(_ notification: Notification) {
+        extraDim?.shutdown()
     }
 
     /// Quit from code. `terminate` answers `.terminateLater` and AppKit then spins a nested event loop until the

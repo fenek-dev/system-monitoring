@@ -11,7 +11,8 @@ import Observation
 ///   missing categories are appended visible, and at least one row stays visible;
 /// - `DisabledSensors`: array of `SensorID` raw values (ARCHITECTURE §6 kill switch);
 /// - `overlay.enabled` (Bool), `overlay.corner` (`OverlayCorner` raw value), `overlay.opacity` (Double, clamped
-///   to `overlayOpacityRange`), `overlay.hotkey` (`{keyCode, modifiers}` Carbon ints; invalid → default).
+///   to `overlayOpacityRange`), `overlay.hotkey` (`{keyCode, modifiers}` Carbon ints; invalid → default);
+/// - `extraDim.enabled` (Bool, default false).
 @MainActor @Observable
 public final class SettingsStore {
     public enum Key {
@@ -23,6 +24,21 @@ public final class SettingsStore {
         public static let overlayCorner = "overlay.corner"
         public static let overlayOpacity = "overlay.opacity"
         public static let overlayHotKey = "overlay.hotkey"
+        public static let extraDimEnabled = "extraDim.enabled"
+    }
+
+    /// Extra Dim as the app sees it (spec 2026-09-24 extra dim §5.7, §7), shown under the Settings toggle.
+    public enum ExtraDimStatus: Equatable, Sendable {
+        /// Toggle off (or nothing reported yet).
+        case off
+        /// Toggle on, keyboard tap live.
+        case active
+        /// Toggle on, Accessibility not granted: no tap.
+        case needsAccessibility
+        /// Toggle on, trusted, but the event tap could not be created (retried on the next toggle-on).
+        case tapFailed
+        /// DisplayServices missing on this macOS: the toggle is disabled.
+        case unavailable
     }
 
     public static let overlayOpacityDefault = 0.85
@@ -33,6 +49,13 @@ public final class SettingsStore {
     /// Clears the crash-canary markers ("Disabled after a crash"). The canary owns its keys and domain
     /// (`CrashCanary.reenableAll()` in MonitorEngine); the app injects it through the runtime. Nil in renders.
     @ObservationIgnored public var reenableCrashedSensors: (@MainActor () -> Void)?
+
+    /// Extra Dim permission state. The app re-checks `AXIsProcessTrusted()` on every call and creates the keyboard
+    /// tap once trust appears (there is no trust-change notification; Settings polls it every 1 s while the toggle
+    /// is on). Nil in renders → `.off`.
+    @ObservationIgnored public var refreshExtraDimStatus: (@MainActor () -> ExtraDimStatus)?
+    /// Opens System Settings › Privacy & Security › Accessibility. Nil in renders.
+    @ObservationIgnored public var openAccessibilitySettings: (@MainActor () -> Void)?
 
     public var units: UnitPreferences {
         didSet { if units != oldValue { saveUnits() } }
@@ -71,6 +94,12 @@ public final class SettingsStore {
         didSet { if overlayHotKey != oldValue { saveHotKey() } }
     }
 
+    // MARK: Extra Dim (spec 2026-09-24 extra dim; off by default; the dim level itself is never persisted)
+
+    public var extraDimEnabled: Bool {
+        didSet { if extraDimEnabled != oldValue { defaults.set(extraDimEnabled, forKey: Key.extraDimEnabled) } }
+    }
+
     public init(defaults: UserDefaults) {
         self.defaults = defaults
         units = Self.loadUnits(defaults)
@@ -80,6 +109,7 @@ public final class SettingsStore {
         overlayCorner = defaults.string(forKey: Key.overlayCorner).flatMap(OverlayCorner.init(rawValue:)) ?? .topRight
         storedOverlayOpacity = Self.clampOpacity((defaults.object(forKey: Key.overlayOpacity) as? NSNumber)?.doubleValue)
         overlayHotKey = Self.loadHotKey(defaults)
+        extraDimEnabled = defaults.object(forKey: Key.extraDimEnabled) as? Bool ?? false
     }
 
     /// `nil` → `.standard`; otherwise a suite named after the directory, so every worktree
