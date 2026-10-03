@@ -248,6 +248,7 @@ All icons sit on a 16×16 grid with stroke 1.5, round caps, round joins and no f
 | `thermals` | `M9.5 9.2V3a1.5 1.5 0 0 0-3 0v6.2a3 3 0 1 0 3 0z` + `M8 7v4` | `thermal` |
 | `power` | `M9 1.5L3.5 9H8l-1 5.5L12.5 7H8z` | `power` |
 | `disk` | ellipse (8,4) rx 5.5 ry 2; `M2.5 4v8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V4M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2` | `disk` |
+| `storage` (ADDED, §3.17) | rect (1.5,2.5,13,11) rx 1.5; `M8 2.5v11M8 8h6.5M11 8v5.5` (space-map tiles) | `disk` |
 | `processes` | `M5.5 4h8M5.5 8h8M5.5 12h8`; circles r 0.75 at (2.75, 4/8/12) | `textSecondary` |
 | `history` | circle (8,8) r6; `M8 4.5V8l2.5 1.5` | `textSecondary` |
 | `pause` | `M6 3.5v9M10 3.5v9` | `textSecondary` |
@@ -535,9 +536,11 @@ States (ADDED, the design shows only rest):
 - **Animation**: live updates (cursor at now, or the Live range) animate tile frames with `.easeInOut(duration: 0.25)`. The same applies to a metric change. While the user scrubs (slider or lane drag in progress), tiles update with **no animation**.
 - Tooltip: "{name} · {value} · {share}%".
 - Click: opens Processes with the app selected and its detail expanded.
+- **Space Map variant (`TTSpaceMap`, ADDED, §3.17)**: same algorithm and gutter, input presorted by size (no re-sort). Children are cut at the first child under 0.5 % of the parent (binary search over the size-sorted children) **or** whose laid-out tile would be under 24×16 pt, hard cap 200 tiles; the rest merge into one **"N smaller items"** tile, laid out last like "Other": `fillTrack`, label "{n} smaller items" `caption` `textSecondary` plus the summed size as the value line, not drillable. The children table shows the same capped set and the same "N smaller items" row. Restricted tiles (unreadable dir): cached diagonal hatch over `fillTrack`, size "—", tooltip "Needs Full Disk Access". Fill `disk` @ 0.28, hover @ 0.45; no tile animation on drill-down.
 
 ### 2.29 Toggle, checkbox (ADDED, Settings)
 - SwiftUI `Toggle(.switch)` with `.controlSize(.small)`, tinted `accent`. Checkboxes use `Toggle(.checkbox)` tinted `accent`.
+- **Table checkbox cell (`TTTableCheckbox`, ADDED, Storage Cleanup)**: same checkbox style, 16 wide leading column (cell 24 with padding), vertically centered in the row. Space toggles the focused row; clicking the checkbox never selects or expands the row. Group rows show a mixed state when only some children are checked; toggling a mixed group checks all its children. Disabled (no-op delete mode, e.g. Docker): checkbox at `opacity.disabled`, tooltip with the reason.
 
 ---
 
@@ -563,6 +566,7 @@ States (ADDED, the design shows only rest):
    - section header **System**
    - Power & Battery: `{package} W`
    - Disk: `{free} GB free`
+   - Storage (ADDED, §3.17): `{n} GB reclaimable` after a home scan (with "≈" when estimated), else `{free} GB free`
    - section header **Activity**
    - Processes (no value)
    - History (no value)
@@ -625,6 +629,8 @@ Interactions:
 - Keyboard: ⌘Q quits Telltale. ⌘, opens Settings. ⌘D opens the Dashboard.
 
 Popover row order and visibility come from Settings (§3.14). Hidden rows are removed entirely, and a divider is suppressed when either side of it is empty.
+
+**Free up space… (ADDED, Storage §3.17)**: a link at the bottom of the **Disk flyout** (§2.22), below the app lines, separated by a 1-pt `separator` (margin 4 vertical): `body12` `accent` "Free up space…", height 26, padding 10, hover `fillHover`. Click opens the dashboard on Storage and closes popover and flyout. After a home scan with reclaimable bytes the link reads "Free up {X}…" (with "≈" per §3.17). The Disk row click keeps opening the Disk page.
 
 Sampling rate: 1 s while the popover is open (per SPEC).
 
@@ -997,6 +1003,7 @@ Layout: a list card (flex) above the inspector card. The two are separated by a 
    - `body12` `textSecondary` "Sort by".
    - `TTSegmented` [CPU | GPU | Memory | Network | Disk | Energy].
    - Flex spacer. The toast goes in the spacer: `body12` `textSecondary` "{name} quit." / "{name} was force quit.", auto-dismissed after 4 s. REMOVED: the "Undo demo" button (demo only).
+   - Toast with actions (ADDED, Storage §3.17): order text · `Show` · `Empty Trash` · `Undo`, each a `small secondary` button, gap 8. `Show` only when the clean skipped items (opens a sheet with skip reasons; the toast stays pinned until the sheet closes); `Empty Trash` only when bytes were moved to the Trash (goes through a confirm); `Undo` only for trashed items of the latest clean. Lifetime 10 s when `Undo` is present, else 4 s. Any action other than `Show` dismisses the toast. Trashed bytes are never reported as freed: "Freed 4.2 GB · Moved 1.1 GB to Trash".
    - Count in `body12` `textSecondary`: Apps mode "{n} apps · 612 processes"; Processes mode "{n} of 612 shown".
 2. **Header row**: template `minmax(0,2.2fr) 64 110 70 64 84 84 84 70`, height 28.
    - Headers: Process | PID (right) | User (left) | % CPU | % GPU | Memory | Network | Disk | Energy (right-aligned numerics).
@@ -1163,6 +1170,22 @@ Spec: `docs/superpowers/specs/2026-09-25-overlay-design.md`.
 - **Window** (App, `OverlayPanelController`): borderless non-activating `NSPanel`, `.statusBar` level, click-through, no shadow, on every Space and over full-screen apps, never key. Placed 8 pt inside the visible frame of the display under the mouse, in the chosen corner (default top-right); it follows the mouse to another display on the next tick.
 - **Toggle**: global hotkey (default ⌥Z, Carbon, no Accessibility permission), the popover footer overlay button (tinted `accent` when on; tooltip "Overlay (⌥Z)"), or Settings. The state persists across launches.
 - **Settings › Overlay** section (after General): "Show overlay" switch; "Shortcut" recorder (Esc cancels; needs ⌘, ⌥ or ⌃; ⌘-only standard shortcuts rejected; "Shortcut unavailable — in use by another app" in `statusElevated` when registration failed; note "⌥Z blocks typing Ω." for the default); "Corner" ↖ ↗ ↙ ↘; "Opacity" 55/70/85/100 % (default 85).
+
+### 3.17 Storage (ADDED 2026-10-04)
+
+Spec: `docs/superpowers/specs/2026-09-24-storage-cleanup-design.md` §4; plan `docs/superpowers/plans/2026-10-04-storage-cleanup.md`. No artboard: built in this design language and verified by renders (`storage-*` goldens). Sidebar: System section after Disk, icon `storage` (§1.4).
+
+- **Header** (§3.0 page header): title "Storage", sub = scan root path (`~` abbreviated). Trailing, in order: root chip (`TTSegmented`-styled single button "~ ▾" → menu Home / Choose Folder… / mounted volumes; "Macintosh HD" = Data volume; `MNT_DONTBROWSE`/`MNT_SNAPSHOT` mounts hidden) · `caption` `textSecondary` `Scanned 2 h ago` (§5.8; hidden before the first scan) · `small primary` `Scan` (first time) / `small secondary` `Rescan` / `small secondary` `Cancel` while scanning · Pause · Settings.
+- **FDA banner** (only without Full Disk Access; `TTAlertBanner` fair style, dismissible per session): "Some folders unreadable. Grant Full Disk Access for complete results." + `small secondary` `Open System Settings`.
+- **Stat strip** (`TTStatStrip`, §5.3 headline bytes): Capacity · Used · Free · Purgeable · Reclaimable · Trash. Reclaimable "—" before the first home scan, "≈" prefix when any contributing size is an estimate; Trash `Empty` at 0 B, "—" when unreadable. At 1100 width Purgeable drops first.
+- **Mode switch** (`TTSegmented`): `Space Map` (default) | `Cleanup`. Cleanup is disabled for roots other than `~` with the caption "Cleanup is available for your home folder only."
+- **Space Map** (`grid3`): breadcrumb `~ › Library › Caches` (`body12`, ancestors `textSecondary` and clickable, current `textPrimary`); treemap card (span 2, `TTSpaceMap`, §2.28 variant) + children table card (1 col: Name, Size, %; Items column only above 1100 width). Hover is shared between map and table. Row/tile menu: Reveal in Finder · Move to Trash… (confirm; disabled with the reason as tooltip on protected paths) · Ignore. Keyboard: arrows move hover/selection, Return drills in, ⌘[ / Backspace goes up. Accessibility element per tile: "{name}, {size}, {share}%".
+- **Cleanup** (`grid3`): left card (1 col) = category list User Caches · Leftovers · Large & Old · Developer · Trash, each row: name, total, selected, tier mix (`Safe` / `Review` badges). Right card (span 2) = items table (`sortsRows: false`): checkbox (§2.29) · tile + name (owner app tile when known) · size · tier badge · `In use` badge · last used. Items grouped per owning app as expandable child rows. Large & Old card header carries a threshold `TTSegmented`. `Show ignored` toggle in the card header; ignored rows show `Unignore`. iCloud items in Large & Old say `Remove Download` instead of Trash.
+- **Sticky footer** (bottom of the Cleanup area, height 44, top `separator`): `body12` `Selected 14.2 GB · 37 items` ("≈14.2 GB" while any selected size is an estimate) + `small primary` `Clean…`. While cleaning: `Cleaning 12/37…` + `Cancel`; then `Freeing…` until deletions drain.
+- **"≈" rule**: a byte value gets "≈" whenever its provenance is not exact (allocated size before private sizes arrive, or a clone set). Tooltip on "≈": "Estimate. Files that share storage with clones may free more when deleted together."
+- **Confirm** (`TTConfirmDialog`, multi-line message): title `Clean 14.2 GB?`; lines "Delete permanently: X (caches, build data)", "Move to Trash: Y (leftovers, large files)", "Remove downloads: Z (iCloud)"; then items in use, at most 5, then "+N more"; buttons `Clean` (destructive) / `Cancel`.
+- **Toast**: §3.12 toast with actions. No Finder "Put Back" claim in any copy until verified.
+- **States**: never scanned → `TTEmptyState` "Scan your home folder to see what uses space." + `Scan`; scanning without a prior result → progress card (files, bytes, current path middle-truncated, `Cancel`) above a partial treemap of the root's children (updates 2–4 Hz); rescanning → previous result stays with a progress overlay card; cached result → header + strip immediately, map when decoded; volume removed → empty state "Volume was removed"; root error → empty state with the reason.
 
 ---
 
@@ -1340,6 +1363,7 @@ Exceptions:
 | Popover and menu-bar dates | locale default (`.dateTime.weekday().day().month().hour().minute()`) | |
 | History header | `EEEE, d MMMM` (locale-ordered) | `Thursday, 24 September` |
 | Power-on hours | integer, grouped | `3,412` |
+| Relative "ago" (ADDED, Storage header) | `Scanned {n} {unit} ago` against the injected `now`: under 1 min `Scanned just now`; then the largest whole unit of min / h / d (`min`, `h`, `d`), no plural forms; ≥ 7 d shows the date `Scanned 24 Sep` | `Scanned 2 h ago`, `Scanned 5 min ago` |
 
 ### 5.9 Names and truncation
 - App and process names: single line, tail truncation with `…`, in the width their column allows. There is no fixed character limit.

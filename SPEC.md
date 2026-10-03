@@ -4,7 +4,7 @@ Native macOS menu bar system monitor (iStat Menus–like) with per-app attributi
 
 ## Design reference (binding for look & layout)
 Claude Design canvas "Telltale — macOS system monitor": https://claude.ai/artifact/CobFLbd5RJ3Eoq3HLYpSKJ
-Local copy: `docs/design/artboards/*.dc.html` (13 artboards: MenuBar, MenuBarAlert, StatusIcon, Main=Overview, CPU, GPU, Memory, Network, Thermals, Power, Disk, Processes, History). Tokens/components: `docs/design/DESIGN.md`.
+Local copy: `docs/design/artboards/*.dc.html` (13 artboards: MenuBar, MenuBarAlert, StatusIcon, Main=Overview, CPU, GPU, Memory, Network, Thermals, Power, Disk, Processes, History). Storage: rendered, no artboard (built from DESIGN §3.17). Tokens/components: `docs/design/DESIGN.md`.
 The design wins on look, layout, copy and screen set. Where this spec and the design differ, the rulings below apply. Anything else in this spec that the design doesn't show still gets built, in the design's visual language.
 
 ### Rulings (2026-09-24)
@@ -38,6 +38,7 @@ The design wins on look, layout, copy and screen set. Where this spec and the de
   - Latency and packet loss: unprivileged ICMP (`SOCK_DGRAM`) to the router every 10s.
   - Disk IOPS: from IOBlockStorageDriver `Statistics`.
   - Preventing sleep: `IOPMCopyAssertionsByProcess`.
+- **Storage & Cleanup in v1 (2026-10-04, spec `docs/superpowers/specs/2026-09-24-storage-cleanup-design.md`, plan `docs/superpowers/plans/2026-10-04-storage-cleanup.md`):** a Storage page (System section, after Disk) with a space map of a scanned root and, for a `~` root, cleanup of user caches, leftovers of deleted apps, large & old files, developer junk and Trash. Manual scans only, no background scanning, no root. Regenerable data is removed permanently; user data goes to the Trash with undo. Every clean is confirmed.
 - **Appearance:** the app UI is dark, matching the design. The menu bar glyph is a template image, with tinted variants for the elevated and critical states.
 
 ## Target
@@ -50,7 +51,7 @@ The design wins on look, layout, copy and screen set. Where this spec and the de
 - Private/undocumented APIs allowed, each behind a `Sensor` adapter. A broken source shows "unavailable" and the app keeps running.
 
 ## Categories
-CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Disk I/O + storage, Fans.
+CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Disk I/O + storage, Fans, Storage & Cleanup (space map + cleanup categories: User Caches, Leftovers, Large & Old, Developer, Trash).
 
 ## Data sources
 | Metric | Source | Per-app |
@@ -76,6 +77,10 @@ CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Di
 | Router latency / loss | unprivileged ICMP `SOCK_DGRAM` | – |
 | Wi-Fi (band, channel, RSSI, rate; no SSID) | CoreWLAN | – |
 | Storage | `URLResourceValues` volume capacity | – |
+| Storage scan (space map) | `getattrlistbulk` walker (8 threads), incl. `ATTR_CMNEXT_PRIVATESIZE` for cleanup sizes | – |
+| Cleanup ownership / last used | installed apps via `mdfind` (application bundles) + `/Applications` walk; `MDQuery` `kMDItemLastUsedDate` | – |
+| Full Disk Access | probe: reading `~/Library/Safari` fails with `EPERM` → no FDA | – |
+| Cleanup in-use check | `proc_listpids` + `proc_pidinfo` (cwd, vnode fd paths), `proc_pidpath` | – |
 
 ## Attribution
 - Processes grouped into **apps** via responsible PID (`responsibility_get_pid_responsible_for_pid`, private). The app is the outermost `.app` bundle of the responsible process's executable.
@@ -95,6 +100,8 @@ CPU (total + P/E clusters), GPU, Memory, Network, Temperatures, Power/Energy, Di
 
 ## Actions
 Right-click an app row: Quit, Force Quit (confirm), Reveal in Finder, Open in Activity Monitor. Only the current user's processes.
+
+Storage: Scan / Cancel; space map row menu Reveal in Finder, Move to Trash… (confirm; disabled on protected paths), Ignore; Cleanup `Clean…` (confirm, in-use items unticked), Undo of trashed items (latest clean), Empty Trash (confirm). Guardrails (denylist, fd-relative deletion, identity checks) are enforced in `MonitorDiskTools`, not only in the UI.
 
 ## Sampling & storage
 - Always-on background sampler. Every **5s** with the UI closed, **1s** while the popover or dashboard is open.

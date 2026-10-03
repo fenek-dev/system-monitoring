@@ -89,6 +89,16 @@ These are decisions the build orchestrator made on its own during the parallel b
 - **`ci.sh` sets `TT_SNAPSHOT_STRICT=1`: a missing golden image fails the gate instead of silently passing** — why: catches accidentally-unrecorded goldens — cost if wrong: local runs need an explicit record step first.
 - **Stream C (sensors) authorized to edit `SensorSlot`/`CrashCanary` in the engine layer for canary work** — why: canary arm/disarm logic spans the sensors/engine boundary — cost if wrong: minor scope overlap between streams, both reported it.
 
+## Storage & Cleanup (2026-10-04, plan `docs/superpowers/plans/2026-10-04-storage-cleanup.md`)
+
+- **ICR 018 (not 016 as the spec says)** — why: ICR-16 is the overlay, 017 is claimed by the network spec — cost if wrong: renumbering one file.
+- **`StorageTree` keeps children in allocation order and adds `childOrder` (size-sorted per parent) + `childPrefix`** — why: node ids stay stable across rollup, so hover, overlay, cache and cleanup items keep pointing at the same node — cost if wrong: one extra `Int32` + `UInt64` per node (~12 B).
+- **Post-clean changes live in `StorageTreeOverlay`, persisted as a sidecar next to the scan cache; the cache itself is not rewritten after a clean** — why: same result on reload without re-serializing ~13 MB per clean — cost if wrong: one extra small file per root.
+- **Own data is never a cleanup item: `dev.telltale*`, `dev.warden*`, `dev.telltale-dev` (dev data dirs) and anything that is, contains or is inside an injected data directory (scan cache, undo record, staging)** — why: cleaning `~/Library/Caches` would otherwise delete our own store and staging — cost if wrong: a few MB never offered.
+- **Storage threat model (ARCH §5.10): guardrails cover stale scan data, our own bugs, ordinary concurrent changes and path spelling; not a hostile same-user process** — why: such a process can already delete anything the user can; defending against it would need privilege separation — cost if wrong: an attacker with user rights could race a URL-based step (`trashItem`), which it could do anyway.
+- **Hard-link bytes count toward a cleanup selection only when every observed link lies inside the selection union (`ReclaimAccumulator`)** — why: per-item counting either double-counts or never counts links split across two selected items — cost if wrong: links outside the scan are never reclaimable (conservative).
+- **Perf target "1M entries ≤ 5 s warm" stays advisory; measured ≈ 125k entries/s (≈ 8 s/1M)** — why: time is I/O latency; reported, not tuned — cost if wrong: a slower scan than the spec's goal.
+
 ## Deferred (not done)
 
 - **Sleep-wake fixture recording and the 8-hour soak test** — need the user to run manually (`scripts/probe.sh --record .../sleep-wake.json --ticks 20 --interval 1 --mode interactive --trim-idle`, with a real sleep ≥15s mid-recording).

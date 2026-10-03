@@ -71,7 +71,7 @@ system-monitor/
       Popover/PopoverPanelController.swift    borderless NSPanel under the status item
       Dashboard/DashboardWindowController.swift
       Settings/SettingsWindowController.swift, SettingsStore.swift
-      Services/ProcessActionsLive.swift, LaunchAtLogin.swift, VisibilityTracker.swift, PowerEvents.swift
+      Services/LaunchAtLogin.swift, VisibilityTracker.swift, PowerEvents.swift   (ProcessActionsLive lives in MonitorScreens/Shell)
   MonitorCore/
     Package.swift
     Sources/
@@ -91,6 +91,10 @@ system-monitor/
         Alerts/ Alert.swift HistoryEvent.swift
         History/ HistoryProvider.swift HistoryRecord.swift (incl. RecordBatch) EmptyHistoryProvider.swift
         Services/ ProcessActions.swift AppCommands.swift Preferences.swift Navigation.swift
+        Storage/ StorageTree, builder, overlay, reclaim, scan/cleanup/clean values, StoragePolicy,
+                 StoragePlatform, StorageActions (ICR 018)
+      MonitorDiskTools/            storage scanner, classifier, cleaner, scan cache (no AppKit)
+        DiskTools.swift Support/ (FileDescriptor, SafePath) Scan/ Cache/ Classify/ Clean/ Engine/
       MonitorLive/                 UI-facing state (depends on MonitorModel only)
         RingBuffer.swift LiveHistory.swift LiveModel.swift
       MonitorEngine/               sampling loop, rates, attribution, assembly, alerts
@@ -150,13 +154,14 @@ MonitorUIKit    → MonitorModel                              + SwiftUI, Charts,
 MonitorSnapshotTesting → MonitorUIKit                       + Testing (used only by UIKit/Screens test targets)
 MonitorMocks    → MonitorModel
 MonitorScreens  → MonitorModel, MonitorLive, MonitorUIKit, MonitorMocks
-MonitorRuntime  → MonitorModel, MonitorLive, MonitorEngine, MonitorSensors, MonitorStore, MonitorMocks
+MonitorDiskTools → MonitorModel                             storage scan/classify/clean; Foundation + Darwin only
+MonitorRuntime  → MonitorModel, MonitorLive, MonitorEngine, MonitorSensors, MonitorStore, MonitorMocks, MonitorDiskTools
 telltale-render → MonitorScreens, MonitorUIKit, MonitorMocks, MonitorLive
-telltale-probe  → MonitorEngine, MonitorSensors, MonitorStore, CPrivate   (builds SensorFactory.live itself; uses sampleOnceRaw)
+telltale-probe  → MonitorEngine, MonitorSensors, MonitorStore, MonitorDiskTools, CPrivate   (builds SensorFactory.live itself; uses sampleOnceRaw; `--scan`)
 App (Xcode)     → MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit, MonitorExtraDim, CPrivate (Extra Dim adapters only)
 ```
 
-Rules: UI targets never import `MonitorEngine`, `MonitorSensors` or `MonitorStore`; they see data only through `LiveModel` and `HistoryProvider`.
+Rules: UI targets never import `MonitorEngine`, `MonitorSensors`, `MonitorStore` or `MonitorDiskTools`; they see data only through `LiveModel`, `HistoryProvider` and `StorageActions`. `scripts/ci.sh` greps for `import MonitorDiskTools` in `MonitorLive`, `MonitorScreens`, `MonitorUIKit` and `App/`.
 
 ---
 
@@ -202,12 +207,13 @@ Modes: `background` 5 s, `interactive` 1 s, `paused` (no sampling, no records; `
 |---|---|---|
 | `SamplingEngine` | `actor` with custom executor = `DispatchSerialQueue(label: "dev.telltale.sampler", qos: .utility)` | Blocking IOKit/mach/CF calls run on our queue, not the cooperative pool. |
 | Sensors | owned by the engine actor, **non-Sendable** classes, never escape | Built inside the actor via `SensorFactory.make` (`@Sendable (Set<SensorID>) -> SensorSuite`). |
-| Callback-driven state (NStat, RootMemory `ps`, LatencyProbe, ReverseDNS, SMC key sweep) | a separate `final class <X>Box: Sendable` holding only `let` properties: a private `DispatchQueue` and `OSAllocatedUnfairLock<State>` (State: Sendable) | C blocks / `DispatchQueue.async` closures capture only the box (Sendable) — no `@unchecked Sendable` needed. `Mutex` is macOS 15+, so not used. |
+| Callback-driven state (NStat, RootMemory `ps`, LatencyProbe, ReverseDNS, SMC key sweep) | a separate `final class <X>Box: Sendable` holding only `let` properties: a private `DispatchQueue` and `OSAllocatedUnfairLock<State>` (State: Sendable) | C blocks / `DispatchQueue.async` closures capture only the box (Sendable) — no `@unchecked Sendable` needed. Deployment target is macOS 15, so `Mutex` (Synchronization) is allowed as well; existing boxes keep `OSAllocatedUnfairLock`. |
+| Storage scanner (`MonitorDiskTools/Scan`) | fixed pool of N `Thread`s at `.userInitiated`, N = `min(8, hw.perflevel0.physicalcpu)` | Never a GCD concurrent queue (blocking `getattrlistbulk` → thread explosion), never `.background` QoS. LIFO work stack + `StorageTreeBuilder` under `Mutex`; cancel flag checked per pop and between listing batches. Classifier, private sizes, Spotlight, installed apps: one serial `.utility` queue. Cleaner: serial detach, ≤ 4 parallel `removefileat`. Fds closed only by the worker that opened them. |
 | Snapshots, readings, records, events | `struct … : Sendable, Codable, Equatable` | CoW arrays: sending a frame is O(1). |
 | Assembler, `RateCalculator`, attributors, `AlertEngine`, `EventDetector`, `RecordBuilder` | plain structs mutated inside the engine actor | Pure, unit-tested without concurrency. |
 | `HistoryStore` | `actor` over GRDB `DatabasePool` (Sendable) | Writes via `try await pool.write`, reads via `pool.read` concurrently (WAL). |
 | `LiveModel`, `NavigationModel`, `SettingsStore`, controllers, views | `@MainActor` (`@Observable` for models) | One consumer `Task { @MainActor in for await f in pipeline.liveFrames { live.apply(f) } }`. |
-| Service closures (`ProcessActions`, `AppCommands`) | `Sendable` structs of `@MainActor @Sendable` closures | Environment-injected. |
+| Service closures (`ProcessActions`, `AppCommands`, `StorageActions`) | `Sendable` structs of `@MainActor @Sendable` closures | Environment-injected. |
 
 Loop wake-up (spelled out): the loop stores `private var sleeper: Task<Void, Never>?`. Each iteration: `let t = Task { try? await Task.sleep(until: deadline, tolerance: interval / 10, clock: .continuous) }; sleeper = t; await t.value`. Awaiting suspends the actor, so `setVisibility`/`setPaused`/`systemDidWake` run meanwhile; they update mode/demand and call `sleeper?.cancel()`, which ends the sleep early. The loop then recomputes: entering `interactive` samples immediately; `paused` sleeps with a 1 h deadline (cancellable) and takes no samples.
 
@@ -1123,7 +1129,7 @@ public struct ProcessActions: Sendable {
     public static let noop: ProcessActions
 }
 public enum DashboardPage: String, CaseIterable, Sendable, Codable {
-    case overview, cpu, gpu, memory, network, thermals, power, disk, processes, history
+    case overview, cpu, gpu, memory, network, thermals, power, disk, storage, processes, history   // storage: ICR 018
     public var title: String { get }; public var section: Section { get }
     public enum Section: String, Sendable, CaseIterable { case monitor, system, activity }
 }
@@ -1161,6 +1167,17 @@ SwiftUI environment (`MonitorUIKit/Environment/EnvironmentValues+Telltale.swift`
 }
 ```
 
+Storage (ICR 018, `MonitorModel/Storage/*`; full signatures in `docs/superpowers/plans/2026-10-04-storage-cleanup.md` §3):
+
+- `StorageTree` — immutable struct-of-arrays snapshot of a scan (`parent < child`, children contiguous, `childOrder` size-sorted with stable ids, `childPrefix` for "N smaller items" totals, `linkGroups` for hard links). Built by `StorageTreeBuilder` (value type, reverse-pass rollup in `finalize`). A swap is one reference assignment; views compare `version`.
+- `StorageTreeOverlay` — removals, size deltas and restored entries applied after cleaning/undo without rebuilding the tree; persisted as a sidecar next to the scan cache.
+- `ReclaimAccumulator` — selected-bytes total; a hard-link group counts only when every observed link is inside the selection union.
+- `StoragePolicy` — anchor/protected node sets precomputed by the engine so the UI can disable "Move to Trash"; the cleaner always re-checks live.
+- `StorageActions` — `Sendable` struct of `@MainActor @Sendable` closures (scan, cancel, cached load, reclassify, policy, in-use check, clean, undo, empty Trash, release, roots, FDA, ignore/unignore, reveal, FDA settings), `.noop`. Live = `StorageEngine` (`MonitorDiskTools/Engine`) composed in `MonitorRuntime`; mock = `MockDataProvider.storageActions(log:)`.
+- `StoragePlatform` — AppKit facts injected as `@Sendable` closures (running bundle IDs, app paths for a bundle ID, volume unmount stream), built by `StorageActionsLive` in `MonitorScreens/Shell`. `MonitorDiskTools`, `MonitorRuntime` and `MonitorLive` never import AppKit.
+
+Storage threat model (binding; keeps guardrails simple): guardrails protect against stale scan data, our own bugs, ordinary concurrent changes by the user or apps (files replaced, moved, re-created between scan and clean) and path spelling issues (case, Unicode normalization, `..`, symlinks, prefix lookalikes). They do **not** defend against a hostile same-user process — it can already delete anything the user can. So: identity checks (`dev`, `ino`, type) right before each step, fd-relative opens under a trusted root (`O_RESOLVE_BENEATH | O_NOFOLLOW_ANY` when a launch probe confirms them, else a per-component `O_NOFOLLOW` walk), a live denylist built from identity chains (never from scan data), small accepted TOCTOU windows where an API only takes a URL (`FileManager.trashItem`), and no privilege separation.
+
 ### 5.11 Runtime & mocks
 
 ```swift
@@ -1179,6 +1196,10 @@ public enum RuntimeMode: Sendable, Equatable { case live, mock(MockScenario) }
     public func systemWillSleep(); public func systemDidWake(); public func shutdown() async
 }
 // LivePipeline.swift (W7): engine + SensorFactory.live + HistoryStore.  MockPipeline.swift (Wm): MockDataProvider + MockHistoryProvider.
+// Storage (ICR 018): TelltaleRuntime also exposes `storage: StorageModel` and `storageActions: StorageActions`;
+//   `make(…, storagePlatform: StoragePlatform = .none)`. StoragePipeline.swift composes StorageEngine (MonitorDiskTools);
+//   mock mode uses MockPipeline.storageActions (canned streams, never touches disk). Scan cache, overlay sidecar, undo
+//   record, summary and staging live under dataDirectory (honors TELLTALE_DATA_DIR).
 // Launch args / env (App/Composition/AppEnvironment.swift):
 //   --mock <scenario> | TELLTALE_MOCK=<scenario>;  --open-dashboard <page>;  --open-popover;  --crash-sensor <id> (DEBUG)
 //   TELLTALE_DATA_DIR=<dir>;  TELLTALE_DISABLE_SENSORS=coalitions,soc,…  (also UserDefaults "DisabledSensors")
@@ -1360,6 +1381,8 @@ UI redraw limits:
 
 Memory: GRDB cache 2 MB; ring buffers ≈ 0.2 MB; per-app live series for top 64 apps ≈ 1 MB; frame ≈ 0.3 MB. Target idle RSS 45–60 MB.
 
+Storage scan (only while the dashboard window is open; manual): arena ≈ 70 B/node (≈ 45 B arrays + ≈ 25 B name) → a 1M-file home ≈ 180k nodes ≈ 13 MB, plus 8 × 256 KB listing buffers and the hard-link set. Warm throughput measured ≈ 125k entries/s with 8 threads (`docs/findings/storage-spikes.md` §6) → ≈ 8 s per 1M entries (spec target 5 s, advisory). Window close drops tree, overlay and cleanup state; only `StorageSummary` stays, so UI-closed RSS is unaffected. Cache load target < 100 ms for ~300k nodes (`mmap`).
+
 Measurement (W7): `scripts/perf.sh 10` (UI closed), `scripts/perf.sh 2 --interactive`, `telltale-probe --bench --ticks 60` → `docs/perf/<date>-<cp>.md`.
 
 ---
@@ -1378,6 +1401,8 @@ Measurement (W7): `scripts/perf.sh 10` (UI closed), `scripts/perf.sh 2 --interac
 | Sensor FFI | smoke on this Mac, gated `TELLTALE_HW_TESTS=1` | `*SmokeTests` |
 | Runtime | fixture sensors + in-memory store end to end; mock pipeline | `MonitorRuntimeTests` |
 | Mocks | determinism per scenario | `MonitorMocksTests` |
+| Storage model | tree rollup/ordering/cutoff, overlay, reclaim (hard links over the selection union) | `MonitorModelTests/Storage*`, `ReclaimTests` |
+| Disk tools | `SafePath` confinement; scanner on `InMemoryLister` (concurrency, cancel, hard links); bulk parser on recorded buffers; cache; classifier; cleaner/staging/denylist/undo/in-use on real temp dirs with an injected permitted root (never the real home) | `MonitorDiskToolsTests`; real `getattrlistbulk` smoke gated `TELLTALE_HW_TESTS=1` |
 
 Framework: Swift Testing; `@MainActor` suites for view tests. Command: `scripts/test.sh <Suite>`.
 
