@@ -3,7 +3,7 @@ import Testing
 @testable import MonitorExtraDim
 
 typealias M = ExtraDimMachine
-private let atMin: Float = 0
+private let atMin: Float = 1.0 / 16
 private let aboveMin: Float = 0.4
 
 private func machine(level: Int = 0, enabled: Bool = true) -> M {
@@ -75,6 +75,12 @@ private func t(_ s: TimeInterval) -> Date { Date(timeIntervalSince1970: 1_000 + 
         var m = machine(enabled: false)
         #expect(m.handle(.key(key, brightness: brightness)) == M.Step())
         #expect(m.level == 0)
+    }
+
+    /// The lowest visible key step counts as min (the step below it turns the backlight off); the step above doesn't.
+    @Test(arguments: [(0, true), (1.0 / 16, true), (2.0 / 16, false)] as [(Float, Bool)])
+    func minIsLowestVisibleStep(brightness: Float, atMin: Bool) {
+        #expect(M.atMin(brightness) == atMin)
     }
 
     @Test func watchdogBrightnessAboveMinClears() {

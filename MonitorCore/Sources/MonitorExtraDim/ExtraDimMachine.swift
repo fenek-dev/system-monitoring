@@ -47,8 +47,9 @@ public struct ExtraDimMachine: Equatable, Sendable {
     }
 
     public static let steps = ExtraDimCurve.steps
-    /// Brightness at or below this is the system minimum.
-    public static let minBrightness: Float = 0.001
+    /// Brightness at or below this is the system minimum: the lowest visible key step (1/16). The next system step
+    /// (0) turns the backlight off, so extra dim takes over the brightness-down key from here.
+    public static let minBrightness: Float = 1.0 / 16 + 0.005
     /// Fight guard: this many drifts within `fightWindow` give up (spec §5.5).
     public static let fightLimit = 4
     public static let fightWindow: TimeInterval = 10

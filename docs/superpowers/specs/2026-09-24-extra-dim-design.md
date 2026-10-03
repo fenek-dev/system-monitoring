@@ -58,7 +58,7 @@ Inputs:
 
 Actions: `.captureBase`, `.applyGamma(level:)`, `.restoreGamma`, `.showHUD(.level(Int) | .resetByOtherApp | .cannotDim)`, `.startWatchdog`, `.stopWatchdog`.
 
-"At min" = `brightness != nil && brightness <= 0.001`.
+"At min" = `brightness != nil && brightness <= 1/16 + 0.005`: the lowest visible key step. On MacBook Pros the next system step (0) turns the backlight off, so extra dim takes over brightness-down at 1/16 and the system never reaches 0 while the feature is on.
 
 Stale-dim rule: any `.key` or `.brightness` input that finds brightness readable and above min while level > 0 first clears (`restoreGamma`, level 0, `stopWatchdog`). The input is then handled as at level 0, so it passes through.
 

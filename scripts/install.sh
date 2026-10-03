@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Release build → ~/Applications/Warden.app (stable path for launch at login, ARCHITECTURE §1).
+# Release build → /Applications/Warden.app (stable path for launch at login, ARCHITECTURE §1).
 # Quits a running Warden first. Prints only error:/warning:/BUILD lines plus the install path.
 # Rename (Telltale → Warden): Warden moves the data dir and settings on its first launch (LegacyMigration).
 # An installed ~/Applications/Telltale.app is never quit, run or deleted here; the script only prints what to do.
@@ -10,7 +10,7 @@ scripts/gen.sh
 
 DERIVED=.build/xcode-release
 BUILT="$DERIVED/Build/Products/Release/Warden.app"
-DEST="$HOME/Applications/Warden.app"
+DEST="/Applications/Warden.app"
 LEGACY="$HOME/Applications/Telltale.app"
 
 set +e
@@ -37,10 +37,12 @@ if [[ -n "$pids" ]]; then
     kill -KILL $pids 2>/dev/null || true
 fi
 
-mkdir -p "$HOME/Applications"
 rm -rf "$DEST"
 ditto "$BUILT" "$DEST"
-codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
+# A stable identity keeps TCC grants (Accessibility for Extra Dim) across reinstalls; ad-hoc changes every build.
+IDENTITY="${WARDEN_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -m1 -o '"Apple Development: [^"]*"' | tr -d '"' || true)}"
+codesign --force --deep --sign "${IDENTITY:--}" "$DEST" >/dev/null 2>&1 || codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
+echo "signed:    ${IDENTITY:-ad-hoc}"
 echo "installed: $DEST"
 echo "launch:    open \"$DEST\"   (enable 'Launch at login' in Settings)"
 
