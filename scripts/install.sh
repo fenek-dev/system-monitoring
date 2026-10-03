@@ -39,10 +39,18 @@ fi
 
 rm -rf "$DEST"
 ditto "$BUILT" "$DEST"
-# A stable identity keeps TCC grants (Accessibility for Extra Dim) across reinstalls; ad-hoc changes every build.
-IDENTITY="${WARDEN_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -m1 -o '"Apple Development: [^"]*"' | tr -d '"' || true)}"
-codesign --force --deep --sign "${IDENTITY:--}" "$DEST" >/dev/null 2>&1 || codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
-echo "signed:    ${IDENTITY:-ad-hoc}"
+# A stable identity keeps TCC grants (Accessibility for Extra Dim, Full Disk Access for Storage) across
+# reinstalls; ad-hoc changes every build.
+if [[ -f Config/Local.xcconfig ]]; then
+    # xcodebuild already signed with the Local.xcconfig certificate; re-signing here would replace it.
+    codesign -v "$DEST" || { echo "install.sh: signature from Config/Local.xcconfig does not verify" >&2; exit 1; }
+    IDENTITY=$(codesign -dvv "$DEST" 2>&1 | grep -m1 '^Authority=' | cut -d= -f2- || true)
+    echo "signed:    ${IDENTITY:-ad-hoc} (Config/Local.xcconfig)"
+else
+    IDENTITY="${WARDEN_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -m1 -o '"Apple Development: [^"]*"' | tr -d '"' || true)}"
+    codesign --force --deep --sign "${IDENTITY:--}" "$DEST" >/dev/null 2>&1 || codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
+    echo "signed:    ${IDENTITY:-ad-hoc}"
+fi
 echo "installed: $DEST"
 echo "launch:    open \"$DEST\"   (enable 'Launch at login' in Settings)"
 

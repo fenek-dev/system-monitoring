@@ -1,0 +1,6 @@
+// Copy to Config/Local.xcconfig (gitignored) and set your Team ID to sign with your
+// Apple Development certificate. scripts/install.sh then keeps this signature, so
+// Full Disk Access and other TCC grants survive reinstalls.
+DEVELOPMENT_TEAM = ABCDE12345
+CODE_SIGN_IDENTITY = Apple Development
+CODE_SIGN_STYLE = Automatic

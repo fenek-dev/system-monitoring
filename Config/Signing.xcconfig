@@ -1,0 +1,7 @@
+// Default signing: ad-hoc, no Team ID, so a fresh checkout builds anywhere.
+// A gitignored Local.xcconfig (copy Local.xcconfig.example) switches to an Apple Development
+// certificate, whose stable identity keeps TCC grants (Full Disk Access) across rebuilds.
+CODE_SIGN_IDENTITY = -
+CODE_SIGN_STYLE = Manual
+
+#include? "Local.xcconfig"
