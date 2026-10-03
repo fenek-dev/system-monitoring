@@ -8,7 +8,7 @@ import SwiftUI
         [
             .init(id: "popover-rows", size: CGSize(width: 346, height: 301)) { AnyView(PopoverRows(stressed: false)) },
             .init(id: "popover-rows-alert", size: CGSize(width: 346, height: 301)) { AnyView(PopoverRows(stressed: true)) },
-            .init(id: "sidebar", size: CGSize(width: 220, height: 460)) { AnyView(SidebarSample()) },
+            .init(id: "sidebar", size: CGSize(width: 220, height: 491)) { AnyView(SidebarSample()) },
         ]
     }
 }
@@ -44,7 +44,7 @@ private struct PopoverRows: View {
 private struct SidebarSample: View {
     let values: [DashboardPage: String] = [
         .cpu: "29%", .gpu: "22%", .memory: "15.2 GB", .network: "11.1 MB/s", .thermals: "63°",
-        .power: "15.1 W", .disk: "382 GB free",
+        .power: "15.1 W", .disk: "382 GB free", .storage: "382 GB free",
     ]
 
     var body: some View {

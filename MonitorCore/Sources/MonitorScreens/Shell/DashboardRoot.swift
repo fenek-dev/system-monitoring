@@ -55,6 +55,7 @@ public struct DashboardRoot: View {
         case .thermals: ThermalsPage()
         case .power: PowerPage()
         case .disk: DiskPage()
+        case .storage: StoragePage()
         case .processes: ProcessesPage()
         case .history: HistoryPage()
         }

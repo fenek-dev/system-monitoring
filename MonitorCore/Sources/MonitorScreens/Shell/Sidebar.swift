@@ -47,7 +47,7 @@ public struct Sidebar: View {
     }
 
     /// Trailing values (DESIGN §3.0): CPU `{cpu}%`, GPU `{gpu}%`, Memory `{used} GB`, Network `{down rate}`,
-    /// Thermals `{socAvg}°`, Power `{package} W`, Disk `{free} GB free`; Overview/Processes/History none.
+    /// Thermals `{socAvg}°`, Power `{package} W`, Disk and Storage `{free} GB free`; Overview/Processes/History none.
     /// Unavailable → "—" (TTFormat's nil rule).
     @MainActor public static func value(for page: DashboardPage, live: LiveModel, units: UnitPreferences) -> String? {
         switch page {
@@ -66,7 +66,7 @@ public struct Sidebar: View {
             return t.hasSuffix("°C") || t.hasSuffix("°F") ? String(t.dropLast()) : t
         case .power:
             return TTFormat.watts(live.power.packageWatts)
-        case .disk:
+        case .disk, .storage:
             // Ruling (CP2): free = available capacity (`availableBytes`, statfs/container free = diskutil);
             // purgeable is separate. Same field and format as the Disk page's "Free space".
             guard let v = live.disk.bootVolume else { return ShellFormat.freeSpace(nil) }   // "—"

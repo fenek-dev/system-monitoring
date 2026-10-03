@@ -141,8 +141,8 @@ public struct PageHeader: View {
             return parts.joined(separator: " · ")
         case .history:
             return "Stored locally · \(nav.historyRange.resolutionPhrase) · kept for 30 days"
-        case .network, .power, .disk:
-            return nil                                    // page-provided (Wi-Fi link, battery, SSD model)
+        case .network, .power, .disk, .storage:
+            return nil                                    // page-provided (Wi-Fi link, battery, SSD model, scan root)
         }
     }
 }

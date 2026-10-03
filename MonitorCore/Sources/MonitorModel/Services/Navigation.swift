@@ -1,7 +1,7 @@
 import Foundation
 
 public enum DashboardPage: String, CaseIterable, Sendable, Codable {
-    case overview, cpu, gpu, memory, network, thermals, power, disk, processes, history
+    case overview, cpu, gpu, memory, network, thermals, power, disk, storage, processes, history
 
     /// Sidebar title (DESIGN.md sidebar).
     public var title: String {
@@ -14,16 +14,17 @@ public enum DashboardPage: String, CaseIterable, Sendable, Codable {
         case .thermals: "Thermals"
         case .power: "Power & Battery"
         case .disk: "Disk"
+        case .storage: "Storage"
         case .processes: "Processes"
         case .history: "History"
         }
     }
 
-    /// Sidebar section: Monitor (overview…thermals), System (power, disk), Activity (processes, history).
+    /// Sidebar section: Monitor (overview…thermals), System (power, disk, storage), Activity (processes, history).
     public var section: Section {
         switch self {
         case .overview, .cpu, .gpu, .memory, .network, .thermals: .monitor
-        case .power, .disk: .system
+        case .power, .disk, .storage: .system
         case .processes, .history: .activity
         }
     }

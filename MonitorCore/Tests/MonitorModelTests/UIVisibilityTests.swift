@@ -13,6 +13,7 @@ import Testing
         (.thermals, [.rawTemperatures]),
         (.power, [.sleepAssertions]),
         (.disk, [.smart, .volumes]),
+        (.storage, []),
         (.processes, [.processTable]),
         (.history, []),
     ]

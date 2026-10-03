@@ -4,7 +4,7 @@ import SwiftUI
 
 /// DESIGN §1.4 icons: 16-grid, stroke 1.5 (scaled with the drawn size), round caps/joins, no fill.
 public enum TTIconName: String, CaseIterable, Sendable {
-    case overview, cpu, gpu, memory, network, thermals, power, disk, processes, history
+    case overview, cpu, gpu, memory, network, thermals, power, disk, storage, processes, history
     case pause, play, settings, chevronRight, chevronDown, ellipsis, search, battery, fan, eject, quit, dragHandle
     case overlay, volume
 
@@ -30,6 +30,8 @@ public enum TTIconName: String, CaseIterable, Sendable {
         case .disk:
             Self.ellipse(8, 4, 5.5, 2)
                 + "M2.5 4v8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V4M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2"
+        case .storage:                                           // space-map tiles
+            Self.rect(1.5, 2.5, 13, 11, 1.5) + "M8 2.5v11M8 8h6.5M11 8v5.5"
         case .processes:
             "M5.5 4h8M5.5 8h8M5.5 12h8" + Self.circle(2.75, 4, 0.75) + Self.circle(2.75, 8, 0.75)
                 + Self.circle(2.75, 12, 0.75)
@@ -76,7 +78,7 @@ public enum TTIconName: String, CaseIterable, Sendable {
         case .network: TTColor.net
         case .thermals: TTColor.thermal
         case .power: TTColor.power
-        case .disk: TTColor.disk
+        case .disk, .storage: TTColor.disk
         case .battery: TTColor.battery
         case .fan: TTColor.thermal
         case .chevronRight, .chevronDown, .dragHandle: TTColor.textTertiary
@@ -106,6 +108,7 @@ public enum TTIconName: String, CaseIterable, Sendable {
         case .thermals: .thermals
         case .power: .power
         case .disk: .disk
+        case .storage: .storage
         case .processes: .processes
         case .history: .history
         }

@@ -67,7 +67,8 @@ public struct UIVisibility: Sendable, Equatable {
         case .thermals: .rawTemperatures
         case .disk: [.smart, .volumes]
         case .power: .sleepAssertions
-        case .gpu, .history, nil: .none
+        // Storage reads volume capacity only, which `VolumeSensor` samples without a demand flag (ICR 018).
+        case .gpu, .history, .storage, nil: .none
         }
         if inspectedApp != nil { d.formUnion([.connections, .processTable]) }
         return d
