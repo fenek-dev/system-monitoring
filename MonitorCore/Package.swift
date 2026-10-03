@@ -67,6 +67,8 @@ let package = Package(
         // ObjC, test-only: image constructor sets AppleFontSmoothing = 0 before any test lays out text.
         .target(name: "SnapshotProcessSetup", linkerSettings: [.linkedFramework("Foundation")]),
         .target(name: "MonitorMocks", dependencies: ["MonitorModel"]),
+        // Storage scanner, classifier, cleaner, scan cache (ICR 018). No AppKit; UI targets never import it.
+        .target(name: "MonitorDiskTools", dependencies: ["MonitorModel"]),
         .target(
             name: "MonitorScreens",
             dependencies: ["MonitorModel", "MonitorLive", "MonitorUIKit", "MonitorMocks"]
@@ -75,6 +77,7 @@ let package = Package(
             name: "MonitorRuntime",
             dependencies: [
                 "MonitorModel", "MonitorLive", "MonitorEngine", "MonitorSensors", "MonitorStore", "MonitorMocks",
+                "MonitorDiskTools",
             ]
         ),
         .executableTarget(
@@ -83,7 +86,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "telltale-probe",
-            dependencies: ["MonitorModel", "MonitorEngine", "MonitorSensors", "MonitorStore", "CPrivate"]
+            dependencies: ["MonitorModel", "MonitorEngine", "MonitorSensors", "MonitorStore", "MonitorDiskTools", "CPrivate"]
         ),
 
         // Tests
@@ -114,6 +117,11 @@ let package = Package(
             resources: [.copy("Fixtures")]
         ),
         .testTarget(name: "MonitorMocksTests", dependencies: ["MonitorMocks", "MonitorModel"]),
+        .testTarget(
+            name: "MonitorDiskToolsTests",
+            dependencies: ["MonitorDiskTools", "MonitorModel"],
+            resources: [.copy("Fixtures")]
+        ),
         .testTarget(name: "MixerCoreTests", dependencies: ["MixerCore"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(
             name: "MonitorRuntimeTests",

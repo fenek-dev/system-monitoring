@@ -47,6 +47,16 @@ if [[ -n "$hits" ]]; then
     fail "map(Double.init) is ambiguous (bitPattern); use .map { Double(\$0) }"
 fi
 
+echo "== MonitorDiskTools import grep"
+# UI targets and the app see storage only through StorageActions (ARCHITECTURE §2 rule); the engine is composed in
+# MonitorRuntime.
+hits=$(grep -rnE '^\s*(@testable\s+)?import\s+MonitorDiskTools([[:space:]]|$)' MonitorCore/Sources/MonitorLive \
+    MonitorCore/Sources/MonitorScreens MonitorCore/Sources/MonitorUIKit App --include='*.swift' || true)
+if [[ -n "$hits" ]]; then
+    echo "$hits" | head -20
+    fail "import MonitorDiskTools in a UI target or App"
+fi
+
 echo "== @unchecked grep"
 # Only MonitorMocks may use @unchecked (Sendable escape hatch); elsewhere use OSAllocatedUnfairLock/actors.
 hits=$(grep -rn '@unchecked' MonitorCore/Sources MonitorCore/Tests App --include='*.swift' | grep -v '/MonitorMocks/' || true)
