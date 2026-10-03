@@ -2,24 +2,19 @@ import Foundation
 import Testing
 @testable import MonitorExtraDim
 
-/// One display's live table; writes can be made to fail; ColorSync restores `colorSync`.
+/// One display's live table (starts at `colorSync`); reads and writes can be made to fail.
 @MainActor
 final class FakeGammaDevice: GammaDevice {
     static let colorSync = GammaTable(red: [0, 0.5, 1], green: [0, 0.5, 1], blue: [0, 0.5, 1])
     var live = FakeGammaDevice.colorSync
     var failWrites = false
     var failReads = false
-    var colorSyncRestores = 0
 
     func readTable(_ display: UInt32) -> GammaTable? { failReads ? nil : live }
     func writeTable(_ table: GammaTable, to display: UInt32) -> Bool {
         guard !failWrites else { return false }
         live = table
         return true
-    }
-    func restoreColorSync() {
-        colorSyncRestores += 1
-        live = Self.colorSync
     }
 }
 
@@ -44,10 +39,12 @@ final class FakeGammaDevice: GammaDevice {
         _ = s.apply(level: 8)
         d.failWrites = true
         #expect(!s.restore())
+        #expect(s.restorePending)
         #expect(s.base == FakeGammaDevice.colorSync)
         #expect(s.display == 1)
         d.failWrites = false
         #expect(s.restore())
+        #expect(!s.restorePending)
         #expect(d.live == FakeGammaDevice.colorSync)
         #expect(s.base == nil)
     }
@@ -63,31 +60,23 @@ final class FakeGammaDevice: GammaDevice {
         d.failWrites = false
         #expect(s.captureBase(1))
         #expect(s.base == FakeGammaDevice.colorSync)
-        #expect(d.colorSyncRestores == 0)
+        #expect(!s.restorePending)
     }
 
-    @Test func recaptureFallsBackToColorSyncWhenRestoreStillFails() {
+    /// Finding (round 2): no global ColorSync fallback; while the restore keeps failing, recapture is refused and
+    /// the kept base is never replaced by the dimmed table.
+    @Test func recaptureRefusedWhileRestoreStillFails() {
         let d = FakeGammaDevice()
         let s = GammaSession(device: d)
         _ = s.captureBase(1)
         _ = s.apply(level: 8)
         d.failWrites = true
         _ = s.restore()
-        #expect(s.captureBase(1))
-        #expect(d.colorSyncRestores == 1)
+        #expect(!s.captureBase(1))
         #expect(s.base == FakeGammaDevice.colorSync)
-    }
-
-    @Test func restoreWithFallbackUsesColorSync() {
-        let d = FakeGammaDevice()
-        let s = GammaSession(device: d)
-        _ = s.captureBase(1)
-        _ = s.apply(level: 5)
-        d.failWrites = true
-        #expect(s.restore(fallback: true))
-        #expect(d.colorSyncRestores == 1)
-        #expect(d.live == FakeGammaDevice.colorSync)
-        #expect(s.base == nil)
+        #expect(s.restorePending)
+        #expect(!s.apply(level: 1))
+        #expect(s.drift(level: 1) == .unreadable)
     }
 
     @Test func driftAndUnreadable() {

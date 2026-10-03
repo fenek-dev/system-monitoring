@@ -37,13 +37,12 @@ final class ExtraDimService: ExtraDimEffects {
         loop = ObservationLoop({ settings.extraDimEnabled }) { [weak self] on in self?.sync(on) }
     }
 
-    /// `applicationWillTerminate`: drop queued effects, restore gamma (ColorSync if the base write fails), drop the
-    /// tap and observers.
+    /// `applicationWillTerminate`: drop queued effects, restore gamma, drop the tap and observers. If the restore
+    /// write fails, Quartz still restores this process's gamma tables when it exits (spec §5.6).
     func shutdown() {
         loop?.cancel()
         loop = nil
         runner.disable()
-        gamma.restore(fallback: true)
         removeTap()
         events?.stop()
         events = nil
@@ -69,8 +68,7 @@ final class ExtraDimService: ExtraDimEffects {
         } else {
             runner.disable()
             removeTap()
-            events?.stop()
-            events = nil
+            stopEventsUnlessRestorePending()
             tapFailed = false
         }
     }
@@ -109,13 +107,17 @@ final class ExtraDimService: ExtraDimEffects {
     }
 
     /// Wake / screens wake / unlock / screen params (spec §5.4).
+    /// The runner drains queued key effects before evaluating the closure, and retries a pending restore at level 0.
     private func displayChanged() {
-        guard runner.machine.level > 0 else { return }
-        guard let id = display.id, id == gamma.display else {
-            runner.send(.builtinDisplayGone)
-            return
-        }
-        runner.send(.reapply)
+        runner.displayChanged { [display, gamma] in display.id != nil && display.id == gamma.display }
+        if applied != true { stopEventsUnlessRestorePending() }
+    }
+
+    /// Toggled off: display events are only kept to retry a restore that failed while the display was away.
+    private func stopEventsUnlessRestorePending() {
+        guard !gamma.restorePending else { return }
+        events?.stop()
+        events = nil
     }
 
     /// Watchdog (spec §5.5); the skip/clear/drift/fight-guard logic is in the runner and machine.
@@ -138,15 +140,10 @@ final class ExtraDimService: ExtraDimEffects {
         gamma.apply(level: level)
     }
 
-    /// A failed write keeps the base (spec §7). Built-in display still online → retry, then fall back to ColorSync;
-    /// display gone → keep it: `captureBase` recovers it before any recapture.
+    /// A failed write keeps the base (spec §7); it is retried on the next display event, toggle, capture or quit.
+    /// A capture is refused while it is pending (→ `.cannotDim`), so the dim never compounds.
     func restoreGamma() {
-        guard !gamma.restore() else { return }
-        if let id = display.id, id == gamma.display {
-            gamma.restore(fallback: true)
-        } else {
-            log.notice("gamma restore deferred: built-in display offline")
-        }
+        if !gamma.restore() { log.notice("gamma restore failed; retried on the next display event") }
     }
 
     func gammaDrift(level: Int) -> GammaSession.Drift {

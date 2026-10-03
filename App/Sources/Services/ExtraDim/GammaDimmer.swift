@@ -4,7 +4,8 @@ import os
 
 /// CoreGraphics gamma I/O behind `GammaSession` (extra-dim spec §4, §7), which owns the base/restore policy.
 /// Screenshots and recordings bypass the gamma table, so they stay normal. Quartz restores ColorSync gamma when the
-/// process exits, so a crash needs no handler. Every failure is logged here.
+/// process exits, so a crash needs no handler. Every failure is logged here. Never calls the global
+/// `CGDisplayRestoreColorSyncSettings` (it would reset other apps' tables on every display).
 @MainActor
 final class GammaDimmer: GammaDevice {
     private let log = Logger(subsystem: "dev.telltale", category: "ExtraDim")
@@ -31,10 +32,5 @@ final class GammaDimmer: GammaDevice {
         let err = CGSetDisplayTransferByTable(display, UInt32(table.count), table.red, table.green, table.blue)
         if err != .success { log.error("gamma write failed on display \(display): \(err.rawValue)") }
         return err == .success
-    }
-
-    func restoreColorSync() {
-        log.notice("gamma restore fell back to CGDisplayRestoreColorSyncSettings")
-        CGDisplayRestoreColorSyncSettings()
     }
 }

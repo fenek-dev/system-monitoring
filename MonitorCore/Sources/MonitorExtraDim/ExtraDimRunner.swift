@@ -3,11 +3,11 @@ import Foundation
 /// The side effects `ExtraDimRunner` drives (the app's adapters; fakes in tests).
 @MainActor
 public protocol ExtraDimEffects: AnyObject {
-    /// False when the table could not be read (→ `.gammaFailed`).
+    /// False when the table could not be read, or a previous restore is still pending (→ `.gammaFailed`).
     func captureBase() -> Bool
     /// False when the write failed (→ `.gammaFailed`).
     func applyGamma(level: Int) -> Bool
-    /// Never gated on the machine level: restoring with nothing captured is a no-op.
+    /// Never gated on the machine level: with nothing captured it is a no-op; a pending failed restore is retried.
     func restoreGamma()
     func gammaDrift(level: Int) -> GammaSession.Drift
     func showHUD(_ hud: ExtraDimMachine.HUD)
@@ -22,13 +22,16 @@ public protocol ExtraDimEffects: AnyObject {
 /// Key presses step the machine inside the event-tap callback, but their effects are queued (`pending`) and run by
 /// `drain()` after the callback returns (§5.1). Every other input drains the queue first, so effects always run in
 /// machine order. `disable()` discards the queue instead — a toggle-off must never be followed by a stale queued
-/// capture/apply — and restores unconditionally. A failed capture/apply/read becomes `.gammaFailed` (§7) and
-/// discards the rest of the queue, whose actions belong to a state the machine just left.
+/// capture/apply — and restores unconditionally. A failed capture/apply/read becomes `.gammaFailed` (§7).
+///
+/// `generation` is bumped by every clear (a batch containing `restoreGamma`, a failure, `disable()`); a batch in
+/// flight checks it between actions, so a clear that re-enters during an effect also stops the rest of that batch.
 @MainActor
 public final class ExtraDimRunner {
     public weak var effects: ExtraDimEffects?
     public private(set) var machine: ExtraDimMachine
     public private(set) var pending: [ExtraDimMachine.Action] = []
+    private var generation = 0
 
     public init(machine: ExtraDimMachine = ExtraDimMachine()) {
         self.machine = machine
@@ -62,13 +65,26 @@ public final class ExtraDimRunner {
         send(.setEnabled(true))
     }
 
-    /// Toggle off / quit: drops queued effects, clears the machine, then restores and stops the watchdog whatever
-    /// the level said.
+    /// Toggle off / quit: drops queued and in-flight effects, clears the machine, then restores and stops the
+    /// watchdog whatever the level said.
     public func disable() {
         pending = []
+        generation += 1
         run(machine.handle(.setEnabled(false)).actions)
         effects?.restoreGamma()
         effects?.stopWatchdog()
+    }
+
+    /// Wake / screens wake / unlock / screen params (§5.4). Queued effects run first, so `builtinStillDimmed` sees
+    /// the state they leave (e.g. a capture queued by the first press). Dimmed → re-apply, or clear when the built-in
+    /// display is gone; not dimmed → retry a restore that failed while the display was away.
+    public func displayChanged(builtinStillDimmed: () -> Bool) {
+        drain()
+        guard machine.level > 0 else {
+            effects?.restoreGamma()
+            return
+        }
+        send(builtinStillDimmed() ? .reapply : .builtinDisplayGone)
     }
 
     /// Watchdog tick (§5.5). Unreadable brightness skips the whole tick (no drift accounting); a readable one above
@@ -87,7 +103,10 @@ public final class ExtraDimRunner {
 
     private func run(_ actions: [ExtraDimMachine.Action]) {
         guard let effects else { return }
+        if actions.contains(.restoreGamma) { generation += 1 }
+        let batch = generation
         for action in actions {
+            guard generation == batch else { return }       // a clear re-entered during the previous effect
             let ok: Bool
             switch action {
             case .captureBase: ok = effects.captureBase()
@@ -97,7 +116,7 @@ public final class ExtraDimRunner {
             case .startWatchdog: effects.startWatchdog(); ok = true
             case .stopWatchdog: effects.stopWatchdog(); ok = true
             }
-            if !ok {
+            if !ok, generation == batch {
                 pending = []
                 run(machine.handle(.gammaFailed).actions)
                 return

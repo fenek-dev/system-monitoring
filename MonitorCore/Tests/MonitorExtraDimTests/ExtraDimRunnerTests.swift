@@ -17,7 +17,14 @@ final class FakeEffects: ExtraDimEffects {
     /// Level currently on screen (0 = normal), as the gamma effects left it.
     var shownLevel = 0
 
-    func captureBase() -> Bool { calls.append(.capture); return captureOK }
+    /// Runs inside `captureBase` (re-entrancy tests).
+    var onCapture: (() -> Void)?
+
+    func captureBase() -> Bool {
+        calls.append(.capture)
+        onCapture?()
+        return captureOK
+    }
     func applyGamma(level: Int) -> Bool {
         calls.append(.apply(level))
         if applyOK { shownLevel = level }
@@ -150,5 +157,95 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
         r.watchdogTick(brightness: 0, now: t0)
         #expect(e.calls == [.drift])
         #expect(r.machine.level == 3)
+    }
+
+    /// Hardening (round 2): a clear that re-enters during an effect stops the rest of the in-flight batch.
+    @Test func reentrantDisableDuringCaptureStopsTheBatch() {
+        let (r, e) = runner()
+        e.onCapture = { [unowned r] in r.disable() }
+        _ = r.keyDown(.down, brightness: 0)
+        r.drain()
+        #expect(e.calls == [.capture, .restore, .stopWatchdog, .restore, .stopWatchdog])
+        #expect(e.shownLevel == 0)
+        #expect(r.machine.level == 0)
+    }
+
+    @Test func displayChangedDimmedReappliesOrClears() {
+        let (r, e) = runner(level: 2)
+        r.displayChanged { true }
+        #expect(e.calls == [.apply(2)])
+        r.displayChanged { false }
+        #expect(e.calls.suffix(2) == [.restore, .stopWatchdog])
+        #expect(r.machine.level == 0)
+    }
+}
+
+/// Runner + real `GammaSession` on a fake device that can go offline (display unplugged / lid closed).
+@MainActor
+final class SessionEffects: ExtraDimEffects {
+    let device = FakeGammaDevice()
+    lazy var session = GammaSession(device: device)
+    var present = true { didSet { device.failWrites = !present; device.failReads = !present } }
+    var huds: [ExtraDimMachine.HUD] = []
+
+    func captureBase() -> Bool { present && session.captureBase(1) }
+    func applyGamma(level: Int) -> Bool { session.apply(level: level) }
+    func restoreGamma() { session.restore() }
+    func gammaDrift(level: Int) -> GammaSession.Drift { session.drift(level: level) }
+    func showHUD(_ hud: ExtraDimMachine.HUD) { huds.append(hud) }
+    func startWatchdog() {}
+    func stopWatchdog() {}
+    func scheduleDrain() {}
+
+    /// The service's classification: built-in display online and the one we captured.
+    var stillDimmed: Bool { present && session.display == 1 }
+}
+
+@Suite @MainActor struct ExtraDimRunnerSessionTests {
+    private func setup() -> (ExtraDimRunner, SessionEffects) {
+        let r = ExtraDimRunner(machine: ExtraDimMachine(enabled: true))
+        let e = SessionEffects()
+        r.effects = e
+        return (r, e)
+    }
+
+    /// Finding (round 2): dim → display gone (restore fails, level 0) → display back: the restore is retried.
+    @Test func pendingRestoreRetriedWhenDisplayReturns() {
+        let (r, e) = setup()
+        _ = r.keyDown(.down, brightness: 0)
+        r.drain()
+        #expect(e.device.live == FakeGammaDevice.colorSync.dimmed(level: 1))
+        e.present = false
+        r.displayChanged { e.stillDimmed }
+        #expect(r.machine.level == 0)
+        #expect(e.session.restorePending)
+        e.present = true
+        r.displayChanged { e.stillDimmed }                 // level 0: retry only
+        #expect(!e.session.restorePending)
+        #expect(e.device.live == FakeGammaDevice.colorSync)
+    }
+
+    @Test func dimRefusedWhileRestorePending() {
+        let (r, e) = setup()
+        _ = r.keyDown(.down, brightness: 0)
+        r.drain()
+        e.device.failWrites = true                          // display present, but writes fail
+        r.send(.builtinDisplayGone)
+        #expect(e.session.restorePending)
+        _ = r.keyDown(.down, brightness: 0)
+        r.drain()
+        #expect(e.huds.last == .cannotDim)
+        #expect(r.machine.level == 0)
+        #expect(e.session.base == FakeGammaDevice.colorSync)   // never the dimmed table
+    }
+
+    /// Finding (round 2): a same-display notification before the first press's queued capture must not clear it.
+    @Test func displayEventBeforeQueuedCaptureClassifiesAfterDrain() {
+        let (r, e) = setup()
+        _ = r.keyDown(.down, brightness: 0)
+        r.displayChanged { e.stillDimmed }
+        #expect(r.machine.level == 1)
+        #expect(e.device.live == FakeGammaDevice.colorSync.dimmed(level: 1))
+        #expect(e.huds == [.level(1)])
     }
 }
