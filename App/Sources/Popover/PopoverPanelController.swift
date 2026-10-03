@@ -32,10 +32,13 @@ final class PopoverPanelController: NSObject {
         guard let self, let panel, let view = host?.view else { return nil }
         return FlyoutPanelController.Popover(window: panel, hostView: view, screen: panel.screen ?? anchorScreen())
     }
+    /// Volume-mixer side panel (header toggle); nil without a mixer (demo mode). Hidden while the flyout shows.
+    private var mixerPanel: MixerPanelController?
+    private var closing = false
 
     /// `shortcuts` handles ⌘Q/⌘,/⌘D while the panel is key (the app is not active, so the main menu does not
     /// see them); return true when consumed.
-    init(env: AppEnvironment, anchor: @escaping @MainActor () -> NSRect?,
+    init(env: AppEnvironment, mixer: MixerModel?, anchor: @escaping @MainActor () -> NSRect?,
          anchorScreen: @escaping @MainActor () -> NSScreen?,
          onVisibilityChange: @escaping @MainActor (Bool) -> Void,
          shortcuts: @escaping @MainActor (NSEvent) -> Bool) {
@@ -44,6 +47,12 @@ final class PopoverPanelController: NSObject {
         self.anchorScreen = anchorScreen
         self.onVisibilityChange = onVisibilityChange
         self.shortcuts = shortcuts
+        super.init()
+        mixerPanel = mixer.map { MixerPanelController(model: $0) { [weak self] in self?.panel } }
+        flyout.onVisibleChange = { [weak self] visible in
+            guard let self, !closing else { return }
+            visible ? mixerPanel?.hide() : showMixerIfWanted()
+        }
     }
 
     var isOpen: Bool { panel != nil }
@@ -64,6 +73,7 @@ final class PopoverPanelController: NSObject {
             PopoverRoot(onRowHover: { [weak self] event in self?.flyout.rowHover(event) })
         }
         .environment(flyout.state)                      // source row keeps its hover fill while its flyout shows
+        .modifier(MixerToggleEnvironment(model: mixerPanel?.model) { [weak self] in self?.toggleMixer() })
         .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: AnyView(root))
         host.sizingOptions = [.preferredContentSize]
@@ -92,11 +102,22 @@ final class PopoverPanelController: NSObject {
         }
         panel.orderFrontRegardless()
         panel.makeKey()
+        showMixerIfWanted()
         installMonitors()
-        // Cmd-Tab / another app activating / one of our windows becoming key → close.
+        // Cmd-Tab / another app activating / one of our other windows becoming key → close. Key moving between
+        // the popover and the mixer panel keeps it open; the new key window is known only after this turn.
         resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.close() }
+            forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] note in
+            let window = note.object as? NSWindow
+            MainActor.assumeIsolated {
+                guard let self, let window, window === self.panel || window === self.mixerPanel?.window else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let panel = self.panel else { return }
+                    let key = NSApp.keyWindow
+                    if key === panel || (key != nil && key === self.mixerPanel?.window) { return }
+                    self.close()
+                }
+            }
         }
         let nc = NotificationCenter.default
         placementObservers = [
@@ -116,6 +137,8 @@ final class PopoverPanelController: NSObject {
 
     func close() {
         guard let panel else { return }
+        closing = true
+        defer { closing = false }
         flyout.dismiss()
         removeMonitors()
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
@@ -127,8 +150,22 @@ final class PopoverPanelController: NSObject {
         panel.contentViewController = nil
         self.panel = nil
         host = nil
+        mixerPanel?.hide()                              // after `panel` is nil: no key hand-back to a closed popover
         lastClose = .now
         onVisibilityChange(false)
+    }
+
+    /// Header button: flip the persisted state, then show or hide the mixer beside the popover.
+    private func toggleMixer() {
+        guard let mixerPanel else { return }
+        mixerPanel.model.panelOpen.toggle()
+        mixerPanel.model.panelOpen ? showMixerIfWanted() : mixerPanel.hide()
+    }
+
+    /// Mixer wanted and the left side free (no flyout).
+    private func showMixerIfWanted() {
+        guard panel != nil, flyout.window == nil, mixerPanel?.model.panelOpen == true else { return }
+        mixerPanel?.show()
     }
 
     /// Size from the laid-out SwiftUI content (never an assumed 360), then `PopoverPlacement` against the visible
@@ -148,6 +185,7 @@ final class PopoverPanelController: NSObject {
         panel.setFrame(f, display: true)
         placing = false
         reclamp()
+        mixerPanel?.reposition()
         flyout.reposition()
         Self.log.debug("""
             place anchor=\(String(describing: a), privacy: .public) visible=\(String(describing: screen.visibleFrame), privacy: .public) \
@@ -164,6 +202,7 @@ final class PopoverPanelController: NSObject {
             placing = true
             panel.setFrame(c, display: true)
             placing = false
+            mixerPanel?.reposition()
             flyout.reposition()
         }
         panel.invalidateShadow()
@@ -204,16 +243,17 @@ final class PopoverPanelController: NSObject {
     /// True when the event is consumed.
     private func handleLocal(_ event: NSEvent) -> Bool {
         guard let panel else { return false }
+        let inMixer = event.window != nil && event.window === mixerPanel?.window
         switch event.type {
         case .keyDown:
-            guard event.window === panel else { return false }
+            guard event.window === panel || inMixer else { return false }
             if event.keyCode == 53 {                                    // Esc
                 close()
                 return true
             }
             return event.modifierFlags.contains(.command) && shortcuts(event)
         default:
-            if event.window === panel { return false }
+            if event.window === panel || inMixer { return false }
             if let f = flyout.window, event.window === f { return false }   // flyout app clicks
 
             if event.window?.className.contains("StatusBar") == true { return false }   // status button toggles
@@ -225,5 +265,15 @@ final class PopoverPanelController: NSObject {
     private func removeMonitors() {
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
+    }
+}
+
+/// Feeds the header's mixer button (`\.popoverMixer`) from the observed `MixerModel.panelOpen`; no model, no button.
+private struct MixerToggleEnvironment: ViewModifier {
+    let model: MixerModel?
+    let toggle: @MainActor () -> Void
+
+    func body(content: Content) -> some View {
+        content.environment(\.popoverMixer, model.map { PopoverMixerToggle(isOpen: $0.panelOpen, toggle: toggle) })
     }
 }

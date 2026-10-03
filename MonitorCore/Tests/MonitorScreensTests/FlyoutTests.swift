@@ -186,6 +186,21 @@ struct FlyoutTests {
         #expect(tall.minY == 8 && tall.maxY == 867)                    // taller than the screen: capped
     }
 
+    // MARK: SidePanelPlacement
+
+    @Test func sidePanelLeftOfPopoverTopAligned() {
+        let f = SidePanelPlacement.frame(popoverFrame: Self.popover, visibleFrame: Self.visible,
+                                         size: CGSize(width: 340, height: 300), gap: 6)
+        #expect(f == CGRect(x: 1000 - 6 - 340, y: 867 - 300, width: 340, height: 300))
+    }
+
+    @Test func sidePanelFallsBackRight() {
+        let popover = CGRect(x: 100, y: 395, width: 360, height: 472)
+        let f = SidePanelPlacement.frame(popoverFrame: popover, visibleFrame: Self.visible,
+                                         size: CGSize(width: 340, height: 300), gap: 6)
+        #expect(f.minX == 466 && f.maxY == 867)
+    }
+
     // MARK: HoverIntent
 
     /// Manual clock: timers fire only when the test advances time.

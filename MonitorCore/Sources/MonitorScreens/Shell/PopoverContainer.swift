@@ -6,17 +6,20 @@ import SwiftUI
 public struct PopoverContainer<Content: View>: View {
     private let content: Content
     private let drawsShadow: Bool
+    private let width: CGFloat
 
-    public init(drawsShadow: Bool = true, @ViewBuilder content: () -> Content) {
+    /// `width` nil = the popover's 360.
+    public init(drawsShadow: Bool = true, width: CGFloat? = nil, @ViewBuilder content: () -> Content) {
         self.content = content()
         self.drawsShadow = drawsShadow
+        self.width = width ?? ShellStyle.popoverWidth
     }
 
     public var body: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         content
             .padding(6)
-            .frame(width: ShellStyle.popoverWidth)
+            .frame(width: width)
             .background(shape.fill(ShellStyle.bgPopover))
             .overlay(shape.strokeBorder(ShellStyle.borderPopover, lineWidth: 1))
             .clipShape(shape)

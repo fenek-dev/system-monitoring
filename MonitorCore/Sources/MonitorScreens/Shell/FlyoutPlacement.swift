@@ -28,3 +28,28 @@ public enum FlyoutPlacement {
         return CGRect(x: x, y: (top - h).rounded(), width: w, height: h)
     }
 }
+
+/// Volume-mixer side panel position, AppKit coordinates: LEFT of the popover, `gap` from its edge, top edges
+/// aligned; RIGHT when the left side has no room inside the 8-pt margin; else over the popover at the left margin.
+/// Clamped vertically inside the margins, height capped at the visible height − 16.
+public enum SidePanelPlacement {
+    public static let margin = PopoverPlacement.margin
+
+    public static func frame(popoverFrame: CGRect, visibleFrame: CGRect, size: CGSize, gap: CGFloat = 6) -> CGRect {
+        let h = min(size.height, max(visibleFrame.height - 2 * margin, 0))
+        let w = size.width
+        let left = popoverFrame.minX - gap - w
+        let right = popoverFrame.maxX + gap
+        var x: CGFloat
+        if left >= visibleFrame.minX + margin {
+            x = left
+        } else if right + w <= visibleFrame.maxX - margin {
+            x = right
+        } else {
+            x = visibleFrame.minX + margin
+        }
+        x = x.rounded(.down)
+        let top = max(min(popoverFrame.maxY, visibleFrame.maxY - margin), visibleFrame.minY + margin + h)
+        return CGRect(x: x, y: (top - h).rounded(), width: w, height: h)
+    }
+}

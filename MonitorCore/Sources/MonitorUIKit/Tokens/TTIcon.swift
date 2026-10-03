@@ -6,7 +6,7 @@ import SwiftUI
 public enum TTIconName: String, CaseIterable, Sendable {
     case overview, cpu, gpu, memory, network, thermals, power, disk, processes, history
     case pause, play, settings, chevronRight, chevronDown, ellipsis, search, battery, fan, eject, quit, dragHandle
-    case overlay
+    case overlay, volume
 
     /// SVG path data in the 16 grid (rects/circles/ellipses converted to path commands).
     var svg: String {
@@ -62,6 +62,8 @@ public enum TTIconName: String, CaseIterable, Sendable {
             "M4 5.5h8M4 8h8M4 10.5h8"
         case .overlay:                                           // screen with a pinned top-right panel
             Self.rect(1.5, 2.5, 13, 11, 1.5) + Self.rect(9, 5, 3, 2, 0)
+        case .volume:                                            // speaker with two waves
+            "M2 6H4.5L8 3V13L4.5 10H2z" + "M10.5 5.5A3.5 3.5 0 0 1 10.5 10.5M12.5 3.5A6.5 6.5 0 0 1 12.5 12.5"
         }
     }
 

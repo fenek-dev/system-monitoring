@@ -2,7 +2,7 @@ name: Warden
 options:
   bundleIdPrefix: dev.warden
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -34,7 +34,8 @@ targets:
         CFBundleDisplayName: Warden
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        LSMinimumSystemVersion: "14.0"
+        LSMinimumSystemVersion: "15.0"
+        NSAudioCaptureUsageDescription: Warden reads each app's audio so it can replay it at the volume you set.
     dependencies:
       - package: MonitorCore
-        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit, MonitorExtraDim, CPrivate]
+        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit, MonitorExtraDim, CPrivate, MixerCore]

@@ -98,6 +98,9 @@ final class FlyoutPanelController {
 
     /// Which row's flyout is shown; the popover environment reads it (source-row highlight).
     let state = FlyoutState()
+    /// Called with true before the flyout appears (before placement) and false once it is gone; the popover hides
+    /// the volume-mixer side panel meanwhile (both use the popover's left side).
+    var onVisibleChange: (@MainActor (Bool) -> Void)?
     private let pointer = FlyoutPointer()
     private let env: AppEnvironment
     private let popover: @MainActor () -> Popover?
@@ -178,6 +181,7 @@ final class FlyoutPanelController {
         if let host {
             host.rootView = root                         // switch rows: same panel, new content
         } else {
+            onVisibleChange?(true)
             let host = FlyoutHostingView(rootView: root)
             host.sizingOptions = [.intrinsicContentSize]
             host.onPointer = { [weak self] p in self?.pointerMoved(p) }
@@ -216,6 +220,7 @@ final class FlyoutPanelController {
         self.panel = nil
         host = nil
         lastSize = nil
+        onVisibleChange?(false)
     }
 
     /// VoiceOver: move to the flyout and read its header plus the top 3 lines.

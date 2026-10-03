@@ -54,6 +54,21 @@ public struct PopoverRoot: View {
     }
 }
 
+/// The App's volume-mixer side panel: header button state and action. Nil (renders, previews, demo) hides the button.
+public struct PopoverMixerToggle {
+    public var isOpen: Bool
+    public var toggle: @MainActor () -> Void
+
+    public init(isOpen: Bool, toggle: @escaping @MainActor () -> Void) {
+        self.isOpen = isOpen
+        self.toggle = toggle
+    }
+}
+
+public extension EnvironmentValues {
+    @Entry var popoverMixer: PopoverMixerToggle? = nil
+}
+
 /// 1 pt `separator`, margin 4 vertical, 10 horizontal.
 struct PopoverDivider: View {
     var body: some View { TTSeparator().padding(.vertical, 4).padding(.horizontal, 10) }
@@ -154,6 +169,7 @@ struct PopoverHeader: View {
     @Environment(LiveModel.self) private var live
     @Environment(\.appCommands) private var commands
     @Environment(\.processActions) private var actions
+    @Environment(\.popoverMixer) private var mixer
 
     var body: some View {
         let alert = live.alert
@@ -173,6 +189,10 @@ struct PopoverHeader: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
+            if let mixer {
+                TTIconButton(.volume, label: mixer.isOpen ? "Hide Volume Mixer" : "Show Volume Mixer",
+                             variant: .popover, tint: mixer.isOpen ? TTColor.accent : nil) { mixer.toggle() }
+            }
             TTIconButton(paused ? .play : .pause, label: paused ? "Resume sampling" : "Pause sampling",
                          variant: .popover) { ops.setPaused(!paused) }
             TTIconButton(.settings, label: "Settings", variant: .popover) { ops.openSettings() }

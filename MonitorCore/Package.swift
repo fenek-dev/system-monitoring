@@ -16,7 +16,7 @@ let privateLinks: [LinkerSetting] = [
 
 let package = Package(
     name: "MonitorCore",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     products: [
         .library(name: "MonitorModel", targets: ["MonitorModel"]),
         .library(name: "MonitorLive", targets: ["MonitorLive"]),
@@ -26,6 +26,7 @@ let package = Package(
         .library(name: "MonitorExtraDim", targets: ["MonitorExtraDim"]),
         // The app's Extra Dim adapters read the backlight through DisplayServices.h (weak, tt_*_available()).
         .library(name: "CPrivate", targets: ["CPrivate"]),
+        .library(name: "MixerCore", targets: ["MixerCore"]),
         .executable(name: "telltale-render", targets: ["telltale-render"]),
         .executable(name: "telltale-probe", targets: ["telltale-probe"]),
     ],
@@ -59,6 +60,8 @@ let package = Package(
             dependencies: ["MonitorModel", .product(name: "GRDB", package: "GRDB.swift")]
         ),
         .target(name: "MonitorUIKit", dependencies: ["MonitorModel"]),
+        // Per-app volume (Core Audio process taps), from the standalone Volume Mixer; Swift 5 mode as written there.
+        .target(name: "MixerCore", swiftSettings: [.swiftLanguageMode(.v5)]),
         // Test-support library (imports Testing): assertSnapshot. Never linked by the app.
         .target(name: "MonitorSnapshotTesting", dependencies: ["MonitorUIKit", "SnapshotProcessSetup"]),
         // ObjC, test-only: image constructor sets AppleFontSmoothing = 0 before any test lays out text.
@@ -111,6 +114,7 @@ let package = Package(
             resources: [.copy("Fixtures")]
         ),
         .testTarget(name: "MonitorMocksTests", dependencies: ["MonitorMocks", "MonitorModel"]),
+        .testTarget(name: "MixerCoreTests", dependencies: ["MixerCore"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(
             name: "MonitorRuntimeTests",
             dependencies: ["MonitorRuntime", "MonitorModel", "MonitorMocks", "MonitorStore", "MonitorEngine"]

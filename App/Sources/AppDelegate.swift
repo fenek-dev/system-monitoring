@@ -89,6 +89,7 @@ import os
                                           menu: { [weak self] in self?.statusMenu() ?? NSMenu() })
         popover = PopoverPanelController(
             env: env,
+            mixer: env.options.mockScenario == nil ? MixerModel() : nil,     // live audio taps: never in demo mode
             anchor: { [weak self] in self?.statusItem.buttonScreenFrame },
             anchorScreen: { [weak self] in self?.statusItem.buttonScreen },
             onVisibilityChange: { [weak self] open in
