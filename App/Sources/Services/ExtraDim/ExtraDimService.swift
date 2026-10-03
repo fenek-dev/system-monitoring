@@ -5,19 +5,20 @@ import MonitorScreens
 import MonitorUIKit
 import os
 
-/// Extra Dim glue (extra-dim spec §3, §5): owns the pure `ExtraDimMachine`, feeds it key presses, watchdog ticks
-/// and display events, and executes its actions on the adapters. Follows `settings.extraDimEnabled`; answers
-/// Settings' status poll (creating the tap once Accessibility is granted). The dim level is never persisted.
+/// Extra Dim glue (extra-dim spec §3, §5): feeds key presses, watchdog ticks and display events to
+/// `ExtraDimRunner` (machine + ordered effect queue) and implements its effects on the adapters. Follows
+/// `settings.extraDimEnabled`; answers Settings' status poll (creating the tap once Accessibility is granted).
+/// The dim level is never persisted.
 @MainActor
-final class ExtraDimService {
+final class ExtraDimService: ExtraDimEffects {
     static let watchdogInterval: TimeInterval = 1
     static let accessibilitySettingsURL =
         URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
 
     private let settings: SettingsStore
-    private var machine = ExtraDimMachine()
+    private let runner = ExtraDimRunner()
     private let display = BuiltinDisplay()
-    private let gamma = GammaDimmer()
+    private let gamma = GammaSession(device: GammaDimmer())
     private let hud = ExtraDimHUDPanel()
     private var tap: BrightnessKeyTap?
     private var tapFailed = false
@@ -30,16 +31,19 @@ final class ExtraDimService {
 
     init(settings: SettingsStore) {
         self.settings = settings
+        runner.effects = self
         settings.refreshExtraDimStatus = { [weak self] in self?.refreshStatus() ?? .off }
         settings.openAccessibilitySettings = { NSWorkspace.shared.open(Self.accessibilitySettingsURL) }
         loop = ObservationLoop({ settings.extraDimEnabled }) { [weak self] on in self?.sync(on) }
     }
 
-    /// `applicationWillTerminate`: restore gamma, drop the tap and observers.
+    /// `applicationWillTerminate`: drop queued effects, restore gamma (ColorSync if the base write fails), drop the
+    /// tap and observers.
     func shutdown() {
         loop?.cancel()
         loop = nil
-        run(machine.handle(.setEnabled(false)).actions)
+        runner.disable()
+        gamma.restore(fallback: true)
         removeTap()
         events?.stop()
         events = nil
@@ -58,12 +62,12 @@ final class ExtraDimService {
             return
         }
         if on {
-            run(machine.handle(.setEnabled(true)).actions)
+            runner.enable()
             events = events ?? DisplayEvents { [weak self] in self?.displayChanged() }
             tapFailed = false
             if launch ? AXIsProcessTrusted() : Self.promptForTrust() { installTap() }
         } else {
-            run(machine.handle(.setEnabled(false)).actions)
+            runner.disable()
             removeTap()
             events?.stop()
             events = nil
@@ -99,67 +103,66 @@ final class ExtraDimService {
 
     // MARK: Inputs
 
-    /// Tap callback (spec §5.1): only a brightness read and a machine step; the actions run after it returns.
+    /// Tap callback (spec §5.1): only a brightness read and a machine step; the runner queues the effects.
     private func keyDown(_ key: ExtraDimMachine.Key) -> Bool {
-        let level = display.id.flatMap { display.brightness($0) }
-        let step = machine.handle(.key(key, brightness: level))
-        if !step.actions.isEmpty {
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.run(step.actions) }
-            }
-        }
-        return step.consumeKey
+        runner.keyDown(key, brightness: display.id.flatMap { display.brightness($0) })
     }
 
     /// Wake / screens wake / unlock / screen params (spec §5.4).
     private func displayChanged() {
-        guard machine.level > 0 else { return }
+        guard runner.machine.level > 0 else { return }
         guard let id = display.id, id == gamma.display else {
-            feed(.builtinDisplayGone)
+            runner.send(.builtinDisplayGone)
             return
         }
-        feed(.reapply)
+        runner.send(.reapply)
     }
 
-    /// Watchdog (spec §5.5): clears when the backlight went above min, re-applies on drift (fight guard in the machine).
+    /// Watchdog (spec §5.5); the skip/clear/drift/fight-guard logic is in the runner and machine.
     private func tick() {
-        guard let id = display.id else {
-            feed(.builtinDisplayGone)
+        guard let id = display.id, id == gamma.display else {
+            runner.send(.builtinDisplayGone)
             return
         }
-        feed(.brightness(display.brightness(id)))
-        guard machine.level > 0 else { return }
-        if gamma.drifted(level: machine.level) == true { feed(.gammaDrift(at: Date())) }
+        runner.watchdogTick(brightness: display.brightness(id), now: Date())
     }
 
-    private func feed(_ input: ExtraDimMachine.Input) {
-        run(machine.handle(input).actions)
+    // MARK: ExtraDimEffects
+
+    func captureBase() -> Bool {
+        guard let id = display.id else { return false }
+        return gamma.captureBase(id)
     }
 
-    // MARK: Actions
+    func applyGamma(level: Int) -> Bool {
+        gamma.apply(level: level)
+    }
 
-    private func run(_ actions: [ExtraDimMachine.Action]) {
-        for action in actions {
-            switch action {
-            case .captureBase:
-                guard let id = display.id, gamma.captureBase(id) else { return feed(.gammaFailed) }
-            case .applyGamma(let level):
-                guard gamma.apply(level: level) else { return feed(.gammaFailed) }
-            case .restoreGamma:
-                gamma.restore()
-            case .showHUD(let content):
-                if content == .resetByOtherApp { log.notice("extra dim reset: another app keeps writing the gamma table") }
-                hud.show(Self.hudContent(content), on: gamma.display.flatMap(display.screen) ?? display.id.flatMap(display.screen))
-            case .startWatchdog:
-                startWatchdog()
-            case .stopWatchdog:
-                watchdog?.invalidate()
-                watchdog = nil
-            }
+    /// A failed write keeps the base (spec §7). Built-in display still online → retry, then fall back to ColorSync;
+    /// display gone → keep it: `captureBase` recovers it before any recapture.
+    func restoreGamma() {
+        guard !gamma.restore() else { return }
+        if let id = display.id, id == gamma.display {
+            gamma.restore(fallback: true)
+        } else {
+            log.notice("gamma restore deferred: built-in display offline")
         }
     }
 
-    private func startWatchdog() {
+    func gammaDrift(level: Int) -> GammaSession.Drift {
+        gamma.drift(level: level)
+    }
+
+    func showHUD(_ content: ExtraDimMachine.HUD) {
+        switch content {
+        case .resetByOtherApp: log.notice("extra dim reset: another app keeps writing the gamma table")
+        case .cannotDim: log.error("extra dim reset: gamma table capture/write/read failed")
+        case .level: break
+        }
+        hud.show(Self.hudContent(content), on: display.id.flatMap(display.screen))
+    }
+
+    func startWatchdog() {
         watchdog?.invalidate()
         let timer = Timer(timeInterval: Self.watchdogInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -167,6 +170,17 @@ final class ExtraDimService {
         timer.tolerance = 0.2
         RunLoop.main.add(timer, forMode: .common)
         watchdog = timer
+    }
+
+    func stopWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
+    }
+
+    func scheduleDrain() {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.runner.drain() }
+        }
     }
 
     static func hudContent(_ hud: ExtraDimMachine.HUD) -> TTExtraDimHUD.Content {

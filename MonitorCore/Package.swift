@@ -40,7 +40,8 @@ let package = Package(
         .target(name: "MonitorModel"),
 
         .target(name: "MonitorLive", dependencies: ["MonitorModel"]),
-        // Pure Extra Dim logic (state machine, dim curve, gamma table math); no AppKit/CoreGraphics/time.
+        // Pure Extra Dim logic (state machine, effect runner, dim curve, gamma table/session policy behind
+        // protocols); no AppKit/CoreGraphics/time.
         .target(name: "MonitorExtraDim"),
         .target(name: "MonitorEngine", dependencies: ["MonitorModel"]),
         .target(
