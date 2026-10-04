@@ -11,6 +11,13 @@ T1 BundleID · T2 InstalledAppSet · T3 CategoryRules/DevToolProbe/GitTracking �
 - Perf: classify of a 182k-node synthetic tree: 4.5 ms release (best of 5), 225 ms debug build (advisory target < 50 ms met in release).
 - Spotlight (real `~`, `kMDItemFSSize > 50 MB && kMDItemLastUsedDate == *`): 7 hits in 0.24 s (unfiltered size-only query: 873 hits, 7 with a date).
 
+## Review r1 (Codex, 13 findings, all fixed; regression tests in Classifier/BuildDir/InstalledApps/ClassifierProcess suites)
+- P1: `resolve` builds an `InstalledAppSet` from `found` and applies full ownership rules; Docker images + injected data dirs are `protectedComponents` (normalized path components, no tree lookup) checked in `usable`, Large & Old, and the simulator row; `ageIncomplete` (restricted descendant, build dirs excluded like `subtreeMaxMtime`) fails closed for Leftovers, archives and stale build-dir projects; `git --literal-pathspecs`; nested bundles read even without an outer ID.
+- P2: `BundleID.isTeamIDOnly` excluded from User Caches; `ProcessRun` bounded (SIGTERM, SIGKILL after `grace`, dispatch-source drain abandoned `grace` after exit); `SpotlightLastUsed.query(root:minBytes:deadline: = 10)` runs the sync query on a worker and `MDQueryStop`s at the deadline; `mdfind -0`.
+- P3: nested-bundle test uses unrelated vendors; `parseUnavailable` table test.
+- Break-check: removing literal-pathspecs, `usable` protected check, discovered-ownership in `resolve`, `ageIncomplete` leftover guard → 13 red cases across the new tests (reverted).
+- Docker info row is exempt from the protected check (it deletes nothing).
+
 ## Interface deltas (all `public` in `MonitorDiskTools`, `Sources/MonitorDiskTools/Classify/`)
 - `BundleID.normalize(_:) -> String?`, `.isAppleOwned(_:) -> Bool` (BundleID.swift)
 - `InstalledAppSet.build(home:mdfind:)`, `.liveMdfind`, `init(ids: [String: OwnerApp])`, `.owns(_:)`, `.app(for:)` (InstalledAppSet.swift)
