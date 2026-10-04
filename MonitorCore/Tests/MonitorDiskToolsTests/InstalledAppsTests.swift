@@ -1,5 +1,6 @@
 import Foundation
 import MonitorModel
+import Synchronization
 import Testing
 @testable import MonitorDiskTools
 
@@ -68,6 +69,17 @@ import Testing
         let set = InstalledAppSet.build(home: home, mdfind: { [] })
         #expect(set.app(for: "io.inner.app")?.appPath == home + "/Applications/Odd.app")
         #expect(set.app(for: "net.noid.ext")?.appPath == home + "/Applications/NoID.app")
+    }
+
+    /// Bug caught: `mdfind` run without `-0`, so output is newline-delimited and the NUL parser reads one blob.
+    @Test func mdfindInvocationIsNulDelimited() throws {
+        let calls = Mutex<[[String]]>([])
+        let mdfind = InstalledAppSet.mdfind(run: { executable, arguments in
+            calls.withLock { $0.append([executable] + arguments) }
+            return ProcessRun.Output(status: 0, stdout: Data("/Applications/A.app\0/Applications/B.app\0".utf8))
+        })
+        #expect(try mdfind() == ["/Applications/A.app", "/Applications/B.app"])
+        #expect(calls.withLock { $0 } == [["/usr/bin/mdfind", "-0", "kMDItemContentType == com.apple.application-bundle"]])
     }
 
     /// Bug caught: newline-separated `mdfind` output splits paths that contain a newline.

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import MonitorDiskTools
 
@@ -35,11 +36,21 @@ import Testing
         #expect(String(decoding: output.stdout, as: UTF8.self) == "abc")
     }
 
-    /// Bug caught: an unbounded Spotlight query stalling the classify pipeline; a zero deadline must still return.
-    @Test func spotlightQueryHonorsDeadline() {
-        let (_, elapsed) = Self.timed {
-            SpotlightLastUsed.query(root: NSHomeDirectory(), minBytes: 0, deadline: 0.001)
+    /// Bug caught: a stalled Spotlight query blocking the classify pipeline: the deadline must cancel it and return
+    /// what was read so far. The stalling query waits for its cancel hook for up to 5 s.
+    @Test func stalledSpotlightQueryIsCancelledAtDeadline() {
+        let cancelled = Mutex(false)
+        let date = Date(timeIntervalSince1970: 42)
+        let (result, elapsed) = Self.timed {
+            SpotlightLastUsed.bounded(deadline: 0.2) { shared in
+                let stop = DispatchSemaphore(value: 0)
+                shared.setStop { stop.signal() }
+                shared.record("/partial", date)
+                if stop.wait(timeout: .now() + 5) == .success { cancelled.withLock { $0 = true } }
+            }
         }
-        #expect(elapsed < 10)
+        #expect(cancelled.withLock { $0 })
+        #expect(result == ["/partial": date])
+        #expect(elapsed < 2)
     }
 }

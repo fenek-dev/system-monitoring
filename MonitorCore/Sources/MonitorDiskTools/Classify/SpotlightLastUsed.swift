@@ -5,10 +5,16 @@ import Synchronization
 /// `kMDItemLastUsedDate` of large files under a root, from one scoped Spotlight query (spec §6.4). Most files lack
 /// the attribute, so the query asks only for items that have it; the classifier takes the max with mtime/addedTime.
 public enum SpotlightLastUsed {
-    private final class Shared: Sendable {
-        /// Address of the running query (`MDQuery` is not Sendable); cleared under the lock before the query dies.
-        let query = Mutex<Int?>(nil)
-        let result = Mutex<[String: Date]>([:])
+    /// What a running query shares with the thread waiting on it: partial results and a way to cancel.
+    final class Shared: Sendable {
+        private let stopper = Mutex<(@Sendable () -> Void)?>(nil)
+        private let found = Mutex<[String: Date]>([:])
+
+        func setStop(_ stop: (@Sendable () -> Void)?) { stopper.withLock { $0 = stop } }
+        /// Runs `stop` under the lock, so a query clearing its stopper cannot die while it is being stopped.
+        func stop() { stopper.withLock { $0?() } }
+        func record(_ path: String, _ date: Date) { found.withLock { $0[path] = date } }
+        var results: [String: Date] { found.withLock { $0 } }
     }
 
     /// Blocks the caller for at most `deadline` seconds (query ~0.2-0.35 s measured). On timeout the query is
@@ -16,23 +22,23 @@ public enum SpotlightLastUsed {
     /// classifier then ages files by mtime / addedTime alone, so a file only Spotlight knew was opened may be offered
     /// as Large & Old (Review tier, Trash is undoable).
     public static func query(root: String, minBytes: UInt64, deadline: TimeInterval = 10) -> [String: Date] {
+        bounded(deadline: deadline) { run(root: root, minBytes: minBytes, shared: $0) }
+    }
+
+    /// Runs `work` on a worker thread and cancels it through `Shared.stop` once `deadline` passes.
+    static func bounded(deadline: TimeInterval, work: @escaping @Sendable (Shared) -> Void) -> [String: Date] {
         let shared = Shared()
         let finished = DispatchSemaphore(value: 0)
-        // The synchronous query runs on its own thread so the deadline can stop it from here.
         DispatchQueue.global(qos: .utility).async {
-            run(root: root, minBytes: minBytes, shared: shared)
+            work(shared)
             finished.signal()
         }
         if finished.wait(timeout: .now() + deadline) == .timedOut {
-            DiskTools.log.error("spotlight: query over \(root, privacy: .public) exceeded \(deadline)s, stopping")
-            shared.query.withLock { address in
-                if let address, let pointer = UnsafeRawPointer(bitPattern: address) {
-                    MDQueryStop(Unmanaged<MDQuery>.fromOpaque(pointer).takeUnretainedValue())
-                }
-            }
+            DiskTools.log.error("spotlight: query exceeded \(deadline)s, stopping")
+            shared.stop()
             _ = finished.wait(timeout: .now() + 2)
         }
-        return shared.result.withLock { $0 }
+        return shared.results
     }
 
     private static func run(root: String, minBytes: UInt64, shared: Shared) {
@@ -42,8 +48,14 @@ public enum SpotlightLastUsed {
             return
         }
         MDQuerySetSearchScope(query, [root] as CFArray, 0)
-        shared.query.withLock { $0 = Int(bitPattern: Unmanaged.passUnretained(query).toOpaque()) }
-        defer { shared.query.withLock { $0 = nil } }
+        // `MDQuery` is not Sendable: the stopper carries its address and is cleared before the query is released.
+        let address = Int(bitPattern: Unmanaged.passUnretained(query).toOpaque())
+        shared.setStop {
+            if let pointer = UnsafeRawPointer(bitPattern: address) {
+                MDQueryStop(Unmanaged<MDQuery>.fromOpaque(pointer).takeUnretainedValue())
+            }
+        }
+        defer { shared.setStop(nil) }
         guard MDQueryExecute(query, CFOptionFlags(kMDQuerySynchronous.rawValue)) else {
             DiskTools.log.error("spotlight: MDQueryExecute failed for \(root, privacy: .public)")
             return
@@ -55,7 +67,7 @@ public enum SpotlightLastUsed {
             let item = Unmanaged<MDItem>.fromOpaque(raw).takeUnretainedValue()
             guard let path = MDItemCopyAttribute(item, kMDItemPath) as? String,
                   let used = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date else { continue }
-            shared.result.withLock { $0[path] = used }
+            shared.record(path, used)
         }
     }
 }

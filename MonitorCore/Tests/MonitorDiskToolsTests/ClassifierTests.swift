@@ -334,6 +334,26 @@ import Testing
         #expect(result.set.items.filter { $0.mode == .simctl }.isEmpty)
     }
 
+    /// Bug caught: only simulators present in the scan were checked; the probe also returns DEAD-2, whose protected
+    /// dir is not in the tree, and `simctl delete unavailable` would delete it.
+    @Test func simulatorRowSuppressedByUnscannedSimulator() {
+        let result = F.classify([T.dir("Library", [T.dir("Developer", [T.dir("CoreSimulator", [T.dir("Devices", [
+            F.aged("DEAD-1", days: 1, bytes: 300),
+        ])])])])], classifier: F.classifier(
+            devTools: FakeDevTools(udids: ["DEAD-1", "DEAD-2"]),
+            dataDirectories: ["/Users/test/Library/Developer/CoreSimulator/Devices/DEAD-2/data/staging"]))
+        #expect(result.set.items.filter { $0.mode == .simctl }.isEmpty)
+    }
+
+    /// Bug caught: unreadability stopped propagating at a build dir, so a leftover whose only unreadable part sits
+    /// under `build/` looked stale.
+    @Test func leftoverWithUnreadableDescendantBelowBuildDirFailsClosed() {
+        let result = F.classify(Self.appSupport([
+            F.aged("com.gone.app", days: 300, [T.dir("build", flags: .buildDir, [.restricted("Private")])]),
+        ]))
+        #expect(result.unresolvedBundleIDs.isEmpty)
+    }
+
     @Test func simulatorRowSuppressedByOwnNamedData() {
         let result = F.classify([T.dir("Library", [T.dir("Developer", [T.dir("CoreSimulator", [T.dir("Devices", [
             F.aged("DEAD-1", days: 1, bytes: 300, [F.aged("dev.telltale-dev", days: 1)]),

@@ -106,12 +106,20 @@ public struct InstalledAppSet: Sendable {
     }
 
     /// `mdfind "kMDItemContentType == com.apple.application-bundle"`, ~0.1 s.
-    public static let liveMdfind: @Sendable () throws -> [String] = {
-        // `-0`: paths may contain newlines.
-        let out = try ProcessRun.run(
-            "/usr/bin/mdfind", ["-0", "kMDItemContentType == com.apple.application-bundle"], timeout: 15)
-        guard out.status == 0 else { throw ProcessRunError.launchFailed("mdfind exited \(out.status)") }
-        return parseNulSeparated(out.stdout)
+    public static let liveMdfind: @Sendable () throws -> [String] = mdfind(run: { executable, arguments in
+        try ProcessRun.run(executable, arguments, timeout: 15)
+    })
+
+    /// `run` is the process boundary: tests record the arguments instead of spawning.
+    static func mdfind(
+        run: @escaping @Sendable (_ executable: String, _ arguments: [String]) throws -> ProcessRun.Output
+    ) -> @Sendable () throws -> [String] {
+        {
+            // `-0`: paths may contain newlines.
+            let out = try run("/usr/bin/mdfind", ["-0", "kMDItemContentType == com.apple.application-bundle"])
+            guard out.status == 0 else { throw ProcessRunError.launchFailed("mdfind exited \(out.status)") }
+            return parseNulSeparated(out.stdout)
+        }
     }
 
     static func parseNulSeparated(_ data: Data) -> [String] {

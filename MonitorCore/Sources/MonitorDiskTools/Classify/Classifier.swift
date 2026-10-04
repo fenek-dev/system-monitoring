@@ -110,8 +110,8 @@ struct ClassifyRun {
     /// Paths nothing may delete, as normalized components. Compared without a tree lookup, so a trailing slash or a
     /// path under an unreadable dir (no node) still protects its ancestors.
     private let protectedComponents: [[Substring]]
-    /// Node is, or has below it, an unreadable dir that `subtreeMaxMtime` could not see (build dirs excluded, like
-    /// `subtreeMaxMtime` itself): its age proves nothing, so age-based rules fail closed.
+    /// Node is, or has anywhere below it, an unreadable dir: its `subtreeMaxMtime` cannot be trusted, so age-based
+    /// rules fail closed. Propagates through build dirs too, independent of the mtime mask.
     private let ageIncomplete: [Bool]
 
     init(classifier: Classifier, tree: StorageTree, installed: InstalledAppSet, lastUsed: [String: Date],
@@ -124,8 +124,7 @@ struct ClassifyRun {
         let paths = classifier.dataDirectories + CategoryRules.dockerImages.map { classifier.home + "/" + $0 }
         protectedComponents = paths.map(Self.normalizedComponents)
         var incomplete = tree.flags.map { $0.contains(.restricted) }
-        for i in stride(from: tree.nodeCount - 1, to: 0, by: -1)
-        where incomplete[i] && !tree.flags[i].contains(.buildDir) {
+        for i in stride(from: tree.nodeCount - 1, to: 0, by: -1) where incomplete[i] {
             incomplete[Int(tree.parent[i])] = true
         }
         ageIncomplete = incomplete
@@ -451,8 +450,11 @@ struct ClassifyRun {
         guard let devices = node(CategoryRules.simulatorDevicesDir), toolchain.ok else { return nil }
         let udids = Set(toolchain.simulatorUDIDs)
         let matching = children(devices).filter { udids.contains(tree.name(Int32($0))) }
-        // The command deletes every unavailable simulator at once: it cannot be offered if one touches our data.
-        guard !matching.contains(where: { blocked[$0] || isProtected(tree.path(Int32($0))) }) else { return nil }
+        // The command deletes every unavailable simulator at once, scanned or not: it cannot be offered if any of
+        // them touches our data. Checked by path, not by tree membership.
+        let devicesPath = tree.path(devices)
+        guard !udids.contains(where: { isProtected(devicesPath + "/" + $0) }),
+              !matching.contains(where: { blocked[$0] }) else { return nil }
         let bytes = matching.reduce(into: UInt64(0)) { $0 += tree.size(Int32($1)) ?? 0 }
         guard bytes > 0 else { return nil }
         return Classifier.Draft(
