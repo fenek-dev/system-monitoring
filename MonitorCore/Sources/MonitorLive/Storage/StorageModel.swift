@@ -94,6 +94,12 @@ public final class StorageModel {
         classifyOptions = ClassifyOptions(now: now())
     }
 
+    /// Snapshot renders and fixtures cannot await `pageDidAppear`; this sets what it would have found.
+    public func seedAccess(hasFullDiskAccess: Bool?, availableRoots: [ScanRoot]) {
+        self.hasFullDiskAccess = hasFullDiskAccess
+        self.availableRoots = availableRoots
+    }
+
     // MARK: - Lifetimes
 
     public func windowDidOpen() async {

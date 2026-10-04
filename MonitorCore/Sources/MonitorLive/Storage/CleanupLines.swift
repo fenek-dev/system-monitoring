@@ -62,8 +62,8 @@ public struct CleanProgress: Equatable, Sendable {
 
 extension CleanupItem {
     /// What the row shows: private bytes once known, else allocated.
-    var displayBytes: UInt64 { privateBytesExcludingLinks ?? allocBytes }
-    var isCheckable: Bool { !ignored && mode != .none }
+    public var displayBytes: UInt64 { privateBytesExcludingLinks ?? allocBytes }
+    public var isCheckable: Bool { !ignored && mode != .none }
     /// Ticked when a scan first shows the item.
     var isCheckedByDefault: Bool { isCheckable && tier == .safe && !runningApp }
 }
