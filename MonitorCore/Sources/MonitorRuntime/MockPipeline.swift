@@ -18,11 +18,11 @@ import MonitorModel
     private var sleeper: Task<Void, Never>?
     private var started = false
 
-    init(scenario: MockScenario) {
+    init(scenario: MockScenario, storage: MockStorageState.Kind = .map) {
         let provider = MockDataProvider(scenario: scenario)
         live = LiveModel(device: provider.device)
         history = provider.history()
-        storageActions = provider.storageActions(log: ActionLog())
+        storageActions = provider.storageActions(log: ActionLog(), state: .make(storage))
         feeder = MockFeeder(provider: provider)
     }
 

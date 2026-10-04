@@ -196,6 +196,29 @@ struct ShellSidebarValueTests {
         #expect((sidebar?.count ?? 0) <= 12)                                   // fits the trailing column
     }
 
+    nonisolated static func summary(_ root: ScanRoot, _ bytes: UInt64?, _ provenance: SizeProvenance) -> StorageSummary {
+        StorageSummary(root: root, scanDate: Date(timeIntervalSince1970: 0), reclaimableBytes: bytes,
+                       provenance: provenance, trashBytes: nil)
+    }
+
+    /// Bug: stale or wrong sidebar value (estimate shown as exact, other roots shown as reclaimable).
+    @Test(arguments: [
+        (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .exact), "14 GB reclaimable"),
+        (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .estimate), "≈14 GB reclaimable"),
+        (ShellSidebarValueTests.summary(.home("/h"), nil, .exact), "382 GB free"),
+        (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .unavailable), "382 GB free"),
+        (ShellSidebarValueTests.summary(.folder("/f"), 14_200_000_000, .exact), "382 GB free"),
+    ] as [(StorageSummary, String)])
+    func storageValue(_ summary: StorageSummary, _ expected: String) {
+        let m = live(available: 382_000_000_000, important: 400_000_000_000)
+        #expect(Sidebar.value(for: .storage, live: m, units: UnitPreferences(), storage: summary) == expected)
+    }
+
+    @Test func storageWithoutSummaryShowsFreeSpace() {
+        let m = live(available: 382_000_000_000, important: 400_000_000_000)
+        #expect(Sidebar.value(for: .storage, live: m, units: UnitPreferences()) == "382 GB free")
+    }
+
     @Test func diskWithoutBootVolumeIsUnavailable() {
         let live = LiveModel()                                   // no frames: no volumes
         live.isPresenting = true

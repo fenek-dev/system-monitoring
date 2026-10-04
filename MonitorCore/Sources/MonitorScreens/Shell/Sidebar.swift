@@ -9,6 +9,8 @@ public struct Sidebar: View {
     @Environment(LiveModel.self) private var live
     @Environment(NavigationModel.self) private var nav
     @Environment(\.unitPreferences) private var units
+    /// Optional so hosts without a Storage model keep the free-space value.
+    @Environment(StorageModel.self) private var storageModel: StorageModel?
 
     public init() {}
 
@@ -23,7 +25,8 @@ public struct Sidebar: View {
                         .accessibilityAddTraits(.isHeader)
                     ForEach(DashboardPage.allCases.filter { $0.section == section }, id: \.self) { page in
                         Button { nav.page = page } label: {
-                            TTSidebarItem(page: page, value: Self.value(for: page, live: live, units: units),
+                            TTSidebarItem(page: page, value: Self.value(for: page, live: live, units: units,
+                                                            storage: storageModel?.summary),
                                           selected: nav.page == page)
                                 .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -47,9 +50,10 @@ public struct Sidebar: View {
     }
 
     /// Trailing values (DESIGN §3.0): CPU `{cpu}%`, GPU `{gpu}%`, Memory `{used} GB`, Network `{down rate}`,
-    /// Thermals `{socAvg}°`, Power `{package} W`, Disk and Storage `{free} GB free`; Overview/Processes/History none.
+    /// Thermals `{socAvg}°`, Power `{package} W`, Disk `{free} GB free`; Storage `{≈}{n} GB reclaimable` after a home scan, else free space; Overview/Processes/History none.
     /// Unavailable → "—" (TTFormat's nil rule).
-    @MainActor public static func value(for page: DashboardPage, live: LiveModel, units: UnitPreferences) -> String? {
+    @MainActor public static func value(for page: DashboardPage, live: LiveModel, units: UnitPreferences,
+                                        storage: StorageSummary? = nil) -> String? {
         switch page {
         case .overview, .processes, .history:
             return nil
@@ -66,12 +70,23 @@ public struct Sidebar: View {
             return t.hasSuffix("°C") || t.hasSuffix("°F") ? String(t.dropLast()) : t
         case .power:
             return TTFormat.watts(live.power.packageWatts)
-        case .disk, .storage:
-            // Ruling (CP2): free = available capacity (`availableBytes`, statfs/container free = diskutil);
-            // purgeable is separate. Same field and format as the Disk page's "Free space".
-            guard let v = live.disk.bootVolume else { return ShellFormat.freeSpace(nil) }   // "—"
-            return ShellFormat.freeSpace(v) + " free"                                      // §3.0 "{free} GB free"
+        case .storage:
+            // Only a home scan's number is "reclaimable"; other roots never produce one.
+            if let storage, storage.root.allowsCleanup, storage.provenance != .unavailable,
+               let bytes = storage.reclaimableBytes {
+                return StorageFormat.bytes(bytes, provenance: storage.provenance, style: .capacity) + " reclaimable"
+            }
+            return freeSpaceValue(live)
+        case .disk:
+            return freeSpaceValue(live)
         }
+    }
+
+    @MainActor private static func freeSpaceValue(_ live: LiveModel) -> String {
+        // Ruling (CP2): free = available capacity (`availableBytes`, statfs/container free = diskutil);
+        // purgeable is separate. Same field and format as the Disk page's "Free space".
+        guard let v = live.disk.bootVolume else { return ShellFormat.freeSpace(nil) }   // "—"
+        return ShellFormat.freeSpace(v) + " free"                                      // §3.0 "{free} GB free"
     }
 }
 

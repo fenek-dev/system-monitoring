@@ -21,6 +21,8 @@ public struct FlyoutView: View {
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
     @Environment(FlyoutPointer.self) private var pointer: FlyoutPointer?
+    /// Optional like the pointer: hosts without a Storage model show the plain link.
+    @Environment(StorageModel.self) private var storage: StorageModel?
     @State private var cache = FlyoutLinesCache()
 
     public init(category: MonitorModel.Category) {
@@ -52,6 +54,9 @@ public struct FlyoutView: View {
                 FlyoutLineView(line: line, category: category,
                                value: FlyoutModel.format(line.value, category, units: units))
             }
+            if category == .disk {
+                FlyoutStorageLink(title: FlyoutModel.storageLink(summary: storage?.summary))
+            }
         }
         .padding(6)
         .frame(width: Self.width, alignment: .leading)
@@ -75,6 +80,32 @@ public struct FlyoutView: View {
         .padding(EdgeInsets(top: 8, leading: TTSpace.x10, bottom: 6, trailing: TTSpace.x10))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// "Free up space…" (DESIGN §3.1): separated from the app lines, opens the dashboard on Storage.
+struct FlyoutStorageLink: View {
+    let title: String
+    @Environment(\.appCommands) private var commands
+    @State private var frame = CGRect.null
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(ShellStyle.borderPopover).frame(height: 1)
+                .padding(.vertical, 4)
+            Text(title).font(TTFont.body12).foregroundStyle(TTColor.accent)
+                .lineLimit(1)
+                .padding(.horizontal, TTSpace.x10)
+                .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+                .background(FlyoutLineHover(frame: frame))
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(FlyoutPointer.space)) } action: { frame = $0 }
+                .contentShape(Rectangle())
+                .onTapGesture { commands.openDashboard(.storage) }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(title)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { commands.openDashboard(.storage) }
+        }
     }
 }
 

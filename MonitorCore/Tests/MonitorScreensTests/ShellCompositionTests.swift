@@ -26,6 +26,20 @@ struct ShellLaunchOptionsTests {
                                     environment: ["TELLTALE_MOCK": "runaway"]).mockScenario == .paused)
     }
 
+    /// Bug: `--mock-storage` silently ignored (or a bad value crashing the launch instead of falling back to map).
+    @Test func mockStorageFromArgsAndEnv() {
+        func kind(_ args: [String], _ env: [String: String] = [:]) -> MockStorageState.Kind? {
+            LaunchOptions.parse(arguments: args, environment: env).mockStorage
+        }
+        #expect(kind([]) == nil)
+        #expect(kind(["--mock-storage", "noFDA"]) == .noFDA)
+        #expect(kind(["--mock-storage"]) == .map)
+        #expect(kind(["--mock-storage", "--open-popover"]) == .map)
+        #expect(kind(["--mock-storage", "nope"]) == .map)
+        #expect(kind([], ["TELLTALE_MOCK_STORAGE": "scanning"]) == .scanning)
+        #expect(kind(["--mock-storage", "cleanup"], ["TELLTALE_MOCK_STORAGE": "scanning"]) == .cleanup)
+    }
+
     @Test func verificationArgs() {
         #expect(LaunchOptions.parse(arguments: ["--status-preview", "critical", "--open-settings"], environment: [:])
             == LaunchOptions(openSettings: true, statusPreview: .critical))

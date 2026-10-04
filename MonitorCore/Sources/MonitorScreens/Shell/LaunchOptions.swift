@@ -5,7 +5,8 @@ import MonitorModel
 /// Launch arguments and environment (ARCHITECTURE §5.11). Parsed here (testable); `App/Composition` applies them.
 ///
 ///     --mock <scenario> | TELLTALE_MOCK=<scenario>     mock runtime (unknown/missing scenario → calm)
-///     --open-dashboard [page]                           open the dashboard at launch (default overview)
+///     --mock-storage <empty|scanning|map|cleanup|noFDA> | TELLTALE_MOCK_STORAGE   Storage mock state (unknown/missing → map)
+///     --open-dashboard [page]                          open the dashboard at launch (default overview)
 ///     --open-popover                                    open the popover at launch
 ///     --open-settings                                   open Settings at launch (verification aid)
 ///     --overlay                                         show the stats overlay this run (not persisted)
@@ -16,6 +17,8 @@ import MonitorModel
 ///     TELLTALE_DISABLE_SENSORS=coalitions,soc,…         kill switch (merged with defaults "DisabledSensors")
 public struct LaunchOptions: Sendable, Equatable {
     public var mockScenario: MockScenario?
+    /// `--mock-storage`: Storage fixture state in mock mode (ignored live).
+    public var mockStorage: MockStorageState.Kind?
     public var openDashboard: DashboardPage?
     public var openPopover = false
     public var openSettings = false
@@ -46,6 +49,7 @@ public struct LaunchOptions: Sendable, Equatable {
     public static func parse(arguments: [String], environment: [String: String]) -> LaunchOptions {
         var o = LaunchOptions()
         if let m = environment["TELLTALE_MOCK"] { o.mockScenario = MockScenario(rawValue: m) ?? .calm }
+        if let m = environment["TELLTALE_MOCK_STORAGE"] { o.mockStorage = MockStorageState.Kind(rawValue: m) ?? .map }
         if let d = environment["TELLTALE_DATA_DIR"], !d.isEmpty {
             o.dataDirectory = URL(fileURLWithPath: (d as NSString).expandingTildeInPath, isDirectory: true)
         }
@@ -61,6 +65,8 @@ public struct LaunchOptions: Sendable, Equatable {
             switch arguments[i] {
             case "--mock":
                 o.mockScenario = next().flatMap(MockScenario.init(rawValue:)) ?? .calm
+            case "--mock-storage":
+                o.mockStorage = next().flatMap(MockStorageState.Kind.init(rawValue:)) ?? .map
             case "--open-dashboard":
                 o.openDashboard = next().flatMap(DashboardPage.init(rawValue:)) ?? .overview
             case "--open-popover":

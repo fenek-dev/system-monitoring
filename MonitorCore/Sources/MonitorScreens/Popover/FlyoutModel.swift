@@ -18,6 +18,13 @@ public struct FlyoutLine: Equatable, Sendable {
 enum FlyoutModel {
     static let limit = 10
 
+    /// Disk flyout link (DESIGN §3.1): the reclaimable size once a home scan found something, else a plain prompt.
+    static func storageLink(summary: StorageSummary?) -> String {
+        guard let summary, summary.root.allowsCleanup, summary.provenance != .unavailable,
+              let bytes = summary.reclaimableBytes, bytes > 0 else { return "Free up space…" }
+        return "Free up \(StorageFormat.bytes(bytes, provenance: summary.provenance))…"
+    }
+
     /// Top `limit` app groups by the category's metric (same metric as the popover's former top-3 lines), descending;
     /// equal values keep their input order. `share` is relative to the sum over ALL apps with a value (`.other`
     /// included in the sum but never listed). nil, zero and non-finite values are neither listed nor summed.

@@ -51,7 +51,7 @@ public extension RuntimePipeline {
     /// ignore list) built by the app; the decorator runs in `.live` only (mocks bring their own actions).
     public static func make(mode: RuntimeMode, dataDirectory: URL, disabledSensors: Set<SensorID>,
                             crashSensor: SensorID? = nil, canarySuite: String? = nil,
-                            storagePlatform: StoragePlatform = .none,
+                            storagePlatform: StoragePlatform = .none, mockStorage: MockStorageState.Kind = .map,
                             decorateStorageActions: @MainActor (StorageActions) -> StorageActions = { $0 })
         -> TelltaleRuntime {
         switch mode {
@@ -61,7 +61,7 @@ public extension RuntimePipeline {
                                         storagePlatform: storagePlatform)
             return TelltaleRuntime(pipeline: pipeline, storageActions: decorateStorageActions(pipeline.storageActions))
         case .mock(let scenario):
-            let pipeline = MockPipeline(scenario: scenario)
+            let pipeline = MockPipeline(scenario: scenario, storage: mockStorage)
             return TelltaleRuntime(pipeline: pipeline, storageActions: pipeline.storageActions)
         }
     }

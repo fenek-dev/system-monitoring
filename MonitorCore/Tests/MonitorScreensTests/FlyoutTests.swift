@@ -407,5 +407,8 @@ struct FlyoutTests {
                    Self.app("Safari", cpu: 5)]
         assertSnapshot(flyout(.cpu, Self.context(apps: few)), size: Self.canvas, named: "flyout-few-apps")
         assertSnapshot(flyout(.cpu, Self.context(apps: [])), size: Self.canvas, named: "flyout-empty")
+        var disk = ScreenFixture.context(.calm)
+        disk.storage = ScreenCatalog.storageModel(.map)
+        assertSnapshot(flyout(.disk, disk), size: Self.canvas, named: "flyout-disk-calm")
     }
 }

@@ -161,6 +161,27 @@ struct PopoverTests {
         // Row clicks are TTPopoverRow's (`TTPopoverRow.click`), flyout app clicks FlyoutView's, via `appCommands`.
     }
 
+    /// Bug: the flyout link opening Disk (or Overview) instead of Storage.
+    @Test func storageLinkOpensStorage() {
+        let log = CommandLog(initialState: [])
+        PopoverActions(commands: Self.recording(log), actions: .noop, live: ScreenFixture.live(.calm)).openStorage()
+        #expect(log.withLock { $0 } == ["open storage"])
+    }
+
+    private static func summary(_ root: ScanRoot, _ bytes: UInt64?, _ provenance: SizeProvenance) -> StorageSummary {
+        StorageSummary(root: root, scanDate: Date(timeIntervalSince1970: 0), reclaimableBytes: bytes,
+                       provenance: provenance, trashBytes: nil)
+    }
+
+    /// Bug: "Free up 0 GB…", estimate shown as exact, a folder scan advertised as reclaimable.
+    @Test func storageLinkText() {
+        #expect(FlyoutModel.storageLink(summary: nil) == "Free up space…")
+        #expect(FlyoutModel.storageLink(summary: Self.summary(.home("/h"), 0, .exact)) == "Free up space…")
+        #expect(FlyoutModel.storageLink(summary: Self.summary(.folder("/f"), 5_000_000_000, .exact)) == "Free up space…")
+        #expect(FlyoutModel.storageLink(summary: Self.summary(.home("/h"), 14_200_000_000, .exact)) == "Free up 14.2 GB…")
+        #expect(FlyoutModel.storageLink(summary: Self.summary(.home("/h"), 14_200_000_000, .estimate)) == "Free up ≈14.2 GB…")
+    }
+
     @Test func topConsumerQuitAndFeedback() async throws {
         let live = ScreenFixture.live(.calm)
         let actionLog = ActionLog()

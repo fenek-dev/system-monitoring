@@ -211,6 +211,7 @@ struct PopoverActions {
     func openApp(_ key: AppKey) { commands.inspectApp(key) }
     func openDashboard() { commands.openDashboard(.overview) }
     func openHistory() { commands.openDashboard(.history) }
+    func openStorage() { commands.openDashboard(.storage) }
     func openSettings() { commands.openSettings() }
     func quitTelltale() { commands.quitTelltale() }
     func setPaused(_ paused: Bool) { commands.setPaused(paused) }

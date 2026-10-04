@@ -50,6 +50,7 @@ final class AppEnvironment {
         runtime = TelltaleRuntime.make(mode: mode, dataDirectory: dataDirectory, disabledSensors: disabled,
                                        crashSensor: crash, canarySuite: canarySuite,
                                        storagePlatform: StorageActionsLive.platform(),
+                                       mockStorage: options.mockStorage ?? .map,
                                        decorateStorageActions: { StorageActionsLive.decorate($0, settings: settings) })
         settings.reenableCrashedSensors = { TelltaleRuntime.reenableCrashedSensors(canarySuite: canarySuite) }
         historyStatus.persistent = runtime.historyPersistent
@@ -59,6 +60,9 @@ final class AppEnvironment {
                 return runtime.historyPersistent
             }
         }
+        // The popover is usually opened before the dashboard, and its Disk flyout link needs the saved summary
+        // (only reads storage-summary.json).
+        Task { [storage = runtime.storage] in await storage.windowDidOpen() }
         Self.log.info("""
             launch mode=\(String(describing: mode), privacy: .public) data=\(self.dataDirectory.path, privacy: .public) \
             disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ","), privacy: .public) \
