@@ -44,7 +44,10 @@ public struct LiveProcessPathSource: ProcessPathSource {
 
     private func inspect(_ pid: Int32, into held: inout HeldPaths) {
         var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        if proc_pidpath(pid, &path, UInt32(path.count)) > 0 { held.paths.append(String(cString: path)) }
+        if proc_pidpath(pid, &path, UInt32(path.count)) > 0 {
+            held.paths.append(String(decoding: path.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) },
+                                     as: UTF8.self))
+        }
 
         var vnodeInfo = proc_vnodepathinfo()
         let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)

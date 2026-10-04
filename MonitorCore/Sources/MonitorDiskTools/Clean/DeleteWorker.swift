@@ -151,7 +151,11 @@ public final class DeleteWorker: Deleter {
         guard let functions = RemoveFileFunctions.live else {
             return DeleteOutcome(removed: false, failures: ["removefile unavailable"])
         }
-        let flags = RemoveFileFunctions.recursive | (slim ? RemoveFileFunctions.recursiveSlim : 0)
+        // SLIM is a depth-first directory walk: on a plain file it fails with ENOTDIR (measured), so files and
+        // symlinks use plain RECURSIVE.
+        let isDirectory = (try? CleanFS.statAt(target.commitFd, target.name)).map { ($0.st_mode & S_IFMT) == S_IFDIR }
+        let flags = RemoveFileFunctions.recursive
+            | (slim && isDirectory == true ? RemoveFileFunctions.recursiveSlim : 0)
         var failures: [FailureLog.Failure] = []
         for _ in 0 ..< Self.maxRounds {
             let log = FailureLog()
@@ -162,7 +166,7 @@ public final class DeleteWorker: Deleter {
             // Residual check: the return value can be 0 with failures reported (SLIM), so only the entry's
             // absence counts as success.
             if !Self.exists(target.commitFd, target.name) { return DeleteOutcome(removed: true) }
-            guard !failures.isEmpty, Self.repair(failures, target: target, clearImmutable: clearImmutable) else { break }
+            guard Self.repair(target: target, clearImmutable: clearImmutable) else { break }
         }
         let lines = failures.map { "\($0.path): \(String(cString: strerror($0.code)))" }
         return DeleteOutcome(removed: !Self.exists(target.commitFd, target.name), failures: lines)
@@ -201,37 +205,37 @@ public final class DeleteWorker: Deleter {
         return (rc, code)
     }
 
-    /// Makes the failing spots deletable. Everything touched is below `commit/` (our 0700 directory), so the
-    /// path-based `lchflags` is safe from foreign symlinks. Returns whether anything changed (else retrying is
-    /// pointless).
-    private static func repair(_ failures: [FailureLog.Failure], target: DeleteTarget,
-                               clearImmutable: Bool) -> Bool {
+    /// Walks what is left of the entry and makes every user-owned directory accessible (and, for Empty Trash, clears
+    /// `uchg`). A tree walk rather than the failing paths: `RECURSIVE_SLIM` silently skips directories it cannot
+    /// read (measured: no callback for them), so the error list alone can miss them. Everything touched is below
+    /// `commit/` (our 0700 directory), so the path-based `lchflags` can't be redirected by a foreign symlink.
+    /// Returns whether anything changed (else another attempt is pointless).
+    private static func repair(target: DeleteTarget, clearImmutable: Bool) -> Bool {
         var changed = false
-        let uid = getuid()
-        let prefix = target.commitPath + "/"
-        for failure in failures where failure.code == EACCES || (clearImmutable && failure.code == EPERM) {
-            guard failure.path.hasPrefix(prefix),
-                  let rel = try? RelativePath(validating: String(failure.path.dropFirst(prefix.count))) else {
-                continue
-            }
-            // Top-down: an ancestor without search permission would block the checks below it.
-            for end in 1 ... rel.components.count {
-                let part = rel.components.prefix(end).joined(separator: "/")
-                guard var st = try? CleanFS.statAt(target.commitFd, part), st.st_uid == uid else { continue }
-                let isDir = (st.st_mode & S_IFMT) == S_IFDIR
-                if isDir, st.st_mode & 0o700 != 0o700 {
-                    if fchmodat(target.commitFd, part, (st.st_mode & 0o7777) | 0o700, AT_SYMLINK_NOFOLLOW) == 0 {
-                        changed = true
-                    }
-                    guard let again = try? CleanFS.statAt(target.commitFd, part) else { continue }
-                    st = again
-                }
-                if clearImmutable, st.st_flags & UInt32(UF_IMMUTABLE) != 0,
-                   lchflags(prefix + part, st.st_flags & ~UInt32(UF_IMMUTABLE)) == 0 {
-                    changed = true
-                }
-            }
-        }
+        repairEntry(in: target.commitFd, name: target.name, path: target.commitPath + "/" + target.name,
+                    clearImmutable: clearImmutable, uid: getuid(), changed: &changed)
         return changed
+    }
+
+    private static func repairEntry(in dirFd: Int32, name: String, path: String, clearImmutable: Bool, uid: uid_t,
+                                    changed: inout Bool) {
+        guard var st = try? CleanFS.statAt(dirFd, name), st.st_uid == uid else { return }
+        if clearImmutable, st.st_flags & UInt32(UF_IMMUTABLE) != 0,
+           lchflags(path, st.st_flags & ~UInt32(UF_IMMUTABLE)) == 0 {
+            changed = true
+            guard let again = try? CleanFS.statAt(dirFd, name) else { return }
+            st = again
+        }
+        guard (st.st_mode & S_IFMT) == S_IFDIR else { return }
+        if st.st_mode & 0o700 != 0o700 {
+            guard fchmodat(dirFd, name, (st.st_mode & 0o7777) | 0o700, AT_SYMLINK_NOFOLLOW) == 0 else { return }
+            changed = true
+        }
+        guard let child = try? FileDescriptor.open(at: dirFd, name, flags: O_RDONLY | O_DIRECTORY | O_NOFOLLOW),
+              let listing = try? CleanFS.list(dirFd: child.rawValue) else { return }
+        for entry in listing.names {
+            repairEntry(in: child.rawValue, name: entry, path: path + "/" + entry, clearImmutable: clearImmutable,
+                        uid: uid, changed: &changed)
+        }
     }
 }

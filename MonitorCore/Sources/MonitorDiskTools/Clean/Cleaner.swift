@@ -441,8 +441,10 @@ public final class Cleaner: Sendable {
                 continue
             }
             let childIdentity = FileIdentity(st)
-            let node = nodes[name].flatMap { tree.identity($0) == childIdentity ? $0 : nil }
-            let bytes = node.flatMap { tree.size($0) } ?? CleanFS.allocatedBytes(dirFd: dirFd, name: name)
+            // The name maps to a node either way (the UI hides it); the tree's size only describes the same inode.
+            let node = nodes[name]
+            let scannedSize = node.flatMap { tree.identity($0) == childIdentity ? tree.size($0) : nil }
+            let bytes = scannedSize ?? CleanFS.allocatedBytes(dirFd: dirFd, name: name)
             let result = detach(parent: dirFd, parentPath: item.path, parentIdentity: expected, leaf: name,
                                 expected: childIdentity, bytes: bytes, journal: journal, index: index, run: run,
                                 clearImmutable: false)
