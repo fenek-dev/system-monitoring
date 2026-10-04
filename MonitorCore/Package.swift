@@ -125,7 +125,10 @@ let package = Package(
         .testTarget(name: "MixerCoreTests", dependencies: ["MixerCore"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(
             name: "MonitorRuntimeTests",
-            dependencies: ["MonitorRuntime", "MonitorModel", "MonitorMocks", "MonitorStore", "MonitorEngine"]
+            dependencies: [
+                "MonitorRuntime", "MonitorModel", "MonitorMocks", "MonitorStore", "MonitorEngine", "MonitorDiskTools",
+                "MonitorLive",
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]
