@@ -11,7 +11,8 @@ import Testing
     nonisolated static let ids = ["icons", "metric-tiles", "stat-strip", "controls", "bars", "key-value", "states",
                                   "timeline-card", "cpu-usage", "net-throughput", "thermal-lines", "gpu-dual",
                                   "processes-list", "search-field", "core-bars", "fan-gauges", "treemap", "row-action", "tile-states", "alert-banner", "confirm-dialog", "toast", "top-processes",
-                                  "popover-rows", "popover-rows-alert", "sidebar", "status-icons", "thermal-scale", "app-icons"]
+                                  "popover-rows", "popover-rows-alert", "sidebar", "status-icons", "thermal-scale", "app-icons",
+                                  "space-map", "space-map-restricted", "table-checkbox", "toast-actions"]
 
     @Test(arguments: ids)
     func galleryItem(id: String) throws {
