@@ -4,9 +4,8 @@ import SwiftUI
 /// (`columnWidth`), vertically centred by the row. Group rows pass `.mixed` when only some children are checked;
 /// toggling reports once and the caller decides the new state (a mixed group checks all its children).
 /// Disabled (no-op delete mode): `opacity.disabled` and `disabledReason` as the tooltip.
-/// Place it in a `TTTable` cell; clicking the checkbox toggles it and the row's own tap (select / expand) is the
-/// caller's to suppress if the control does not already consume the click. Space on the selected row goes through
-/// `TTTable`'s `onSpace`.
+/// Place it in a `TTTable` cell; `TTTable` keeps its select / double-click gestures behind the cells, so clicking
+/// the checkbox never selects or opens the row. Space on the selected row goes through `TTTable`'s `onSpace`.
 public struct TTTableCheckbox: View {
     public enum CheckState: Equatable, Sendable { case off, on, mixed }
 
