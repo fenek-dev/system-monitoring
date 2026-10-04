@@ -50,6 +50,9 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
     let columnsVersion: Int
     /// Cheap "has children" test; with it, `children` runs only for expanded rows.
     let hasChildren: ((Row) -> Bool)?
+    /// Caller-owned hovered row; nil keeps hover local to each row.
+    let hover: Binding<Row.ID?>?
+    let onSpace: ((Row) -> Void)?
     @State private var expanded: Set<Row.ID> = []
     @Environment(\.isSnapshot) private var isSnapshot
 
@@ -61,12 +64,17 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
 
     /// - Parameter columnsVersion: changes whenever state captured by the `cell` closures (sensor health, unit
     ///   settings) changes; rows are Equatable on their data, so without it such a change would leave stale cells.
+    /// - Parameter hover: when given, the table writes the hovered row id here and each row's hover look follows it,
+    ///   so a hover change re-evaluates only the row that lost and the row that gained it.
+    /// - Parameter onSpace: Space on the selected (focused) row, e.g. toggling its `TTTableCheckbox`.
     public init(rows: [Row], columns: [Column], selection: Binding<Row.ID?>, sort: Binding<(column: String, descending: Bool)>,
                 rowMenu: ((Row) -> AnyView)? = nil, children: ((Row) -> [Row])? = nil, style: TTTableStyle,
                 expandedByDefault: Set<Row.ID> = [], onDoubleClick: ((Row) -> Void)? = nil, columnsVersion: Int = 0,
-                hasChildren: ((Row) -> Bool)? = nil) {
+                hasChildren: ((Row) -> Bool)? = nil, hover: Binding<Row.ID?>? = nil, onSpace: ((Row) -> Void)? = nil) {
         self.columnsVersion = columnsVersion
         self.hasChildren = hasChildren
+        self.hover = hover
+        self.onSpace = onSpace
         self.rows = rows
         self.columns = columns
         _selection = selection
@@ -199,6 +207,13 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
         .onKeyPress(.downArrow) { move(1, lines) }
         .onKeyPress(.leftArrow) { setExpanded(false) }
         .onKeyPress(.rightArrow) { setExpanded(true) }
+        .onKeyPress(.space) { space(lines) }
+    }
+
+    private func space(_ lines: [Line]) -> KeyPress.Result {
+        guard let onSpace, let selection, let line = lines.first(where: { $0.id == selection }) else { return .ignored }
+        onSpace(line.row)
+        return .handled
     }
 
     private func move(_ delta: Int, _ lines: [Line]) -> KeyPress.Result {
@@ -238,7 +253,12 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
             let id = line.row.id
             TableRow(line: line, columns: columns, widths: widths, selected: selection == id,
                      height: line.depth > 0 ? style.childRowHeight : style.rowHeight, columnsVersion: columnsVersion,
-                     rowMenu: rowMenu)
+                     rowMenu: rowMenu, externalHover: hover.map { $0.wrappedValue == id },
+                     setHover: hover.map { hover in
+                         { inside in
+                             if inside { hover.wrappedValue = id } else if hover.wrappedValue == id { hover.wrappedValue = nil }
+                         }
+                     })
                 .equatable()
                 .environment(\.ttRowDepth, line.depth)
                 .environment(\.ttRowDisclosure, line.hasChildren
@@ -303,14 +323,21 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
         let columnsVersion: Int
         /// Not part of `==` (a new closure each table body must not re-evaluate unchanged rows).
         let rowMenu: ((Row) -> AnyView)?
-        @State private var hovering = false
+        /// Hover from the table's `hover` binding (nil: the row tracks its own). Part of `==`, so a hover change
+        /// re-evaluates just the two rows whose flag flipped.
+        let externalHover: Bool?
+        /// Not part of `==`, like `rowMenu`.
+        let setHover: ((Bool) -> Void)?
+        @State private var localHover = false
         @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+
+        private var hovering: Bool { externalHover ?? localHover }
 
         nonisolated static func == (a: Self, b: Self) -> Bool {
             a.line.row == b.line.row && a.line.depth == b.line.depth && a.line.parity == b.line.parity
                 && a.line.isExpanded == b.line.isExpanded && a.line.hasChildren == b.line.hasChildren
                 && a.selected == b.selected && a.widths == b.widths && a.height == b.height
-                && a.columnsVersion == b.columnsVersion
+                && a.columnsVersion == b.columnsVersion && a.externalHover == b.externalHover
         }
 
         /// Hovered or selected (or VoiceOver on): the only rows that carry tooltips, the live actions button and
@@ -344,7 +371,9 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                         }
                     }
             )
-            .onHover { hovering = $0 }
+            .onHover { inside in
+                if let setHover { setHover(inside) } else { localHover = inside }
+            }
             .environment(\.ttRowActive, active)
             .contextMenu { if active, let rowMenu { rowMenu(line.row) } }
             .accessibilityElement(children: .combine)
