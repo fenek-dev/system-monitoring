@@ -65,7 +65,15 @@ public final class TrustedRoot: Sendable {
     public let usesKernelResolution: Bool
     private let fd: FileDescriptor
 
-    public init(path: String, resolution: Resolution = .automatic) throws(SafePathError) {
+    public convenience init(path: String, resolution: Resolution = .automatic) throws(SafePathError) {
+        try self.init(path: path, resolution: resolution, probePassed: Self.kernelResolutionAvailable)
+    }
+
+    /// `probePassed`: test seam for the launch probe result (a failed probe must fall back to the walk).
+    init(path: String, resolution: Resolution, probePassed: Bool) throws(SafePathError) {
+        // Spelling is checked before `realpath`, which would silently normalize `..`, `.` and `//`.
+        guard path.hasPrefix("/") else { throw .invalidPath("not absolute") }
+        if path != "/" { _ = try RelativePath(validating: String(path.dropFirst())) }
         guard let resolved = Darwin.realpath(path, nil) else {
             throw .posix(op: "realpath \(path)", errno: Darwin.errno)
         }
@@ -84,7 +92,7 @@ public final class TrustedRoot: Sendable {
         self.canonicalPath = canonical
         self.identity = chain[chain.count - 1]
         self.chain = chain
-        self.usesKernelResolution = resolution == .automatic && Self.kernelResolutionAvailable
+        self.usesKernelResolution = resolution == .automatic && probePassed
         self.fd = current
     }
 

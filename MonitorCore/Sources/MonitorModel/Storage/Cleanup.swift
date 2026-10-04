@@ -107,6 +107,18 @@ public struct CleanupItem: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Private size of a hard-linked file, from the private-size pass.
+public struct LinkGroupSize: Equatable, Sendable {
+    public var privateBytes: UInt64?
+    /// `.exact` only when `privateBytes` came from `ATTR_CMNEXT_PRIVATESIZE`.
+    public var provenance: SizeProvenance
+
+    public init(privateBytes: UInt64?, provenance: SizeProvenance) {
+        self.privateBytes = privateBytes
+        self.provenance = provenance
+    }
+}
+
 public struct CleanupSet: Equatable, Sendable {
     public var treeVersion: UInt64
     public var items: [CleanupItem]
@@ -114,14 +126,17 @@ public struct CleanupSet: Equatable, Sendable {
     public var privateSizesFinal: Bool
     /// nil when `~/.Trash` is unreadable.
     public var trashBytes: UInt64?
+    /// Keyed by index into `StorageTree.linkGroups`; overrides the group's scan-time size in `ReclaimAccumulator`.
+    public var linkGroupSizes: [Int32: LinkGroupSize]
 
     public init(treeVersion: UInt64, items: [CleanupItem], ownershipResolved: Bool, privateSizesFinal: Bool,
-                trashBytes: UInt64?) {
+                trashBytes: UInt64?, linkGroupSizes: [Int32: LinkGroupSize] = [:]) {
         self.treeVersion = treeVersion
         self.items = items
         self.ownershipResolved = ownershipResolved
         self.privateSizesFinal = privateSizesFinal
         self.trashBytes = trashBytes
+        self.linkGroupSizes = linkGroupSizes
     }
 }
 

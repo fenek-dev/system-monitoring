@@ -24,7 +24,8 @@ public struct StorageTreeBuilder: Sendable {
     private var nameOffset: [UInt32] = []
     private var nameLength: [UInt16] = []
     private var names: [UInt8] = []
-    private var linkGroups: [HardLinkGroup] = []
+    /// Occurrences are raw nodes here; depth, folding and order are settled in `build`.
+    private var links: [(group: HardLinkGroup, nodes: [StorageNodeID])] = []
     private var linkIndex: [FileIdentity: Int] = [:]
 
     /// Creates the root node (id 0) as a directory named after the root path's last component.
@@ -73,17 +74,27 @@ public struct StorageTreeBuilder: Sendable {
         subtreeMaxMtime[d] = max(subtreeMaxMtime[d], maxMtime)
     }
 
-    /// Records one observed link of a hard-linked file; `occurrence` is its file node if kept, else its dir node.
-    /// The bytes are not part of any `NodeRecord.allocBytes` / `addSmall`; `finalize` credits them once.
+    /// Records one observed link of a hard-linked file; `occurrence` is its file node if kept, else the directory it
+    /// was folded into (a directory occurrence counts as folded). The bytes are not part of any
+    /// `NodeRecord.allocBytes` / `addSmall` bytes; `finalize` credits them once. `linkCount` keeps the largest value
+    /// seen. `privateBytes`: `ATTR_CMNEXT_PRIVATESIZE` if the listing returned it.
     public mutating func addLink(_ identity: FileIdentity, linkCount: UInt16, bytes: UInt64,
-                                 occurrence: StorageNodeID) {
-        if let i = linkIndex[identity] {
-            linkGroups[i].occurrences.append(occurrence)
+                                 occurrence: StorageNodeID, privateBytes: UInt64? = nil) {
+        let i: Int
+        if let existing = linkIndex[identity] {
+            i = existing
         } else {
-            linkIndex[identity] = linkGroups.count
-            linkGroups.append(HardLinkGroup(identity: identity, linkCount: linkCount, bytes: bytes,
-                                            occurrences: [occurrence]))
+            i = links.count
+            linkIndex[identity] = i
+            links.append((HardLinkGroup(identity: identity, linkCount: linkCount, allocBytes: bytes,
+                                        occurrences: []), []))
         }
+        links[i].group.linkCount = max(links[i].group.linkCount, linkCount)
+        if let privateBytes, links[i].group.privateBytes == nil {
+            links[i].group.privateBytes = privateBytes
+            links[i].group.provenance = .exact
+        }
+        links[i].nodes.append(occurrence)
     }
 
     /// Rolled-up copy for `.partial` events; the builder keeps filling. Copies every array (advisory cost).
@@ -118,17 +129,14 @@ public struct StorageTreeBuilder: Sendable {
 
     private mutating func build(scanDate: Date, lastEventId: UInt64) -> StorageTree {
         let n = nodeCount
-        for i in 0 ..< n {
-            if flags[i].contains(.restricted) {
-                allocBytes[i] = 0
-            } else {
-                allocBytes[i] += smallBytes[i]
-            }
-        }
-        creditLinks()
+        for i in 0 ..< n { allocBytes[i] += smallBytes[i] }
+        let linkGroups = creditLinks()
         // Reverse pass: every child has a higher id than its parent, so a child is complete before it is added.
+        // A restricted node is zeroed only now, after its own descendants were added into it, so nothing below it
+        // reaches its ancestors.
         for i in stride(from: n - 1, to: 0, by: -1) {
             let p = Int(parent[i])
+            if flags[i].contains(.restricted) { allocBytes[i] = 0 }
             allocBytes[p] += allocBytes[i]
             if !flags[i].contains(.buildDir) {
                 subtreeMaxMtime[p] = max(subtreeMaxMtime[p], subtreeMaxMtime[i])
@@ -164,28 +172,35 @@ public struct StorageTreeBuilder: Sendable {
         )
     }
 
-    /// Credits each hard-link group's bytes once, at its lowest-depth occurrence (ties by path), so sizes don't
-    /// depend on which worker saw a link first. A file occurrence gets the bytes as its own size; a dir occurrence
-    /// (folded small file) gets them as small bytes.
-    private mutating func creditLinks() {
-        guard !linkGroups.isEmpty else { return }
-        var depth = [Int](repeating: 0, count: nodeCount)
+    /// Settles each group's occurrences (link depth, folded or kept) sorted by (depth, path), and credits the group's
+    /// bytes once at the first one, so sizes don't depend on which worker saw a link first. A kept file gets the
+    /// bytes as its own size; a folding dir gets them as small bytes.
+    private mutating func creditLinks() -> [HardLinkGroup] {
+        guard !links.isEmpty else { return [] }
+        var depth = [Int32](repeating: 0, count: nodeCount)
         for i in 1 ..< nodeCount { depth[i] = depth[Int(parent[i])] + 1 }
-        for group in linkGroups {
-            guard var best = group.occurrences.first else { continue }
-            for occ in group.occurrences.dropFirst() where occ != best {
-                let (d, db) = (depth[Int(occ)], depth[Int(best)])
-                if d < db || (d == db && pathBytes(occ).lexicographicallyPrecedes(pathBytes(best))) { best = occ }
+        var groups: [HardLinkGroup] = []
+        groups.reserveCapacity(links.count)
+        for entry in links {
+            var group = entry.group
+            let keyed = entry.nodes.map { node -> (LinkOccurrence, [UInt8]) in
+                let folded = flags[Int(node)].contains(.directory)
+                let occ = LinkOccurrence(node: node, depth: depth[Int(node)] + (folded ? 1 : 0), isFolded: folded)
+                return (occ, pathBytes(node))
             }
-            let b = Int(best)
-            if flags[b].contains(.restricted) { continue }
-            if !flags[b].contains(.directory) {
-                allocBytes[b] += group.bytes
-            } else {
-                smallBytes[b] += group.bytes
-                allocBytes[b] += group.bytes
+            group.occurrences = keyed.sorted { a, b in
+                if a.0.depth != b.0.depth { return a.0.depth < b.0.depth }
+                if a.1 != b.1 { return a.1.lexicographicallyPrecedes(b.1) }
+                return !a.0.isFolded && b.0.isFolded
+            }.map(\.0)
+            if let first = group.occurrences.first {
+                let b = Int(first.node)
+                allocBytes[b] += group.allocBytes
+                if first.isFolded { smallBytes[b] += group.allocBytes }
             }
+            groups.append(group)
         }
+        return groups
     }
 
     private func nameBytes(_ node: Int32) -> ArraySlice<UInt8> {

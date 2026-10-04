@@ -49,8 +49,11 @@ fi
 
 echo "== MonitorDiskTools import grep"
 # UI targets and the app see storage only through StorageActions (ARCHITECTURE §2 rule); the engine is composed in
-# MonitorRuntime.
-hits=$(grep -rnE '^\s*(@testable\s+)?import\s+MonitorDiskTools([[:space:]]|$)' MonitorCore/Sources/MonitorLive \
+# MonitorRuntime. Covers attributes (@testable, @preconcurrency, @_exported, @_spi(…)), access-level imports and
+# scoped imports (`import struct MonitorDiskTools.X`).
+import_re='^[[:space:]]*(@[A-Za-z_]+(\([^)]*\))?[[:space:]]+)*((public|internal|private|fileprivate|package|open)[[:space:]]+)?'
+import_re+='import[[:space:]]+((struct|class|enum|protocol|typealias|func|var|let)[[:space:]]+)?MonitorDiskTools([.[:space:]]|$)'
+hits=$(grep -rnE "$import_re" MonitorCore/Sources/MonitorLive \
     MonitorCore/Sources/MonitorScreens MonitorCore/Sources/MonitorUIKit App --include='*.swift' || true)
 if [[ -n "$hits" ]]; then
     echo "$hits" | head -20

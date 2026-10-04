@@ -23,12 +23,12 @@ Escalation: a needed change in a file you don't own → local extension in your 
 ## W1 APIs you consume (verify; code wins)
 
 - `StorageTree` `Sources/MonitorModel/Storage/StorageTree.swift:9`: arrays `flags`, `markerMask`, `mtime`, `subtreeMaxMtime`, `addedTime`, `allocBytes`, `linkGroups`; `name(_:)` `:96`, `path(_:)` `:101`, `size(_:)` `:114` (nil = restricted), `identity(_:)` `:118`, `sortedChildren(_:)` `:123`, `isAncestor(_:of:)` `:129` (proper ancestor only), `depth(_:)` `:139`, `lookup(path:)` `:151` (exact bytes; trailing slash → nil).
-- `StorageNodeFlags` `StorageBasics.swift:6-25` (`package`, `restricted`, `hidden`, `dataless`, `buildDir` `:25`); `StorageMarker` `:30-47`; `FileIdentity` `:51`; `HardLinkGroup` `:96` (`occurrences` = file node, or dir node for folded links).
-- `subtreeMaxMtime` already excludes `.buildDir` subtrees from parents (`StorageTreeBuilder.swift:133`) — use it as the project's "last touched".
-- `CleanupCategory` `Cleanup.swift:3`, `SafetyTier` `:7`, `DeleteMode` `:11`, `SizeProvenance` `:24`, `OwnerApp` `:42`, `CleanupItem` `:54` (init `:81`, defaults for optional fields), `CleanupSet` `:110`, `ClassifyOptions` `:128` (defaults 500 MB / 50 MB / 183 d, `:137-140`).
-- `ReclaimAccumulator` `ReclaimAccumulator.swift:9` reads `linkGroupIndices` (indices into `tree.linkGroups` with ≥ 1 occurrence equal to or below `item.nodeID`, `:33-38`) — **you set them**.
+- `StorageNodeFlags` `StorageBasics.swift:6-25` (`package`, `restricted`, `hidden`, `dataless`, `buildDir` `:25`); `StorageMarker` `:30-47`; `FileIdentity` `:51`; `HardLinkGroup` `:111` (`occurrences: [LinkOccurrence]` `:96` = `{node, depth, isFolded}`, node = file node, or the dir for folded links; sorted by (depth, path)).
+- `subtreeMaxMtime` already excludes `.buildDir` subtrees from parents (`StorageTreeBuilder.swift:142`) — use it as the project's "last touched".
+- `CleanupCategory` `Cleanup.swift:3`, `SafetyTier` `:7`, `DeleteMode` `:11`, `SizeProvenance` `:24`, `OwnerApp` `:42`, `CleanupItem` `:54` (init `:81`, defaults for optional fields), `LinkGroupSize` `:111`, `CleanupSet` `:122` (+ `linkGroupSizes`, default `[:]`, filled by W2a's private-size pass, not you), `ClassifyOptions` `:143` (defaults 500 MB / 50 MB / 183 d, `:152-155`).
+- `ReclaimAccumulator` `ReclaimAccumulator.swift:12` reads `linkGroupIndices` (indices into `tree.linkGroups` with ≥ 1 occurrence node equal to or below `item.nodeID`, `:61`) — **you set them**.
 - `DiskTools.log` `Sources/MonitorDiskTools/DiskTools.swift:7`.
-- Test DSL `Tests/MonitorDiskToolsTests/Support/TreeFixture.swift:12` (`dir/file/small/link`, `.restricted(name)`, `build(root:_:scanDate:)` `:98`, default root `.home("/Users/test")` `:23`). Read-only.
+- Test DSL `Tests/MonitorDiskToolsTests/Support/TreeFixture.swift:12` (`dir/file/small/link`, `.restricted(name)`, `build(root:_:scanDate:)` `:103`; kept `.link(name, ino:)` nodes carry `fileID == ino`, generated ids start at `1 << 40`), default root `.home("/Users/test")` `:23`). Read-only.
 
 ## API to implement (plan §3.3; shape may grow, record final signatures)
 

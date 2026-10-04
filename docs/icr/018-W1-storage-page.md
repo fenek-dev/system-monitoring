@@ -8,11 +8,11 @@ Additive changes to `MonitorModel`, all `public`, `Sendable`, explicit inits:
 
 - `DashboardPage.storage` (after `.disk`, title "Storage", section `.system`). `UIVisibility.demand` for `.storage` is `.none` (the Storage page reads no sensor beyond `VolumeSensor`, which has no `requires`).
 - New folder `Sources/MonitorModel/Storage/` with the types listed in plan `docs/superpowers/plans/2026-10-04-storage-cleanup.md` §3.1–3.2:
-  - Tree: `StorageNodeID`, `StorageNodeFlags`, `StorageMarker`, `FileIdentity`, `StorageTree` (immutable struct-of-arrays snapshot, `childOrder` + `childPrefix` for size order and remainder sums, `linkGroups`), `HardLinkGroup`, `NodeRecord`, `StorageTreeBuilder` (value type; `appendChildren`, `setDirFacts`, `setRestricted`, `addSmall`, `addLink`, `snapshot`, `finalize`).
-  - `StorageTreeOverlay` (post-clean/undo mutations over an immutable tree; persisted as a sidecar), `RestoredEntry`.
+  - Tree: `StorageNodeID`, `StorageNodeFlags`, `StorageMarker`, `FileIdentity`, `StorageTree` (immutable struct-of-arrays snapshot, `childOrder` + `childPrefix` for size order and remainder sums, `linkGroups`), `HardLinkGroup` + `LinkOccurrence`, `NodeRecord`, `StorageTreeBuilder` (value type; `appendChildren`, `setDirFacts`, `setRestricted`, `addSmall`, `addLink`, `snapshot`, `finalize`).
+  - `StorageTreeOverlay` (post-clean/undo mutations over an immutable tree; persisted as a sidecar), `RestoredEntry`, `StorageOverlayError`.
   - `ReclaimAccumulator` (selection bytes with hard links counted over the union).
   - Scan: `ScanRoot`, `ScanProgress`, `ScanFailure`, `ScanEvent`.
-  - Cleanup: `CleanupCategory`, `SafetyTier`, `DeleteMode`, `SizeProvenance`, `OwnerApp`, `CleanupItem`, `CleanupSet`, `ClassifyOptions`.
+  - Cleanup: `CleanupCategory`, `SafetyTier`, `DeleteMode`, `SizeProvenance`, `OwnerApp`, `CleanupItem`, `CleanupSet` (+ `LinkGroupSize`), `ClassifyOptions`.
   - Clean: `DenyReason`, `SkipReason`, `CleanItemOutcome`, `CleanEvent`, `CleanReport`, `UndoRecord`, `UndoEntry`, `StorageSummary`.
   - `StoragePolicy` (anchor/protected node sets precomputed by the engine so the UI can disable "Move to Trash" without importing `MonitorDiskTools`).
   - Services: `StoragePlatform` (AppKit-backed closures injected into runtime/DiskTools), `StorageActions` (`@MainActor @Sendable` closures, shape of `ProcessActions`, `.noop`).

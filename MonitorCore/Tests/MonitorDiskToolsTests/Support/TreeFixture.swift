@@ -22,6 +22,7 @@ enum TreeFixture {
 
     static let defaultRoot = ScanRoot.home("/Users/test")
     static let dev: Int32 = 1
+    static let generatedIDBase: UInt64 = 1 << 40
 
     static func dir(_ name: String, flags: StorageNodeFlags = [], markers: StorageMarker = [], mtime: Int64 = 0,
                     _ children: [Entry] = []) -> Entry {
@@ -42,8 +43,10 @@ enum TreeFixture {
     }
 
     static func builder(root: ScanRoot = defaultRoot, _ entries: [Entry]) -> StorageTreeBuilder {
-        var builder = StorageTreeBuilder(root: root, dev: dev, volumeUUID: nil, rootFileID: 1)
-        var nextFileID: UInt64 = 2
+        // Generated ids start far above any inode a test supplies for links, so a link node's identity is exactly
+        // its group's and never collides with another node.
+        var builder = StorageTreeBuilder(root: root, dev: dev, volumeUUID: nil, rootFileID: generatedIDBase)
+        var nextFileID: UInt64 = generatedIDBase + 1
         var queue: [(StorageNodeID, [Entry])] = [(0, entries)]
         while !queue.isEmpty {
             let (node, children) = queue.removeFirst()
@@ -58,8 +61,8 @@ enum TreeFixture {
                 case let .file(name, bytes, mtime, added, flags):
                     records.append(NodeRecord(name: name, flags: flags, allocBytes: bytes, fileID: id, mtime: mtime,
                                               addedTime: added))
-                case let .link(name?, _, _, _):
-                    records.append(NodeRecord(name: name, flags: [], allocBytes: 0, fileID: id, mtime: 0,
+                case let .link(name?, ino, _, _):
+                    records.append(NodeRecord(name: name, flags: [], allocBytes: 0, fileID: ino, mtime: 0,
                                               addedTime: 0))
                 case let .restricted(name):
                     records.append(NodeRecord(name: name, flags: [.directory], allocBytes: 0, fileID: id, mtime: 0,
@@ -68,6 +71,8 @@ enum TreeFixture {
                     builder.addSmall(node, bytes: bytes, count: count, maxMtime: maxMtime)
                     continue
                 case let .link(nil, ino, linkCount, bytes):
+                    // A folded link is one more small file of the dir; its bytes go only through addLink.
+                    builder.addSmall(node, bytes: 0, count: 1, maxMtime: 0)
                     builder.addLink(FileIdentity(dev: dev, ino: ino, isDirectory: false), linkCount: linkCount,
                                     bytes: bytes, occurrence: node)
                     continue

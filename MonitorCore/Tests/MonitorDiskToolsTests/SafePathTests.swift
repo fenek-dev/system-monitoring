@@ -40,13 +40,28 @@ import Testing
         #expect(try RelativePath.confined("/x/a/b/c", under: "/x/a/").components == ["b", "c"])
     }
 
-    /// Bug: a symlink inside the root (mid-path or final) redirects an open outside it.
-    @Test(arguments: [TrustedRoot.Resolution.automatic, .componentWalk])
-    func symlinksRefusedInBothModes(_ resolution: TrustedRoot.Resolution) throws {
+    /// Bug: a root spelled with `..`, `.`, `//` or NUL is silently normalized by `realpath` into another directory.
+    @Test(arguments: [
+        ("relative/root", SafePathError.invalidPath("not absolute")),
+        ("/tmp/../etc", .invalidPath("'..' component")),
+        ("/tmp/./x", .invalidPath("'.' component")),
+        ("/tmp//x", .invalidPath("empty component")),
+        ("/tmp/", .invalidPath("empty component")),
+        ("/tmp/a\u{0}b", .invalidPath("NUL in component")),
+    ])
+    func rootSpellingRejectedBeforeResolving(_ path: String, _ expected: SafePathError) {
+        #expect(throws: expected) { _ = try TrustedRoot(path: path) }
+    }
+
+    /// Bug: a symlink inside the root (mid-path or final) redirects an open outside it — with the kernel flags,
+    /// with the walk, and when a failed launch probe makes `.automatic` fall back to the walk.
+    /// `probe` nil = this machine's real probe result.
+    @Test(arguments: [(TrustedRoot.Resolution.automatic, Bool?.none), (.componentWalk, nil), (.automatic, false)])
+    func symlinksRefusedInEveryMode(_ resolution: TrustedRoot.Resolution, probe: Bool?) throws {
         let box = try Sandbox()
-        let root = try TrustedRoot(path: box.root, resolution: resolution)
-        // This Mac (macOS 26) passes the probes, so `.automatic` really exercises the kernel flags.
-        #expect(root.usesKernelResolution == (resolution == .automatic))
+        let probePassed = probe ?? TrustedRoot.kernelResolutionAvailable
+        let root = try TrustedRoot(path: box.root, resolution: resolution, probePassed: probePassed)
+        #expect(root.usesKernelResolution == (resolution == .automatic && probePassed))
         _ = try root.open(RelativePath(validating: "real/sub/f"), flags: O_RDONLY)
         for path in ["link/f", "leaflink"] {
             do {
@@ -57,6 +72,16 @@ import Testing
             }
         }
         #expect(throws: SafePathError.self) { _ = try root.openParent(RelativePath(validating: "link/f")) }
+    }
+
+    /// Kernel `probePassed: true` above is injected; this checks the real probe on this machine.
+    @Suite(.enabled(if: ProcessInfo.processInfo.environment["TELLTALE_HW_TESTS"] == "1"))
+    struct KernelProbeSmokeTests {
+        /// Bug: the launch probe fails on a kernel that honors the flags (every open silently takes the slow walk).
+        /// Measured on macOS 26.5 (spikes §1); 15.x unverified.
+        @Test func kernelResolutionAvailableHere() {
+            #expect(TrustedRoot.kernelResolutionAvailable)
+        }
     }
 
     /// Bug: the identity chain skips or misreports an ancestor, so an "inside protected dir" check passes wrongly.

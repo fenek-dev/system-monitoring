@@ -35,12 +35,13 @@ import Testing
         #expect(tree.size(0) == 25)
     }
 
-    /// Bug: an unreadable dir shows "0 B" as if it were measured, or its folded bytes leak into the parent.
+    /// Bug: an unreadable dir shows "0 B" as if it were measured, or bytes listed below it leak into its ancestors.
     @Test func restrictedChildHasNoSizeAndContributesNothing() {
         var b = Self.builder()
         let r = b.appendChildren(of: 0, [Self.dir("R"), Self.file("f", 4)]).lowerBound
         b.setRestricted(r)
-        b.addSmall(r, bytes: 100, count: 1, maxMtime: 0)
+        b.appendChildren(of: r, [Self.file("inner", 60)])
+        b.addSmall(r, bytes: 40, count: 1, maxMtime: 0)
         let tree = Self.finalize(b)
         #expect(tree.size(r) == nil)
         #expect(tree.size(0) == 4)
@@ -83,21 +84,29 @@ import Testing
         #expect(tree.subtreeMaxMtime[0] == 5000)
     }
 
-    /// Bug: hard-link bytes counted at every link, or at whichever link a worker saw first.
-    @Test func hardLinkCreditedOnceAtLowestDepthWhateverTheOrder() {
+    /// Bug: hard-link bytes counted at every link, at whichever link a worker saw first, or above a folded link's
+    /// real depth (a link folded into `d1` sits at depth 2, like the kept `/a/k`; the path decides: `/a/k` first).
+    @Test func hardLinkCreditedOnceAtLowestRealDepthWhateverTheOrder() {
         for reversed in [false, true] {
             var b = Self.builder()
-            let top = b.appendChildren(of: 0, [Self.dir("deep"), Self.file("shallow", 0)])
-            let mid = b.appendChildren(of: top.lowerBound, [Self.dir("m")]).lowerBound
-            let deepFile = b.appendChildren(of: mid, [Self.file("link", 0)]).lowerBound
-            let shallow = top.lowerBound + 1
+            let top = b.appendChildren(of: 0, [Self.dir("d1"), Self.dir("a"), Self.dir("deep")])
+            let (d1, a, deep) = (top.lowerBound, top.lowerBound + 1, top.lowerBound + 2)
+            let kept = b.appendChildren(of: a, [Self.file("k", 0)]).lowerBound
+            let deeper = b.appendChildren(of: deep, [Self.dir("m")]).lowerBound
+            let deepFile = b.appendChildren(of: deeper, [Self.file("link", 0)]).lowerBound
             let identity = FileIdentity(dev: 1, ino: 42, isDirectory: false)
-            let order = reversed ? [shallow, deepFile] : [deepFile, shallow]
-            for occ in order { b.addLink(identity, linkCount: 2, bytes: 64, occurrence: occ) }
+            let order = reversed ? [kept, d1, deepFile] : [deepFile, d1, kept]
+            for occ in order { b.addLink(identity, linkCount: 3, bytes: 64, occurrence: occ) }
             let tree = Self.finalize(b)
-            #expect(tree.size(shallow) == 64)
+            #expect(tree.size(kept) == 64)
+            #expect(tree.size(d1) == 0)
             #expect(tree.size(deepFile) == 0)
             #expect(tree.size(0) == 64)
+            #expect(tree.linkGroups[0].occurrences == [
+                LinkOccurrence(node: kept, depth: 2, isFolded: false),
+                LinkOccurrence(node: d1, depth: 2, isFolded: true),
+                LinkOccurrence(node: deepFile, depth: 3, isFolded: false),
+            ])
         }
     }
 

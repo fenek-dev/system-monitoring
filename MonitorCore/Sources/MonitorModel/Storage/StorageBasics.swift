@@ -92,18 +92,43 @@ public struct NodeRecord: Sendable, Equatable {
     }
 }
 
+/// One observed link of a hard-linked file.
+public struct LinkOccurrence: Sendable, Equatable, Hashable {
+    /// The file node if kept, else the directory the file was folded into.
+    public var node: StorageNodeID
+    /// Depth of the link itself: the file node's depth, or the folding dir's depth + 1.
+    public var depth: Int32
+    public var isFolded: Bool
+
+    public init(node: StorageNodeID, depth: Int32, isFolded: Bool) {
+        self.node = node
+        self.depth = depth
+        self.isFolded = isFolded
+    }
+}
+
 /// One per (dev, ino) with link count > 1 seen during the scan (kept files and folded small files alike).
 public struct HardLinkGroup: Sendable, Equatable {
     public var identity: FileIdentity
+    /// Every filesystem link of the file, including links outside the scan: the largest `st_nlink` observed
+    /// (conservative if links were added while scanning).
     public var linkCount: UInt16
-    public var bytes: UInt64
-    /// File node if kept, else the containing dir node; one entry per observed link.
-    public var occurrences: [StorageNodeID]
+    /// Allocated bytes of the file (shown once in the Space Map).
+    public var allocBytes: UInt64
+    /// Private bytes if the scan read them (`ATTR_CMNEXT_PRIVATESIZE`); a later private-size pass supplies them
+    /// through `CleanupSet.linkGroupSizes` instead (the tree is immutable).
+    public var privateBytes: UInt64?
+    public var provenance: SizeProvenance
+    /// Sorted by (depth, path): the first one holds the Space Map credit at build time.
+    public var occurrences: [LinkOccurrence]
 
-    public init(identity: FileIdentity, linkCount: UInt16, bytes: UInt64, occurrences: [StorageNodeID]) {
+    public init(identity: FileIdentity, linkCount: UInt16, allocBytes: UInt64, privateBytes: UInt64? = nil,
+                provenance: SizeProvenance = .estimate, occurrences: [LinkOccurrence]) {
         self.identity = identity
         self.linkCount = linkCount
-        self.bytes = bytes
+        self.allocBytes = allocBytes
+        self.privateBytes = privateBytes
+        self.provenance = provenance
         self.occurrences = occurrences
     }
 }
