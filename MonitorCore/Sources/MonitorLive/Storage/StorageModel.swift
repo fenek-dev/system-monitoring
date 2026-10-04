@@ -53,6 +53,34 @@ public final class StorageModel {
     /// Items of the last clean, for undo (the overlay needs their node, bytes and path).
     @ObservationIgnored private var lastCleaned: [Int32: CleanupItem] = [:]
     @ObservationIgnored private var nextTrashItemID: Int32 = -1
+    /// Bumped when a scan starts: a cache load requested before it must not replace what the scan shows.
+    @ObservationIgnored private var cacheEpoch = 0
+    /// Totals, hidden rows and summary are rebuilt once per burst of clean events, not once per event.
+    @ObservationIgnored private var dirty = false
+    @ObservationIgnored private var flushTask: Task<Void, Never>?
+    /// A classification that arrived during a clean: its ids would not match the run's items.
+    @ObservationIgnored private var pendingClassified: CleanupSet?
+    /// Rows hidden because their node is gone (e.g. a Space Map trash of a parent folder); back on undo.
+    @ObservationIgnored private var prunedItems: [Int32: CleanupItem] = [:]
+    /// Cleaned items without a tree node (simulators), which a later classification would list again.
+    @ObservationIgnored private var cleanedNodeless: Set<String> = []
+
+    private static let flushDelay = Duration.milliseconds(50)
+
+    public enum BusyReason: Equatable, Sendable {
+        case scanning, cleaning
+    }
+
+    /// Scans and cleans exclude each other: a clean's outcomes are bound to the tree it started on.
+    public var busyReason: BusyReason? {
+        let progress = cleanup.cleanProgress
+        if progress != nil || cleanTask != nil { return .cleaning }
+        if case .scanning = phase { return .scanning }
+        return nil
+    }
+
+    public var canScan: Bool { busyReason != .cleaning }
+    public var canClean: Bool { busyReason == nil && phase != .loadingCache && spaceMap.tree != nil }
 
     public init(actions: StorageActions, home: String = NSHomeDirectory(),
                 now: @escaping @MainActor () -> Date = { Date() }) {
@@ -79,8 +107,9 @@ public final class StorageModel {
         availableRoots = actions.availableRoots()
         guard spaceMap.tree == nil, scanTask == nil, phase == .idle else { return }
         phase = .loadingCache
+        let epoch = cacheEpoch
         let cached = await actions.loadCached(root, classifyOptions)
-        guard gen == generation else { return }
+        guard gen == generation, epoch == cacheEpoch else { return }
         if let (tree, overlay, set) = cached {
             adopt(tree: tree, overlay: overlay, cleanup: set)
         } else {
@@ -98,8 +127,10 @@ public final class StorageModel {
         // The engine keeps draining its own work; only the consumers stop.
         scanTask?.cancel()
         cleanTask?.cancel()
+        flushTask?.cancel()
         scanTask = nil
         cleanTask = nil
+        flushTask = nil
         run = nil
         actions.release()
         dropState()
@@ -116,7 +147,16 @@ public final class StorageModel {
         runItems = [:]
         lastCleaned = [:]
         listedAtStart = []
+        forgetCleanHistory()
         policy = .none
+    }
+
+    /// A different tree: what was hidden, deferred or cleaned belonged to the old one.
+    private func forgetCleanHistory() {
+        pendingClassified = nil
+        prunedItems = [:]
+        cleanedNodeless = []
+        dirty = false
     }
 
     // MARK: - Scan
@@ -131,8 +171,9 @@ public final class StorageModel {
         dropState()
         root = newRoot
         phase = .loadingCache
+        let epoch = cacheEpoch
         let cached = await actions.loadCached(newRoot, classifyOptions)
-        guard gen == generation else { return }
+        guard gen == generation, epoch == cacheEpoch else { return }
         if let (tree, overlay, set) = cached {
             adopt(tree: tree, overlay: overlay, cleanup: set)
         } else {
@@ -142,7 +183,8 @@ public final class StorageModel {
     }
 
     public func startScan() {
-        guard scanTask == nil else { return }
+        guard scanTask == nil, canScan else { return }
+        cacheEpoch += 1
         classifyOptions.now = now()
         phase = .scanning(hasPrevious: spaceMap.tree != nil)
         progress.progress = nil
@@ -174,6 +216,7 @@ public final class StorageModel {
         case let .finished(tree):
             spaceMap.set(tree: tree, overlay: StorageTreeOverlay(tree: tree))
             cleanup.clear()
+            forgetCleanHistory()
             setMeta = nil
             hasFinalTree = true
             progress.progress = nil
@@ -196,6 +239,8 @@ public final class StorageModel {
         }
         spaceMap.set(tree: tree, overlay: overlay)
         cleanup.clear()
+        forgetCleanHistory()
+        setMeta = nil
         hasFinalTree = true
         progress.progress = nil
         policy = actions.policy()
@@ -215,17 +260,51 @@ public final class StorageModel {
 
     private func applyClassified(_ set: CleanupSet) {
         guard let tree = spaceMap.tree, let overlay = spaceMap.overlay, set.treeVersion == tree.version else { return }
+        guard cleanTask == nil else {
+            pendingClassified = set
+            return
+        }
         var meta = set
         meta.items = []
+        // Trash bytes follow this session's trashing and emptying; a pass that predates them would undo that.
+        if let known = setMeta?.trashBytes, set.treeVersion == setMeta?.treeVersion { meta.trashBytes = known }
         setMeta = meta
         var shown = set
-        // A later pass classifies the immutable scan tree: what was cleaned meanwhile must stay gone.
-        shown.items = set.items.filter { item in
-            guard let node = item.nodeID else { return true }
-            return spaceMap.isVisible(node)
+        // A later pass classifies the immutable scan tree: the overlay stays the source of truth for what was
+        // cleaned meanwhile.
+        shown.items = set.items.compactMap { item in
+            guard item.nodeID != nil else {
+                return cleanedNodeless.contains(Self.nodelessKey(item)) ? nil : item
+            }
+            return presented(item, tree: tree, overlay: overlay)
         }
         cleanup.load(shown, tree: tree, overlay: overlay)
         refreshSummary()
+    }
+
+    private static func nodelessKey(_ item: CleanupItem) -> String { "\(item.mode.rawValue)|\(item.path)" }
+
+    /// The item as the overlay shows it: nil when its node is gone, size and name/path as they are now (a shrunk
+    /// folder, an undone trash that came back under another name).
+    private func presented(_ item: CleanupItem, tree: StorageTree, overlay: StorageTreeOverlay) -> CleanupItem? {
+        guard let node = item.nodeID else { return item }
+        guard spaceMap.isVisible(node) else { return nil }
+        var item = item
+        do {
+            if let size = try overlay.size(node, in: tree), size < item.allocBytes {
+                let drop = item.allocBytes - size
+                item.allocBytes = size
+                item.privateBytesExcludingLinks = item.privateBytesExcludingLinks.map { $0 > drop ? $0 - drop : 0 }
+            }
+            let current = spaceMap.path(of: node)
+            if current != tree.path(node) {
+                item.path = current
+                item.name = try overlay.name(node, in: tree)
+            }
+        } catch {
+            overlayFailed(error)
+        }
+        return item
     }
 
     // MARK: - Clean
@@ -247,7 +326,7 @@ public final class StorageModel {
 
     /// false if a clean, undo or Empty Trash already runs, or the root does not allow cleaning these items.
     public func clean(_ items: [CleanupItem]) -> Bool {
-        guard cleanTask == nil, !items.isEmpty else { return false }
+        guard canStartRun, !items.isEmpty else { return false }
         guard root.allowsCleanup || items.allSatisfy({ $0.mode == .trash }) else { return false }
         listedAtStart = Set(items.map(\.id).filter { cleanup.item($0) != nil })
         runItems = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
@@ -255,6 +334,9 @@ public final class StorageModel {
         begin(.clean, total: items.count, stream: actions.clean(items))
         return true
     }
+
+    /// No other run, no scan or cache load in flight (the run is bound to the tree on screen).
+    private var canStartRun: Bool { cleanTask == nil && busyReason == nil && phase != .loadingCache }
 
     /// "Move to Trash…" in the Space Map: a review-tier trash item for the node, with an id that cannot collide
     /// with the classifier's.
@@ -267,7 +349,7 @@ public final class StorageModel {
             let id = nextTrashItemID
             nextTrashItemID -= 1
             return CleanupItem(
-                id: id, nodeID: node, path: tree.path(node), name: try overlay.name(node, in: tree),
+                id: id, nodeID: node, path: spaceMap.path(of: node), name: try overlay.name(node, in: tree),
                 category: .largeOld, tier: .review, mode: .trash, identity: tree.identity(node),
                 allocBytes: try overlay.size(node, in: tree) ?? 0, sizeProvenance: .estimate)
         } catch {
@@ -282,14 +364,14 @@ public final class StorageModel {
     }
 
     public func undoLast() -> Bool {
-        guard cleanTask == nil, let record = cleanup.lastUndo else { return false }
+        guard canStartRun, let record = cleanup.lastUndo else { return false }
         runItems = lastCleaned
         begin(.undo, total: record.entries.count, stream: actions.undo(record))
         return true
     }
 
     public func emptyTrash() -> Bool {
-        guard cleanTask == nil, root.allowsCleanup else { return false }
+        guard canStartRun, root.allowsCleanup else { return false }
         runItems = [:]
         begin(.emptyTrash, total: 0, stream: actions.emptyTrash())
         return true
@@ -301,20 +383,75 @@ public final class StorageModel {
         cleanup.lastReport = nil
         cleanup.cleanProgress = CleanProgress(total: total, processed: 0, phase: .detaching)
         let gen = generation
+        let version = spaceMap.tree?.version
         cleanTask = Task { [weak self] in
             for await event in stream {
                 guard let self, self.generation == gen else { return }
-                self.apply(event)
+                // The run belongs to the tree it started on; its outcomes mean nothing for another one.
+                guard self.spaceMap.tree?.version == version else { continue }
+                self.applyDeferred(event)
             }
             guard let self, self.generation == gen else { return }
             self.cleanTask = nil
             self.run = nil
             // A stream that ends without `.finished` (engine gone) must not leave the footer on "Cleaning".
             self.cleanup.cleanProgress = nil
+            self.flush()
+            if let pending = self.pendingClassified {
+                self.pendingClassified = nil
+                self.applyClassified(pending)
+            }
         }
     }
 
     public func apply(_ event: CleanEvent) {
+        applyDeferred(event)
+        flush()
+    }
+
+    private func markDirty() {
+        dirty = true
+        guard flushTask == nil else { return }
+        // A stream hands events over one suspension each, so "next turn" would still flush once per event; a short
+        // delay coalesces a burst. Run end and direct `apply` flush at once, so nothing waits on this.
+        flushTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.flushDelay) } catch { return }
+            self?.flushTask = nil
+            self?.flush()
+        }
+    }
+
+    /// Rebuilds what depends on the whole overlay: rows whose node is hidden (or back), item sizes, totals, summary.
+    private func flush() {
+        guard dirty else { return }
+        dirty = false
+        guard let tree = spaceMap.tree, let overlay = spaceMap.overlay else { return }
+        reconcileItems(tree: tree, overlay: overlay)
+        rebuildTotals()
+        refreshSummary()
+    }
+
+    private func reconcileItems(tree: StorageTree, overlay: StorageTreeOverlay) {
+        var hidden = Set<Int32>()
+        for item in cleanup.items {
+            guard let node = item.nodeID, !spaceMap.isVisible(node) else { continue }
+            prunedItems[item.id] = item
+            hidden.insert(item.id)
+        }
+        cleanup.remove(ids: hidden)
+        for (id, item) in prunedItems {
+            guard let node = item.nodeID, spaceMap.isVisible(node) else { continue }
+            prunedItems[id] = nil
+            cleanup.append(item)
+        }
+        let changed = cleanup.items.compactMap { item -> CleanupItem? in
+            guard let now = presented(item, tree: tree, overlay: overlay), now != item else { return nil }
+            return now
+        }
+        cleanup.update(changed)
+    }
+
+    private func applyDeferred(_ event: CleanEvent) {
         switch event {
         case let .item(outcome):
             cleanup.cleanProgress?.processed += 1
@@ -331,17 +468,20 @@ public final class StorageModel {
     private func applyOutcome(_ outcome: CleanItemOutcome) {
         guard let tree = spaceMap.tree, var overlay = spaceMap.overlay else { return }
         if run == .emptyTrash {
-            // Outcome ids are listing indices, not item ids: only reported nodes can be applied.
-            guard outcome.skip == nil, !outcome.removedNodes.isEmpty else { return }
+            // Outcome ids are listing indices, not item ids: an entry is identified by its path. Only committed
+            // entries change anything; failed and unprocessed ones stay.
+            guard outcome.skip == nil else { return }
             do {
-                for node in outcome.removedNodes { try overlay.remove(node, kind: .deleted, in: tree) }
+                for node in outcome.removedNodes + trashEntryNode(outcome.path, in: tree) {
+                    try overlay.remove(node, kind: .deleted, in: tree)
+                }
             } catch {
                 overlayFailed(error)
                 return
             }
             spaceMap.setOverlay(overlay)
-            rebuildTotals()
-            refreshSummary()
+            removeTrashBytes(outcome.detachedBytes)
+            markDirty()
             return
         }
         guard let item = runItems[outcome.itemID] ?? cleanup.item(outcome.itemID) else {
@@ -360,18 +500,35 @@ public final class StorageModel {
             return
         }
         spaceMap.setOverlay(overlay)
+        if item.mode == .trash { addTrashBytes(outcome.detachedBytes > 0 ? outcome.detachedBytes : item.allocBytes) }
+        if item.nodeID == nil { cleanedNodeless.insert(Self.nodelessKey(item)) }
         if item.keepParent, outcome.skippedChildren > 0 {
-            // Part of the folder is still on disk: keep the row, smaller, no longer selected.
-            var rest = cleanup.item(item.id) ?? item
-            rest.allocBytes = rest.allocBytes.subtractingSaturating(outcome.detachedBytes)
-            rest.privateBytesExcludingLinks = rest.privateBytesExcludingLinks?
-                .subtractingSaturating(outcome.detachedBytes)
-            cleanup.replace(rest, checked: false)
+            // Part of the folder is still on disk: keep the row, smaller (sizes follow the overlay in `flush`),
+            // no longer selected.
+            cleanup.update([], uncheck: [item.id])
         } else {
             cleanup.remove(ids: [item.id])
         }
-        rebuildTotals()
-        refreshSummary()
+        markDirty()
+    }
+
+    /// Node of a `~/.Trash` entry named by an outcome path; nothing for a path outside the Trash folder.
+    private func trashEntryNode(_ path: String?, in tree: StorageTree) -> [StorageNodeID] {
+        guard let path else { return [] }
+        let trash = root.path + "/.Trash/"
+        let full = path.hasPrefix("/") ? path : trash + path
+        guard full.hasPrefix(trash), let node = tree.lookup(path: full), node != 0 else { return [] }
+        return [node]
+    }
+
+    private func addTrashBytes(_ bytes: UInt64) {
+        guard let known = setMeta?.trashBytes else { return }
+        setMeta?.trashBytes = known + bytes
+    }
+
+    private func removeTrashBytes(_ bytes: UInt64) {
+        guard let known = setMeta?.trashBytes else { return }
+        setMeta?.trashBytes = known.subtractingSaturating(bytes)
     }
 
     private func applyRestored(itemID: Int32, finalPath: String) {
@@ -385,15 +542,16 @@ public final class StorageModel {
             return
         }
         spaceMap.setOverlay(overlay)
+        if item.mode == .trash { removeTrashBytes(item.allocBytes) }
         if listedAtStart.contains(itemID) {
             var back = item
             back.path = finalPath
+            back.name = (finalPath as NSString).lastPathComponent
             // Without a node to come back to the item is only a path; the Space Map shows it as a restored entry.
             if let node = item.nodeID, !spaceMap.isVisible(node) { back.nodeID = nil }
             cleanup.append(back)
         }
-        rebuildTotals()
-        refreshSummary()
+        markDirty()
     }
 
     private func finish(_ report: CleanReport) {
@@ -405,29 +563,11 @@ public final class StorageModel {
         case .undo:
             cleanup.lastUndo = nil
         case .emptyTrash:
-            finishEmptyTrash(report)
+            // Entries were applied one by one as they committed; the report adds nothing to infer from.
+            break
         }
         policy = actions.policy()
-        refreshSummary()
-    }
-
-    private func finishEmptyTrash(_ report: CleanReport) {
-        if let tree = spaceMap.tree, var overlay = spaceMap.overlay,
-           let trash = tree.lookup(path: root.path + "/.Trash") {
-            do {
-                try overlay.shrink(trash, by: report.freedBytes, in: tree)
-                spaceMap.setOverlay(overlay)
-            } catch {
-                overlayFailed(error)
-            }
-        }
-        if !report.cancelled {
-            cleanup.remove(ids: Set(cleanup.items.filter { $0.category == .trash }.map(\.id)))
-        }
-        if let trashBytes = setMeta?.trashBytes {
-            setMeta?.trashBytes = trashBytes.subtractingSaturating(report.freedBytes)
-        }
-        rebuildTotals()
+        markDirty()
     }
 
     // MARK: - Misc actions

@@ -31,7 +31,19 @@ Worktree `/Users/arturvorokov/Documents/Projects/telltale-storage-w3a`, branch `
 - `startScan` is a no-op while a scan consumer is running.
 - Ignore/unignore on an already-listed path only marks items with that exact path.
 
+## Review round 1 (Codex, all accepted)
+- Rebased onto feat/storage (d622d4f). Fixes 1-11 done; 10 new tests (27 total). Break-checks (red then reverted): drop `canScan` guard (exclusion), drop cache epoch check (late cache load), skip pruning of hidden rows (Space Map trash).
+- Scan/clean exclusion: `busyReason` (`.scanning`/`.cleaning`), `canScan`, `canClean`; clean/undo/emptyTrash refused while scanning/loading cache, scan/selectRoot refused while cleaning; consumer drops events if the tree version changed since the run began.
+- Totals: checked items leave the accumulators at once on removal; everything else (hidden-row prune/revive, size sync from the overlay, full rebuild, summary) is coalesced in `flush()` behind a 50 ms delay (a stream yields once per event, so "next turn" still flushed per event: 2001 flushes measured); direct `apply(CleanEvent)`, `.finished` and run end flush at once.
+- Perf (advisory, debug build): 2,000 `.item` events 7.9 s, of which ~6 s is the overlay's own O(nodes) recompute per mutation (W1, frozen); per-event rebuild was 24 s. Target "well under 100 ms" is not reachable without an overlay change (batch mutation API or incremental recompute). Request below.
+- `cleanup.itemsVersion` observable; every row lookup reads it. Late `loadCached` dropped after a scan starts (`cacheEpoch`). `.classified` during a clean is held and applied at run end. Item sizes/names/paths always come from the overlay (`presented`), nodeless cleaned items tracked by mode+path. Trash totals: +bytes on committed trash, -bytes on restore and per committed Empty Trash entry. Paths resolve through overlay names (`SpaceMapState.path(of:)`).
+- Fix 10 detail: a later classification pass keeps the session-adjusted `trashBytes`.
+
+## Contract changes
+- `CleanItemOutcome.path: String?` (default nil, last property/init param) added in MonitorModel `Clean.swift`, exactly as the coordinator specified. W2c must fill `path` (absolute `~/.Trash` entry path) on Empty Trash outcomes; the model maps it via `tree.lookup`.
+
 ## Requests
+- W1/overlay: `StorageTreeOverlay` mutation is O(nodes) per call; a batch API (`remove(_ nodes:)`) would take 2,000-item cleans from seconds to milliseconds in debug.
 - None.
 
 ## Not verified

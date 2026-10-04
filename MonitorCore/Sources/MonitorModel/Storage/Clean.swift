@@ -37,10 +37,14 @@ public struct CleanItemOutcome: Equatable, Sendable {
     public var partial: Bool
     public var skip: SkipReason?
     public var trashedTo: String?
+    /// Absolute path of the entry this outcome is about. Empty Trash outcomes carry the `~/.Trash` entry here (their
+    /// `itemID` is only a listing index), so the model can hide exactly the committed entries.
+    public var path: String?
 
     public init(itemID: Int32, detachedBytes: UInt64 = 0, removedNodes: [StorageNodeID] = [],
                 committedChildren: Int = 0, skippedChildren: Int = 0, partial: Bool = false, skip: SkipReason? = nil,
-                trashedTo: String? = nil) {
+                trashedTo: String? = nil, path: String? = nil) {
+        self.path = path
         self.itemID = itemID
         self.detachedBytes = detachedBytes
         self.removedNodes = removedNodes

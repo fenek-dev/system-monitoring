@@ -40,6 +40,7 @@ final class StorageHarness {
             clean: { _ in clean.stream },
             cancelClean: { cancelClean.bump() },
             undo: { _ in undo.stream },
+            emptyTrash: { clean.stream },
             release: { release.bump() })
         if let loadCached { a.loadCached = loadCached }
         return a
@@ -51,7 +52,7 @@ final class StorageHarness {
 /// D 500; E 700; F/G/H/z 40 (a deep path for focus tests).
 struct StorageFixture {
     let tree: StorageTree
-    let a, b, c, c1, c2, d, e, f, g, h: StorageNodeID
+    let a, b, c, c1, c2, d, e, f, g, h, trash, t1, t2: StorageNodeID
 
     static func file(_ name: String, _ bytes: UInt64) -> NodeRecord {
         NodeRecord(name: name, flags: [], allocBytes: bytes, fileID: 0, mtime: 0, addedTime: 0)
@@ -63,9 +64,9 @@ struct StorageFixture {
 
     static func make() -> StorageFixture {
         var builder = StorageTreeBuilder(root: .home("/Users/t"), dev: 1, volumeUUID: nil)
-        let top = builder.appendChildren(of: 0, ["A", "B", "C", "D", "E", "F"].map(dir))
-        let (a, b, c, d, e, f) = (top.lowerBound, top.lowerBound + 1, top.lowerBound + 2, top.lowerBound + 3,
-                                  top.lowerBound + 4, top.lowerBound + 5)
+        let top = builder.appendChildren(of: 0, ["A", "B", "C", "D", "E", "F", ".Trash"].map(dir))
+        let (a, b, c, d, e, f, trash) = (top.lowerBound, top.lowerBound + 1, top.lowerBound + 2, top.lowerBound + 3,
+                                         top.lowerBound + 4, top.lowerBound + 5, top.lowerBound + 6)
         let x = builder.appendChildren(of: a, [file("x", 0)]).lowerBound
         let y = builder.appendChildren(of: b, [file("y", 0)]).lowerBound
         let link = FileIdentity(dev: 1, ino: 10, isDirectory: false)
@@ -78,9 +79,11 @@ struct StorageFixture {
         let g = builder.appendChildren(of: f, [dir("G")]).lowerBound
         let h = builder.appendChildren(of: g, [dir("H")]).lowerBound
         builder.appendChildren(of: h, [file("z", 40)])
+        let trashed = builder.appendChildren(of: trash, [file("t1", 30), file("t2", 70)])
         let tree = builder.finalize(scanDate: Date(timeIntervalSince1970: 1_000), lastEventId: 0)
         return StorageFixture(tree: tree, a: a, b: b, c: c, c1: children.lowerBound, c2: children.lowerBound + 1,
-                              d: d, e: e, f: f, g: g, h: h)
+                              d: d, e: e, f: f, g: g, h: h, trash: trash, t1: trashed.lowerBound,
+                              t2: trashed.lowerBound + 1)
     }
 
     func item(_ id: Int32, node: StorageNodeID?, name: String? = nil, path: String? = nil,

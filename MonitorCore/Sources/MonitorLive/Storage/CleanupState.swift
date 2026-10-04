@@ -35,11 +35,12 @@ public final class CleanupState {
     @ObservationIgnored private var linkSizes: [Int32: LinkGroupSize] = [:]
     @ObservationIgnored private var global: ReclaimAccumulator?
     @ObservationIgnored private var perCategory: [CleanupCategory: ReclaimAccumulator] = [:]
-    /// Bumped on every change of `items` (or of what the rows show); also refreshes the id index.
-    @ObservationIgnored private var itemsVersion = 0 {
-        didSet { indexByID = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($1.id, $0) }) }
-    }
-    @ObservationIgnored private var indexByID: [Int32: Int] = [:]
+    /// Bumped on every change of `items` (or of what the rows show). Observable on purpose: `lines()` serves a
+    /// cache hit without touching `items`, and a reader must still be told when the rows change.
+    public private(set) var itemsVersion = 0
+    /// Kept in step with `items` by every mutation below; a clean removes thousands of items one event at a time,
+    /// so lookups must not rebuild an index.
+    @ObservationIgnored private var byID: [Int32: CleanupItem] = [:]
 
     private struct LinesKey: Equatable {
         var category: CleanupCategory
@@ -63,6 +64,7 @@ public final class CleanupState {
     }
 
     private func currentLines() -> CleanupLineBuilder.Output {
+        _ = itemsVersion
         let key = LinesKey(category: category, sort: sort, expanded: expanded, showIgnored: showIgnored,
                            itemsVersion: itemsVersion)
         if linesKey != key {
@@ -86,7 +88,8 @@ public final class CleanupState {
     }
 
     public func item(_ id: Int32) -> CleanupItem? {
-        indexByID[id].map { items[$0] }
+        _ = itemsVersion
+        return byID[id]
     }
 
     public func total(for category: CleanupCategory) -> CategoryTotal {
@@ -113,6 +116,7 @@ public final class CleanupState {
         let previousPaths = Set(items.map(\.path))
         let previouslyChecked = Set(items.filter { checked.contains($0.id) }.map(\.path))
         items = set.items
+        byID = Dictionary(set.items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         linkSizes = set.linkGroupSizes
         checked = Set(set.items.filter {
             $0.isCheckable && (previousPaths.contains($0.path) ? previouslyChecked.contains($0.path)
@@ -125,6 +129,7 @@ public final class CleanupState {
 
     func clear() {
         items = []
+        byID = [:]
         checked = []
         inUse = []
         linkSizes = [:]
@@ -142,27 +147,50 @@ public final class CleanupState {
         itemsVersion += 1
     }
 
-    /// Drops items (cleaned away). Totals are rebuilt by the caller once the overlay change is in.
+    /// Drops items (cleaned away). The footer follows at once by taking the checked ones out of the accumulators;
+    /// effects on other items' hard-link coverage wait for the caller's `rebuildTotals`.
     func remove(ids: Set<Int32>) {
         guard !ids.isEmpty else { return }
+        var touched = Set<CleanupCategory>()
+        for id in ids where checked.contains(id) {
+            guard let item = item(id) else { continue }
+            global?.remove(id)
+            perCategory[item.category]?.remove(id)
+            touched.insert(item.category)
+        }
         items.removeAll { ids.contains($0.id) }
+        for id in ids { byID[id] = nil }
         checked.subtract(ids)
         inUse.subtract(ids)
         itemsVersion += 1
+        if !touched.isEmpty {
+            publishSelection()
+            for category in touched {
+                categoryTotals[category, default: CategoryTotal()].selectedBytes = perCategory[category]?.bytes ?? 0
+            }
+        }
     }
 
-    /// Replaces an item in place (keep-parent partial clean: smaller now, no longer selected).
-    func replace(_ item: CleanupItem, checked isChecked: Bool) {
-        guard let index = indexByID[item.id] else { return }
-        items[index] = item
-        if isChecked { checked.insert(item.id) } else { checked.remove(item.id) }
+    /// Replaces items in place (smaller after a partial clean). Checked state is unchanged; the caller rebuilds totals.
+    func update(_ changed: [CleanupItem], uncheck ids: Set<Int32> = []) {
+        guard !changed.isEmpty || !ids.isEmpty else { return }
+        if !changed.isEmpty {
+            let positions = Dictionary(items.indices.map { (items[$0].id, $0) }, uniquingKeysWith: { first, _ in first })
+            for item in changed {
+                guard let position = positions[item.id] else { continue }
+                items[position] = item
+                byID[item.id] = item
+            }
+        }
+        checked.subtract(ids)
         itemsVersion += 1
     }
 
     /// Re-adds an item (undo), unchecked.
     func append(_ item: CleanupItem) {
-        guard indexByID[item.id] == nil else { return }
+        guard byID[item.id] == nil else { return }
         items.append(item)
+        byID[item.id] = item
         itemsVersion += 1
     }
 
@@ -170,6 +198,7 @@ public final class CleanupState {
         var changed = false
         for index in items.indices where items[index].path == path && items[index].ignored != ignored {
             items[index].ignored = ignored
+            byID[items[index].id]?.ignored = ignored
             checked.remove(items[index].id)
             changed = true
         }

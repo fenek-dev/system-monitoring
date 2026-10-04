@@ -87,6 +87,26 @@ public final class SpaceMapState {
         }
     }
 
+    /// Absolute path of the live instance: every component by its display name, so an undo that came back under
+    /// another name (here or in an ancestor) resolves to where the file really is.
+    public func path(of node: StorageNodeID) -> String {
+        guard let tree else { return "" }
+        var components: [String] = []
+        var n = node
+        while n != 0 {
+            do {
+                components.append(try overlay?.name(n, in: tree) ?? tree.name(n))
+            } catch {
+                Self.log.fault("overlay does not match tree: \(String(describing: error), privacy: .public)")
+                return tree.path(node)
+            }
+            n = tree.parent[Int(n)]
+        }
+        guard !components.isEmpty else { return tree.root.path }
+        let base = tree.root.path.hasSuffix("/") ? String(tree.root.path.dropLast()) : tree.root.path
+        return base + "/" + components.reversed().joined(separator: "/")
+    }
+
     /// Visible children of `node`, largest first (ties by name): `TTSpaceMap` wants presorted tiles and overlay
     /// sizes can reorder the tree's own `childOrder`. Cached per (tree, overlay) version.
     public func children(of node: StorageNodeID) -> [SpaceMapChild] {
