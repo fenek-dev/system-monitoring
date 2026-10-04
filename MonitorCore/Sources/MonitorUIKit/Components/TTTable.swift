@@ -263,15 +263,12 @@ public struct TTTable<Row: Identifiable & Equatable>: View {
                 .environment(\.ttRowDepth, line.depth)
                 .environment(\.ttRowDisclosure, line.hasChildren
                     ? TTRowDisclosure(hasChildren: true, isExpanded: line.isExpanded, toggle: { toggle(id) }) : nil)
-                // Gestures sit on a layer behind the cells, not on the row: a control inside a cell (the checkbox)
-                // is hit first and consumes its clicks, whereas a gesture on the row would also see them
-                // (`simultaneousGesture` fires alongside child gestures, so a double-click would also open the row).
-                .background {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { selection = id }
-                        .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleClick?(line.row) })
-                }
+                // Plain (non-simultaneous) tap gestures on the row: a control inside a cell (the checkbox) has
+                // priority and consumes its clicks, while clicks on cell text fall through to the row. A layer
+                // behind the cells never saw clicks on text (hit-tested first), so rows could not be selected.
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { onDoubleClick?(line.row) }
+                .onTapGesture { selection = id }
                 .accessibilityAddTraits(selection == id ? [.isSelected] : [])
                 .accessibilityAction { selection = id }
                 .modifier(OpenAccessibilityAction(open: onDoubleClick.map { open in { open(line.row) } }))
