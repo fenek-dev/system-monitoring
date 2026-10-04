@@ -92,29 +92,54 @@ enum CleanFS {
         }
     }
 
-    /// Allocated bytes under `name` (a file, or a directory walked live): `st_blocks * 512`. Hard links seen more
-    /// than once in this walk count once. Unreadable subdirectories contribute 0: this is a best-effort figure for
-    /// entries the scan never saw (created after the scan, or Trash contents), never a safety input.
-    static func allocatedBytes(dirFd: Int32, name: String) -> UInt64 {
-        guard let st = try? statAt(dirFd, name) else { return 0 }
-        var seenLinks = Set<FileIdentity>()
-        return allocatedBytes(dirFd: dirFd, name: name, st: st, seen: &seenLinks)
+    /// A hard-linked file seen while measuring: the links met inside the measured entry and the file's total links.
+    struct LinkSeen: Sendable, Equatable {
+        var occurrences: Int
+        var linkCount: UInt64
+        var bytes: UInt64
     }
 
-    private static func allocatedBytes(dirFd: Int32, name: String, st: stat,
-                                       seen: inout Set<FileIdentity>) -> UInt64 {
-        if st.st_nlink > 1 && (st.st_mode & S_IFMT) != S_IFDIR {
-            guard seen.insert(FileIdentity(st)).inserted else { return 0 }
+    /// Bytes of a measured entry. Hard-linked files are kept out of `bytes`: freeing one link frees nothing unless
+    /// it was the last, which only the whole run can tell (`LinkLedger`).
+    struct LiveSize: Sendable, Equatable {
+        var bytes: UInt64 = 0
+        var links: [FileIdentity: LinkSeen] = [:]
+    }
+
+    /// Allocated bytes under `name` (a file, or a directory walked live): `st_blocks * 512`. Unreadable
+    /// subdirectories contribute 0: a best-effort figure for entries the scan never saw (created after the scan, or
+    /// Trash contents), never a safety input.
+    static func liveSize(dirFd: Int32, name: String) -> LiveSize {
+        guard let st = try? statAt(dirFd, name) else { return LiveSize() }
+        var size = LiveSize()
+        measure(dirFd: dirFd, name: name, st: st, into: &size)
+        return size
+    }
+
+    /// Total allocated bytes with every hard-linked file counted once (display figure for tests and logs).
+    static func allocatedBytes(dirFd: Int32, name: String) -> UInt64 {
+        let size = liveSize(dirFd: dirFd, name: name)
+        return size.links.values.reduce(size.bytes) { $0 + $1.bytes }
+    }
+
+    private static func measure(dirFd: Int32, name: String, st: stat, into size: inout LiveSize) {
+        let blocks = UInt64(max(0, st.st_blocks)) * 512
+        let isDirectory = (st.st_mode & S_IFMT) == S_IFDIR
+        if st.st_nlink > 1 && !isDirectory {
+            var seen = size.links[FileIdentity(st)] ?? LinkSeen(occurrences: 0, linkCount: 0, bytes: blocks)
+            seen.occurrences += 1
+            seen.linkCount = max(seen.linkCount, UInt64(st.st_nlink))
+            size.links[FileIdentity(st)] = seen
+        } else {
+            size.bytes += blocks
         }
-        var total = UInt64(max(0, st.st_blocks)) * 512
-        guard (st.st_mode & S_IFMT) == S_IFDIR,
+        guard isDirectory,
               let child = try? FileDescriptor.open(at: dirFd, name, flags: O_RDONLY | O_DIRECTORY | O_NOFOLLOW),
-              let listing = try? list(dirFd: child.rawValue) else { return total }
+              let listing = try? list(dirFd: child.rawValue) else { return }
         for entry in listing.names {
             guard let entrySt = try? statAt(child.rawValue, entry) else { continue }
-            total += allocatedBytes(dirFd: child.rawValue, name: entry, st: entrySt, seen: &seen)
+            measure(dirFd: child.rawValue, name: entry, st: entrySt, into: &size)
         }
-        return total
     }
 
     /// Maps a failed fd-relative open of a target to the reason the item is skipped.

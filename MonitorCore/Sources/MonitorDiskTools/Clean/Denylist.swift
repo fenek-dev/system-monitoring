@@ -63,6 +63,9 @@ public struct Denylist: Sendable {
         for path in anchors {
             guard let chain = liveChain(of: path) else { failed = true; continue }
             anchorBlock.formUnion(chain)
+            // A symlink anchor (e.g. a link directly under ~/Library): `realpath` skips the link itself, but the link
+            // is what a target path can name, so its own inode is anchored too.
+            if let link = linkIdentity(path) { anchorBlock.insert(link) }
         }
         for path in protected {
             guard let chain = liveChain(of: path) else { failed = true; continue }

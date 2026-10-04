@@ -13,11 +13,6 @@ import Testing
         list.check(root: try TrustedRoot(path: box.base), target: box.path(rel))
     }
 
-    private var isCaseInsensitive: Bool {
-        let probe = NSTemporaryDirectory()
-        return access(probe.uppercased(), F_OK) == 0 && access(probe.lowercased(), F_OK) == 0
-    }
-
     /// Bug: protection decided from scan data. Here the protected data dir is a child of the target and is not in
     /// any tree: only the live identity chain can see it.
     @Test func targetContainingInjectedDataDirectoryIsProtected() throws {
@@ -52,17 +47,52 @@ import Testing
         #expect(list.check(root: parent, target: box.base) == .anchor)
     }
 
-    /// Bug: a case or Unicode-normalization spelling of a protected path slips past a string comparison.
-    @Test func spellingVariantsResolveToTheSameIdentity() throws {
+    /// Bug: a case spelling of a protected path slips past a string comparison.
+    @Test(.enabled(if: Self.volumeIsCaseInsensitive, "temp volume is case-sensitive"))
+    func caseVariantResolvesToTheSameIdentity() throws {
         let box = try CleanSandbox()
         try box.write("home/Library/Keychains/k")
+
+        #expect(try check(denylist(box), box, "home/Library/Keychains/k") == .protected)
+        #expect(try check(denylist(box), box, "home/LIBRARY/KEYCHAINS/k") == .protected)
+    }
+
+    /// Bug: a Unicode-normalization (NFD) spelling of a protected path slips past a string comparison.
+    @Test(.enabled(if: Self.volumeNormalizesUnicode, "temp volume does not treat NFC and NFD names as the same"))
+    func normalizationVariantResolvesToTheSameIdentity() throws {
+        let box = try CleanSandbox()
         try box.makeDir("appdata/Caf\u{E9}")
         let list = Denylist.build(home: box.home, scanRoot: box.home, dataDirectories: [box.path("appdata/Caf\u{E9}")])
 
-        #expect(try check(list, box, "home/Library/Keychains/k") == .protected)
-        guard isCaseInsensitive else { return }
-        #expect(try check(list, box, "home/LIBRARY/KEYCHAINS/k") == .protected)
+        #expect(try check(list, box, "appdata/Caf\u{E9}") == .protected)
         #expect(try check(list, box, "appdata/Cafe\u{301}") == .protected)
+    }
+
+    /// Bug: a symlink directly under ~/Library is anchored only by the directory it points to, so the link itself
+    /// (what a target path names) can be trashed.
+    @Test func symlinkAnchorIsDeniedByItsOwnIdentity() throws {
+        let box = try CleanSandbox()
+        try box.makeDir("home/Elsewhere")
+        #expect(symlink(box.path("home/Elsewhere"), box.path("home/Library/Linked")) == 0)
+
+        #expect(try check(denylist(box), box, "home/Library/Linked") == .anchor)
+    }
+
+    private static let volumeIsCaseInsensitive: Bool = probe { dir in
+        FileManager.default.createFile(atPath: dir + "/Probe", contents: nil) && access(dir + "/pROBE", F_OK) == 0
+    }
+
+    private static let volumeNormalizesUnicode: Bool = probe { dir in
+        FileManager.default.createFile(atPath: dir + "/Caf\u{E9}", contents: nil) && access(dir + "/Cafe\u{301}", F_OK) == 0
+    }
+
+    private static func probe(_ body: (String) -> Bool) -> Bool {
+        let dir = NSTemporaryDirectory() + "w2c-probe-\(UUID().uuidString)"
+        guard (try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)) != nil else {
+            return false
+        }
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        return body(dir)
     }
 
     /// Bug: the scan root's own ancestors are not part of the chain, so a root inside Mail is not protected.

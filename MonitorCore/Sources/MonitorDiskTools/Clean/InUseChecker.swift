@@ -37,15 +37,26 @@ public struct InUseChecker: Sendable {
         return InUseReport(inUse: result, unknownHolders: held.unknownHolders)
     }
 
-    /// The item path as given and with its parent canonicalized (kernel paths are `/private/var/...`). The leaf is
-    /// not resolved: a symlink item is the link itself.
+    /// The item path as given plus its canonical form: kernel paths are `/private/var/...` with the on-disk case
+    /// (the filesystem is usually case-insensitive, so the item may be spelled `~/library/caches/x`). A non-symlink
+    /// leaf is resolved with `realpath` (case included); a symlink leaf is the link itself, so only its parent is.
     private static func spellings(of path: String) -> [String] {
-        let parent = (path as NSString).deletingLastPathComponent
-        guard let resolved = Darwin.realpath(parent, nil) else { return [path] }
+        var st = stat()
+        let isLink = lstat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK
+        let canonical: String?
+        if isLink {
+            let parent = (path as NSString).deletingLastPathComponent
+            canonical = realpath(parent).map { ($0 == "/" ? "" : $0) + "/" + (path as NSString).lastPathComponent }
+        } else {
+            canonical = realpath(path)
+        }
+        guard let canonical, canonical != path else { return [path] }
+        return [path, canonical]
+    }
+
+    private static func realpath(_ path: String) -> String? {
+        guard let resolved = Darwin.realpath(path, nil) else { return nil }
         defer { free(resolved) }
-        let canonical = String(cString: resolved)
-        let leaf = (path as NSString).lastPathComponent
-        let joined = canonical == "/" ? "/" + leaf : canonical + "/" + leaf
-        return joined == path ? [path] : [path, joined]
+        return String(cString: resolved)
     }
 }

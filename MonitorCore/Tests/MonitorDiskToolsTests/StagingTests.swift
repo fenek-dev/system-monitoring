@@ -11,11 +11,12 @@ import Testing
 
     /// Detaches `rel` (expecting `expected`) from its parent directory.
     private func detach(_ box: CleanSandbox, _ journal: StagingJournal, _ rel: String,
-                        expected: FileIdentity) throws -> DetachResult {
+                        expected: FileIdentity, clearImmutable: Bool = false) throws -> DetachResult {
         let root = try TrustedRoot(path: box.base)
         let live = try LiveTarget.open(root: root, absolutePath: box.path(rel))
         return journal.detach(parent: live.parent.rawValue, parentPath: (box.path(rel) as NSString).deletingLastPathComponent,
-                              parentIdentity: live.parentIdentity, leaf: live.leaf, expected: expected)
+                              parentIdentity: live.parentIdentity, leaf: live.leaf, expected: expected,
+                              clearImmutable: clearImmutable)
     }
 
     /// Bug: the item at the path was replaced after the scan and the cleaner deletes the new, different file.
@@ -100,6 +101,61 @@ import Testing
         #expect(result == .skipped(.stagingOtherVolume, leftover: false))
         #expect(try box.identity("home/cache") == original)
         #expect(box.list("staging/pending").isEmpty)
+    }
+
+    /// Bug: a crash after an Empty Trash commit loses the unlock authorization, so the sweep can never delete the
+    /// locked file; and the reverse, the sweep unlocking entries nobody authorized.
+    @Test func sweepHonorsPersistedUnlockAuthorization() throws {
+        let box = try CleanSandbox()
+        let s = staging(box)
+        let journal = try s.openJournal()
+        try box.write("home/Trash/locked-dir/f.txt")
+        let identity = try box.identity("home/Trash/locked-dir")
+        let result = try detach(box, journal, "home/Trash/locked-dir", expected: identity, clearImmutable: true)
+        guard case let .committed(entry) = result else { Issue.record("not committed: \(result)"); return }
+        #expect(box.list("staging/commit").sorted() == [entry.name, entry.name + ".unlock"].sorted())
+
+        let locked = box.path("staging/commit/\(entry.name)/f.txt")
+        #expect(lchflags(locked, UInt32(UF_IMMUTABLE)) == 0)
+        try box.write("staging/commit/unauthorized/f.txt")
+        #expect(lchflags(box.path("staging/commit/unauthorized/f.txt"), UInt32(UF_IMMUTABLE)) == 0)
+
+        let report = s.sweep()
+
+        #expect(report.deleted == 1)
+        #expect(report.deleteFailures == 1)
+        #expect(box.list("staging/commit") == ["unauthorized"])
+    }
+
+    /// Bug: after an abort (app quit) new deletes still start, or a cancelled delete is retried by the repair loop.
+    @Test func abortedWorkerRefusesAndLeavesEntry() throws {
+        let box = try CleanSandbox()
+        let journal = try staging(box).openJournal()
+        try box.write("staging/commit/entry/f.txt")
+        let worker = DeleteWorker(slim: true)
+        worker.cancelInFlight()
+
+        let outcome = worker.delete(DeleteTarget(commitFd: journal.commit.rawValue, commitPath: journal.commitPath,
+                                                 name: "entry"), clearImmutable: false)
+
+        #expect(!outcome.removed)
+        #expect(outcome.failures.contains("cancelled"))
+        #expect(box.list("staging/commit/entry") == ["f.txt"])
+    }
+
+    /// Bug: permission repair follows a mount into another device (it must only touch the entry's own device).
+    @Test func repairSkipsEntriesOnAnotherDevice() throws {
+        let box = try CleanSandbox()
+        let journal = try staging(box).openJournal()
+        try box.write("staging/commit/entry/locked/f.txt")
+        #expect(chmod(box.path("staging/commit/entry/locked"), 0o000) == 0)
+        let target = DeleteTarget(commitFd: journal.commit.rawValue, commitPath: journal.commitPath, name: "entry")
+        let realDev = try CleanFS.statAt(journal.commit.rawValue, "entry").st_dev
+
+        #expect(!DeleteWorker.repair(target: target, clearImmutable: false, dev: realDev &+ 1))
+        #expect(try CleanFS.statAt(journal.commit.rawValue, "entry/locked").st_mode & 0o777 == 0)
+        #expect(DeleteWorker.repair(target: target, clearImmutable: false, dev: realDev))
+        #expect(try CleanFS.statAt(journal.commit.rawValue, "entry/locked").st_mode & 0o700 == 0o700)
     }
 
     /// Bug: the launch sweep deletes pending items (user data) or leaves committed garbage / orphan sidecars.

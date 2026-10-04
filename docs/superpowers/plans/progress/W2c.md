@@ -24,7 +24,7 @@ T1 Denylist, T2 policy checks, T3 Staging journal, T4 keep-parent, T5 DeleteWork
 - Backpressure: detach waits for one of 4 delete slots, so after `cancel()` at most 4 committed entries remain to drain.
 
 ## Notes / deviations
-- `removefile.h` is not in the Darwin Swift module: symbols resolved with `dlsym(RTLD_DEFAULT)` (RemoveFileFunctions, DeleteWorker.swift). A C shim would be cleaner (Request below).
+- `removefile` symbols come from the CPrivate shim header (see review round).
 - Measured: `REMOVEFILE_RECURSIVE_SLIM` on a plain file fails ENOTDIR; SLIM is used only for directories. SLIM also silently skips unreadable (000) directories (no callback), and returns rc 0 with errno 66; so permission repair is a tree walk of the leftover entry (up to 5 rounds), not "one retry on the failing path".
 - Symlink path component: the no-follow `O_DIRECTORY` open yields ENOTDIR (not ELOOP) in the component walk, so the item is skipped `.changedSinceScan` (not `.outsideRoot`); nothing outside is touched.
 - keep-parent child bytes: tree size if the child is a node whose tree identity equals the live inode, else live allocated size (`st_blocks*512`, directories walked, hard links once). Children not valid UTF-8 are counted as skipped.
@@ -34,8 +34,17 @@ T1 Denylist, T2 policy checks, T3 Staging journal, T4 keep-parent, T5 DeleteWork
 - Denylist anchors/protected are built once per `clean()` (live at that time), not per item.
 - Cleaner takes `permittedRoot` as `TrustedRoot` (kernel resolution when the probe passes; `openParent` always walks).
 
+## Codex review round (all 17 accepted, fixed)
+- P1-1 every mutation re-runs a fresh `TrustedRoot` + `Denylist.build` + chain check (`Cleaner.authorize`), after the slot wait; keep-parent re-authorizes per child and re-checks the item directory identity. Break-check (cached denylist): 2 tests red.
+- P1-2 per-run cancel token (`Run.cancelFlag`); `cancel()` cancels runs active at that moment. Break-check (reset on start): red.
+- P1-3 `removefile` now via CPrivate `RemoveFileShim.h` (declarations by hand: `#include <removefile.h>` is not importable from the module; MonitorDiskTools depends on CPrivate, Package.swift edit approved). Cancel, unregister and free share one lock. No deterministic test for the free race; the persistent abort flag is tested (break-check: red).
+- P1-4 undo entry only when the landed inode equals the trashed one; otherwise logged, no entry (W3a: item id missing from `report.undo` while `trashedTo` is set means "trashed, not undoable"). Break-check: red.
+- P2: undo revalidates source before each rename (seam `UndoStore.beforeRename`); hard-link ledger per run (only for live-measured sizes: keep-parent children without a matching scanned node, Empty Trash; scanned tree sizes keep the model's link rules); ECANCELED/abort stop the retry loop; unlock authorization persisted as `commit/<id>.unlock` and honored by the sweep; `.freed` is deferred until its `.item` was emitted; cancellation in slot wait marks `cancelled`; in-use matching canonicalizes a non-symlink leaf with `realpath` (case); symlink anchors also anchor their own inode; permission repair is limited to the entry's device (`DeleteWorker.repair(dev:)` tested with a wrong device number, no real second device); EPERM counted once per pid at any libproc stage (not unit-tested: needs a foreign-uid process); residual failure line carries removefile's rc/errno (not unit-tested: needs an entry that survives silently).
+- P3: case and NFD tests split with `.enabled(if:)` volume probes; keep-parent test uses real inodes with a different scanned size.
+- Contract: `CleanItemOutcome.path` (Clean.swift) filled for every Empty Trash outcome.
+
 ## Requests
-- C module/shim exposing `removefile.h` (Package.swift / CPrivate not mine).
+- none open.
 
 ## Not verified
 - macOS 14.x/15.x behavior of RENAME_NOFOLLOW_ANY / SLIM (measured on 26.5 only).

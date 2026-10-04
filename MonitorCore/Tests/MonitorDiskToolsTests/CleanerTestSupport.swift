@@ -86,6 +86,39 @@ final class CleanSandbox: Sendable {
         TreeFixture.build(root: .home(home), entries)
     }
 
+    /// A tree of the real `home` directory with the real device and inodes (so node identities match the live files,
+    /// as after a real scan). `sizes` overrides a file's size by path relative to `home`, to tell scanned sizes from
+    /// live ones.
+    func liveTree(sizes: [String: UInt64] = [:]) throws -> StorageTree {
+        func stat(_ path: String) throws -> Darwin.stat {
+            var st = Darwin.stat()
+            guard lstat(path, &st) == 0 else { throw CocoaError(.fileNoSuchFile) }
+            return st
+        }
+        let rootStat = try stat(home)
+        var builder = StorageTreeBuilder(root: .home(home), dev: rootStat.st_dev, volumeUUID: nil,
+                                         rootFileID: rootStat.st_ino)
+        var queue: [(node: StorageNodeID, rel: String)] = [(0, "")]
+        while !queue.isEmpty {
+            let (node, rel) = queue.removeFirst()
+            let dir = rel.isEmpty ? home : home + "/" + rel
+            var records: [NodeRecord] = []
+            var dirs: [(index: Int, rel: String)] = []
+            for name in list((dir as NSString).substring(from: base.count + 1)) {
+                let childRel = rel.isEmpty ? name : rel + "/" + name
+                let st = try stat(home + "/" + childRel)
+                let isDir = (st.st_mode & S_IFMT) == S_IFDIR
+                let size = sizes[childRel] ?? UInt64(max(0, st.st_blocks)) * 512
+                records.append(NodeRecord(name: name, flags: isDir ? [.directory] : [], allocBytes: isDir ? 0 : size,
+                                          fileID: st.st_ino, mtime: 0, addedTime: 0))
+                if isDir { dirs.append((records.count - 1, childRel)) }
+            }
+            let range = builder.appendChildren(of: node, records)
+            for (index, childRel) in dirs { queue.append((range.lowerBound + Int32(index), childRel)) }
+        }
+        return builder.finalize(scanDate: Date(timeIntervalSince1970: 0), lastEventId: 0)
+    }
+
     func context(permittedRoot: String? = nil, trash: (any TrashMover)? = nil,
                  deleter: (any Deleter)? = nil, evictor: any Evictor = FakeEvictor(),
                  simctl: any SimctlRunner = FakeSimctl(), inUse: InUseChecker? = nil) -> CleanContext {
@@ -153,6 +186,30 @@ final class FakeSimctl: SimctlRunner {
         runs.withLock { $0 += 1 }
         return result
     }
+}
+
+/// Trashes like `FakeTrash`, then swaps a different file in under the same Trash name (what a concurrent process
+/// could do between `trashItem` and our bookkeeping).
+final class ReplacingTrash: TrashMover {
+    let directory: String
+    init(directory: String) { self.directory = directory }
+
+    func trash(path: String) throws(TrashError) -> String {
+        let destination = directory + "/" + (path as NSString).lastPathComponent
+        guard rename(path, destination) == 0 else { throw .failed("errno \(errno)") }
+        unlink(destination)
+        guard FileManager.default.createFile(atPath: destination, contents: Data("other".utf8)) else {
+            throw .failed("replace failed")
+        }
+        return destination
+    }
+}
+
+/// Every event of a stream in arrival order.
+func collectOrdered(_ stream: AsyncStream<CleanEvent>) async -> [CleanEvent] {
+    var events: [CleanEvent] = []
+    for await event in stream { events.append(event) }
+    return events
 }
 
 /// Real deletion, but each entry waits for a permit from the test first.

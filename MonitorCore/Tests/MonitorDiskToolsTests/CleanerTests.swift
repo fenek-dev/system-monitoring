@@ -20,17 +20,21 @@ import Testing
     @Test func keepParentHandlesLiveListingAndKeepsDirectory() async throws {
         let box = try CleanSandbox()
         try box.write("home/Library/Caches/app/known.bin", bytes: 8192)
-        let tree = box.tree([TreeFixture.dir("Library", [TreeFixture.dir("Caches", [
-            TreeFixture.dir("app", [TreeFixture.file("known.bin", 8192)]),
-        ])])])
+        // Real inodes in the tree, so the scanned node matches the live child; its scanned size is made different
+        // from the live one to tell which rule priced it.
+        let scannedSize: UInt64 = 777
+        let tree = try box.liveTree(sizes: ["Library/Caches/app/known.bin": scannedSize])
         let appNode = try #require(tree.lookup(path: box.path("home/Library/Caches/app")))
         let knownNode = try #require(tree.lookup(path: box.path("home/Library/Caches/app/known.bin")))
-        let item = try box.item(1, "home/Library/Caches/app", keepParent: true, node: appNode)
+        let item = try box.item(1, "home/Library/Caches/app", keepParent: true, node: appNode,
+                                identity: tree.identity(appNode))
         // Created after the scan: the tree has no node for these.
         try box.write("home/Library/Caches/app/late.bin", bytes: 4096)
         try box.write("home/Library/Caches/app/lateDir/x", bytes: 4096)
-        let expectedBytes = allocated(box, "home/Library/Caches/app/known.bin")
-            + allocated(box, "home/Library/Caches/app/late.bin") + allocated(box, "home/Library/Caches/app/lateDir")
+        let liveKnown = allocated(box, "home/Library/Caches/app/known.bin")
+        #expect(liveKnown != scannedSize)
+        let expectedBytes = scannedSize + allocated(box, "home/Library/Caches/app/late.bin")
+            + allocated(box, "home/Library/Caches/app/lateDir")
 
         let events = await run(Cleaner(context: box.context()), [item], box, tree: tree)
 
@@ -216,6 +220,8 @@ import Testing
         #expect(events.finished[0].outcomes.allSatisfy { $0.skip == nil && !$0.partial })
         #expect(events.finished[0].freedBytes > 0)
         #expect(box.list("staging/commit").isEmpty)
+        #expect(events.finished[0].outcomes.compactMap(\.path).sorted()
+                == ["folder", "locked.txt", "plain.txt"].map { box.path("home/.Trash/" + $0) })
     }
 
     /// Bug: freedBytes counts detached or trashed bytes instead of only what was fully removed, or Trash bytes leak
@@ -312,6 +318,173 @@ import Testing
         #expect(events.finished.first?.outcomes.first?.skip == .inUse)
         #expect(box.exists("home/Library/Caches/busy/f"))
     }
+}
+
+extension CleanerTests {
+    /// Bug: protection decided from a denylist built when the run started. Mail is replaced by a new directory and
+    /// the scanned item moved into it afterwards; only a fresh live check sees that it is now inside Mail.
+    @Test func protectedDirectoryRecreatedAfterSetupIsHonored() async throws {
+        let box = try CleanSandbox()
+        try box.write("home/Library/Mail/V10/m.emlx")
+        let item = try box.item(1, "home/Library/Mail/V10")
+        let hooks = CleanTestHooks(beforeItem: { _ in
+            let fm = FileManager.default
+            try? fm.moveItem(atPath: box.path("home/Library/Mail/V10"), toPath: box.path("home/V10-moving"))
+            try? fm.removeItem(atPath: box.path("home/Library/Mail"))
+            try? fm.createDirectory(atPath: box.path("home/Library/Mail"), withIntermediateDirectories: true)
+            try? fm.moveItem(atPath: box.path("home/V10-moving"), toPath: box.path("home/Library/Mail/V10"))
+        })
+        // The item path is only allowed while Mail does not exist as a protected parent at check time.
+        let tree = box.tree()
+
+        let events = await collect(Cleaner(context: box.context(), hooks: hooks)
+            .clean([item], tree: tree, overlay: StorageTreeOverlay(tree: tree)))
+
+        #expect(events.finished.first?.outcomes.first?.skip == .denied(.protected))
+        #expect(box.list("home/Library/Mail/V10") == ["m.emlx"])
+    }
+
+    /// Bug: starting a new run resets the cancellation of a run that is still going (shared flag).
+    @Test func cancelOfOneRunDoesNotLeakIntoALaterRun() async throws {
+        let box = try CleanSandbox()
+        try box.write("home/Library/Caches/a/f")
+        try box.write("home/Library/Caches/b/f")
+        let entered = DispatchSemaphore(value: 0)
+        let proceed = DispatchSemaphore(value: 0)
+        let calls = Mutex(0)
+        let hooks = CleanTestHooks(beforeItem: { _ in
+            // Only the first item of run A parks here, with the run already in progress.
+            let first = calls.withLock { (n: inout Int) -> Bool in
+                n += 1
+                return n == 1
+            }
+            guard first else { return }
+            entered.signal()
+            proceed.wait()
+        })
+        let cleaner = Cleaner(context: box.context(), hooks: hooks)
+        let tree = box.tree()
+        let overlay = StorageTreeOverlay(tree: tree)
+        let a = cleaner.clean([try box.item(1, "home/Library/Caches/a")], tree: tree, overlay: overlay)
+        awaitSignal(entered)
+        cleaner.cancel()
+        let b = cleaner.clean([try box.item(2, "home/Library/Caches/b")], tree: tree, overlay: overlay)
+        proceed.signal()
+
+        let eventsA = await collect(a)
+        let eventsB = await collect(b)
+
+        #expect(eventsA.finished.first?.cancelled == true)
+        #expect(eventsA.finished.first?.outcomes.first?.skip == .cancelled)
+        #expect(box.exists("home/Library/Caches/a/f"))
+        #expect(eventsB.finished.first?.cancelled == false)
+        #expect(!box.exists("home/Library/Caches/b"))
+    }
+
+    /// Bug: after `trashItem` a different file sits under the Trash name and the undo record adopts it, so undo would
+    /// move a file we never trashed.
+    @Test func replacedTrashEntryGetsNoUndoRecord() async throws {
+        let box = try CleanSandbox()
+        try box.write("home/Documents/a.txt")
+        let item = try box.item(1, "home/Documents/a.txt", mode: .trash)
+
+        let events = await run(Cleaner(context: box.context(trash: ReplacingTrash(directory: box.fakeTrash))), [item], box)
+
+        let report = try #require(events.finished.first)
+        #expect(report.undo == nil)
+        #expect(report.trashedBytes == 1000)
+        #expect(report.outcomes.first?.trashedTo == box.path("faketrash/a.txt"))
+    }
+
+    /// Bug: two links of one file in different removed children credit its bytes twice; a file with a link outside
+    /// the removed set credits bytes although nothing was freed.
+    @Test func hardLinkedBytesAreCreditedOnceAndOnlyWhenLastLinkWent() async throws {
+        let box = try CleanSandbox()
+        let first = try box.write("home/Library/Caches/pair/a", bytes: 16384)
+        #expect(link(first, box.path("home/Library/Caches/pair/b")) == 0)
+        let kept = try box.write("home/Library/Caches/shared/c", bytes: 16384)
+        try box.makeDir("home/Documents")
+        #expect(link(kept, box.path("home/Documents/outside-link")) == 0)
+        let oneCopy = allocated(box, "home/Library/Caches/pair/a")
+        #expect(oneCopy >= 16384)
+        let items = [
+            try box.item(1, "home/Library/Caches/pair", keepParent: true),
+            try box.item(2, "home/Library/Caches/shared", keepParent: true),
+        ]
+
+        let events = await run(Cleaner(context: box.context()), items, box)
+
+        let report = try #require(events.finished.first)
+        #expect(report.freedBytes == oneCopy)
+        #expect(events.freed.reduce(0, +) == oneCopy)
+        #expect(box.exists("home/Documents/outside-link"))
+    }
+
+    /// Bug: a `.freed` event arrives before the `.item` event of the same item (simctl, keep-parent children).
+    @Test func freedNeverPrecedesItsItemEvent() async throws {
+        let box = try CleanSandbox()
+        for n in 0 ..< 8 { try box.write("home/Library/Caches/many/f\(n)", bytes: 8192) }
+        let sim = CleanupItem(id: 1, nodeID: nil, path: box.path("home/Library/Developer/CoreSimulator/Devices"),
+                              name: "Devices", category: .developer, tier: .review, mode: .simctl, identity: nil,
+                              allocBytes: 777)
+        let items = [sim, try box.item(2, "home/Library/Caches/many", keepParent: true)]
+
+        let events = await collectOrdered(Cleaner(context: box.context()).clean(items, tree: box.tree(),
+                                                                                 overlay: StorageTreeOverlay(tree: box.tree())))
+
+        var detached: UInt64 = 0
+        var freed: UInt64 = 0
+        var sawFreed = false
+        for event in events {
+            switch event {
+            case let .item(outcome): detached += outcome.detachedBytes
+            case let .freed(bytes):
+                freed += bytes
+                sawFreed = true
+                #expect(freed <= detached)
+            default: break
+            }
+        }
+        #expect(sawFreed)
+        #expect(freed == detached)
+    }
+
+    /// Bug: cancelling while the loop waits for a delete slot (or inside the item) leaves `cancelled == false`
+    /// and the item without a `.cancelled` outcome.
+    @Test func cancelWhileWaitingForSlotIsReported() async throws {
+        let box = try CleanSandbox()
+        let names = ["a", "b", "c", "d", "e"]
+        for name in names { try box.write("home/Library/Caches/\(name)/f") }
+        let items = try names.enumerated().map { try box.item(Int32($0.offset), "home/Library/Caches/\($0.element)") }
+        let gated = GatedDeleter(inner: DeleteWorker(slim: false))
+        let cleaner = Cleaner(context: box.context(deleter: gated))
+        let tree = box.tree()
+        var finished: CleanReport?
+        var itemsSeen = 0
+        for await event in cleaner.clean(items, tree: tree, overlay: StorageTreeOverlay(tree: tree)) {
+            switch event {
+            case .item:
+                itemsSeen += 1
+                // Four slots are taken by blocked deletes; the fifth item is waiting for one.
+                if itemsSeen == Cleaner.maxInFlight {
+                    cleaner.cancel()
+                    gated.release(Cleaner.maxInFlight)
+                }
+            case let .finished(report): finished = report
+            default: break
+            }
+        }
+
+        let report = try #require(finished)
+        #expect(report.cancelled)
+        #expect(report.outcomes.map(\.skip) == [nil, nil, nil, nil, .cancelled])
+        #expect(box.exists("home/Library/Caches/e/f"))
+    }
+}
+
+/// `DispatchSemaphore.wait` is unavailable in async contexts; the hook thread signals promptly, so a sync wrapper is fine.
+func awaitSignal(_ semaphore: DispatchSemaphore) {
+    semaphore.wait()
 }
 
 struct StaticProcessPaths: ProcessPathSource {

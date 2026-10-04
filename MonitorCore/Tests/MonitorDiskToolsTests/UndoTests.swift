@@ -98,6 +98,23 @@ import Testing
         #expect(box.list("faketrash") == ["a.txt"])
     }
 
+    /// Bug: the Trash entry is replaced after the checks but before the rename (checked once up front only).
+    @Test func entryReplacedBeforeRenameIsNotMoved() async throws {
+        let box = try CleanSandbox()
+        try box.write("home/Documents/a.txt")
+        let record = try await trash(box, "home/Documents/a.txt")
+        let swap = UndoStore(file: box.path("appdata/storage-undo.json"), permittedRoot: box.home, beforeRename: {
+            try? FileManager.default.removeItem(atPath: box.path("faketrash/a.txt"))
+            _ = try? box.write("faketrash/a.txt", bytes: 99)
+        })
+
+        let events = await collect(swap.restore(record))
+
+        #expect(events.restored.isEmpty)
+        #expect(events.finished.first?.outcomes.first?.skip == .failed("Trash item was replaced"))
+        #expect(!box.exists("home/Documents/a.txt"))
+    }
+
     /// Bug: the original parent was replaced by a symlink and the restore writes through it.
     @Test func symlinkedDestinationParentIsRefused() async throws {
         let box = try CleanSandbox()

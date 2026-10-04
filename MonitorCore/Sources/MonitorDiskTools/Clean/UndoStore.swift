@@ -11,11 +11,18 @@ public final class UndoStore: Sendable {
     private let file: String
     private let permittedRoot: String
     private let lock = Mutex(0)
+    private let beforeRename: (@Sendable () -> Void)?
 
     /// `permittedRoot`: restores recreate missing parents below it and refuse to leave it.
-    public init(file: String, permittedRoot: String) {
+    public convenience init(file: String, permittedRoot: String) {
+        self.init(file: file, permittedRoot: permittedRoot, beforeRename: nil)
+    }
+
+    /// `beforeRename`: test seam, runs just before each rename attempt's identity check.
+    init(file: String, permittedRoot: String, beforeRename: (@Sendable () -> Void)?) {
         self.file = file
         self.permittedRoot = permittedRoot
+        self.beforeRename = beforeRename
     }
 
     public func records() throws -> [UndoRecord] {
@@ -103,10 +110,17 @@ public final class UndoStore: Sendable {
                 }
                 let parentPath = (entry.originalPath as NSString).deletingLastPathComponent
                 let name = (entry.originalPath as NSString).lastPathComponent
+                // Destination first (it can take a while and creates directories), source check last: the identity
+                // is re-verified right before every rename attempt so nothing that replaced the item in between
+                // is moved.
                 let destination = try openOrCreateParent(parentPath)
                 var candidate = name
                 var attempt = 0
                 while true {
+                    beforeRename?()
+                    guard CleanFS.identity(of: trashLeaf, in: trashFd) == entry.identity else {
+                        return .refused(.failed("Trash item was replaced"))
+                    }
                     do throws(SafePathError) {
                         try CleanFS.exclusiveRename(fromDir: trashFd, trashLeaf, toDir: destination.rawValue, candidate)
                         return .done(parentPath + "/" + candidate)

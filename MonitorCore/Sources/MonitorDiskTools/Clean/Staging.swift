@@ -103,14 +103,37 @@ final class StagingJournal: Sendable {
         guard moved == expected else {
             return rollBack(id: id, parent: parent, leaf: leaf)
         }
+        // The unlock authorization must survive a crash: the launch sweep deletes this entry without the caller, and
+        // only an entry that was authorized (Empty Trash) may have its `uchg` flags cleared there.
+        if clearImmutable, !writeUnlockMarker(id) {
+            return .skipped(.failed("journal write: unlock marker"), leftover: true)
+        }
         do {
             try CleanFS.exclusiveRename(fromDir: pending.rawValue, id, toDir: commit.rawValue, id)
         } catch {
             DiskTools.log.error("staging: pending → commit failed for \(leaf, privacy: .public): \(error.errno ?? 0)")
+            if clearImmutable { releaseUnlockMarker(id) }
             return .skipped(.failed("commit rename failed"), leftover: true)
         }
         removeSidecar(id)
         return .committed(CommittedEntry(name: id, identity: expected))
+    }
+
+    static let unlockSuffix = ".unlock"
+
+    private func writeUnlockMarker(_ id: String) -> Bool {
+        let fd = openat(commit.rawValue, id + Self.unlockSuffix, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                        0o600)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        return fsync(fd) == 0
+    }
+
+    /// Drops the authorization once its entry is gone (or the entry never made it into `commit/`).
+    func releaseUnlockMarker(_ id: String) {
+        if unlinkat(commit.rawValue, id + Self.unlockSuffix, 0) != 0 && errno != ENOENT {
+            DiskTools.log.error("staging: unlock marker \(id, privacy: .public) not removed, errno \(errno)")
+        }
     }
 
     private func rollBack(id: String, parent: Int32, leaf: String) -> DetachResult {
@@ -238,11 +261,19 @@ public final class Staging: Sendable {
             report.error = "list commit: \(error)"
             return
         }
-        for name in names {
+        let entries = names.filter { !$0.hasSuffix(StagingJournal.unlockSuffix) }
+        let entrySet = Set(entries)
+        for marker in names where marker.hasSuffix(StagingJournal.unlockSuffix)
+            && !entrySet.contains(String(marker.dropLast(StagingJournal.unlockSuffix.count))) {
+            journal.releaseUnlockMarker(String(marker.dropLast(StagingJournal.unlockSuffix.count)))
+        }
+        for name in entries {
+            let authorized = names.contains(name + StagingJournal.unlockSuffix)
             let outcome = deleter.delete(DeleteTarget(commitFd: journal.commit.rawValue, commitPath: journal.commitPath,
-                                                      name: name), clearImmutable: false)
+                                                      name: name), clearImmutable: authorized)
             if outcome.removed {
                 report.deleted += 1
+                if authorized { journal.releaseUnlockMarker(name) }
             } else {
                 report.deleteFailures += 1
                 DiskTools.log.error("staging sweep: commit/\(name, privacy: .public) not fully deleted: \(outcome.failures.joined(separator: "; "), privacy: .public)")

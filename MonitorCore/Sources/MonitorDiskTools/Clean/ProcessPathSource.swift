@@ -43,33 +43,48 @@ public struct LiveProcessPathSource: ProcessPathSource {
     }
 
     private func inspect(_ pid: Int32, into held: inout HeldPaths) {
+        // EPERM at any stage means we can't see everything this process holds: counted once per pid. ESRCH (exited
+        // mid-sweep) is ignored.
+        var denied = false
+        defer { if denied { held.unknownHolders += 1 } }
+
         var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         if proc_pidpath(pid, &path, UInt32(path.count)) > 0 {
             held.paths.append(String(decoding: path.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) },
                                      as: UTF8.self))
+        } else if errno == EPERM {
+            denied = true
         }
 
         var vnodeInfo = proc_vnodepathinfo()
         let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vnodeInfo, size) == size else {
-            // ESRCH: exited mid-sweep. EPERM: not ours to inspect.
-            if errno == EPERM { held.unknownHolders += 1 }
+            if errno == EPERM { denied = true }
             return
         }
         let cwd = Self.string(from: vnodeInfo.pvi_cdir.vip_path)
         if !cwd.isEmpty { held.paths.append(cwd) }
 
         let listBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
-        guard listBytes > 0 else { return }
+        guard listBytes > 0 else {
+            if errno == EPERM { denied = true }
+            return
+        }
         var fds = [proc_fdinfo](repeating: proc_fdinfo(),
                                 count: Int(listBytes) / MemoryLayout<proc_fdinfo>.size + 16)
         let filled = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(fds.count * MemoryLayout<proc_fdinfo>.size))
-        guard filled > 0 else { return }
+        guard filled > 0 else {
+            if errno == EPERM { denied = true }
+            return
+        }
         for fd in fds.prefix(Int(filled) / MemoryLayout<proc_fdinfo>.size)
         where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
             var info = vnode_fdinfowithpath()
             let infoSize = Int32(MemoryLayout<vnode_fdinfowithpath>.size)
-            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, infoSize) == infoSize else { continue }
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, infoSize) == infoSize else {
+                if errno == EPERM { denied = true }
+                continue
+            }
             let p = Self.string(from: info.pvip.vip_path)
             if !p.isEmpty { held.paths.append(p) }
         }

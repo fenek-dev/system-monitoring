@@ -1,3 +1,4 @@
+import CPrivate
 import Darwin
 import Foundation
 import Synchronization
@@ -5,8 +6,7 @@ import Synchronization
 /// An entry in `staging/commit/` to delete. `commitFd` is borrowed from the journal that owns it.
 public struct DeleteTarget: Sendable {
     public var commitFd: Int32
-    /// Canonical path of the commit directory: removefile reports failing paths as absolute canonical paths, and
-    /// this prefix turns them back into fd-relative ones.
+    /// Canonical path of the commit directory (kept for log context).
     public var commitPath: String
     public var name: String
 
@@ -35,60 +35,14 @@ public protocol Deleter: Sendable {
     /// Blocks until the entry is gone or deleting it failed. `clearImmutable`: user-owned `uchg` files are
     /// unlocked and retried (Empty Trash only; a normal clean leaves them and reports a partial delete).
     func delete(_ target: DeleteTarget, clearImmutable: Bool) -> DeleteOutcome
-    /// Aborts deletions in flight (app quit). Entries stay in `commit/` and the next launch sweep finishes them.
+    /// Aborts deletions in flight and refuses new ones (app quit). Entries stay in `commit/` and the next launch
+    /// sweep finishes them.
     func cancelInFlight()
-}
-
-/// The `removefile` entry points, looked up at runtime: `removefile.h` is not part of the `Darwin` Swift module and
-/// this target has no C module of its own.
-struct RemoveFileFunctions: Sendable {
-    typealias ErrorCallback = @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Int32
-
-    let stateAlloc: @convention(c) () -> OpaquePointer?
-    let stateFree: @convention(c) (OpaquePointer?) -> Int32
-    let stateSet: @convention(c) (OpaquePointer?, UInt32, UnsafeRawPointer?) -> Int32
-    let stateGet: @convention(c) (OpaquePointer?, UInt32, UnsafeMutableRawPointer?) -> Int32
-    let removeAt: @convention(c) (Int32, UnsafePointer<CChar>, OpaquePointer?, UInt32) -> Int32
-    let cancel: @convention(c) (OpaquePointer?) -> Int32
-
-    // removefile.h values.
-    static let recursive: UInt32 = 1 << 0
-    static let recursiveSlim: UInt32 = 1 << 11
-    static let stateErrorCallback: UInt32 = 3
-    static let stateErrorContext: UInt32 = 4
-    static let stateErrno: UInt32 = 5
-    static let skip: Int32 = 1
-
-    static let live = RemoveFileFunctions()
-
-    private init?() {
-        // RTLD_DEFAULT
-        let all = UnsafeMutableRawPointer(bitPattern: -2)
-        func symbol<T>(_ name: String, as type: T.Type) -> T? {
-            dlsym(all, name).map { unsafeBitCast($0, to: type) }
-        }
-        guard let alloc = symbol("removefile_state_alloc", as: (@convention(c) () -> OpaquePointer?).self),
-              let free = symbol("removefile_state_free", as: (@convention(c) (OpaquePointer?) -> Int32).self),
-              let set = symbol("removefile_state_set",
-                               as: (@convention(c) (OpaquePointer?, UInt32, UnsafeRawPointer?) -> Int32).self),
-              let get = symbol("removefile_state_get",
-                               as: (@convention(c) (OpaquePointer?, UInt32, UnsafeMutableRawPointer?) -> Int32).self),
-              let removeAt = symbol("removefileat", as: (@convention(c) (Int32, UnsafePointer<CChar>, OpaquePointer?,
-                                                                         UInt32) -> Int32).self),
-              let cancel = symbol("removefile_cancel", as: (@convention(c) (OpaquePointer?) -> Int32).self)
-        else { return nil }
-        self.stateAlloc = alloc
-        self.stateFree = free
-        self.stateSet = set
-        self.stateGet = get
-        self.removeAt = removeAt
-        self.cancel = cancel
-    }
 }
 
 /// `removefileat` based deletion of `commit/` entries.
 ///
-/// Only the error callback is installed: with `REMOVEFILE_RECURSIVE_SLIM`, confirm or status callbacks make the
+/// Only the error callback is installed: with `TT_REMOVEFILE_RECURSIVE_SLIM`, confirm or status callbacks make the
 /// call fail with `EINVAL` and remove nothing, and without an error callback the first failure aborts the whole
 /// removal. The callback records each failing path and returns `SKIP`, so one locked file doesn't stop its siblings.
 public final class DeleteWorker: Deleter {
@@ -98,21 +52,26 @@ public final class DeleteWorker: Deleter {
         let failures = Mutex<[Failure]>([])
     }
 
-    private static let errorCallback: RemoveFileFunctions.ErrorCallback = { state, path, context in
-        guard let context, let path, let state, let functions = RemoveFileFunctions.live else {
-            return RemoveFileFunctions.skip
-        }
+    private static let errorCallback: tt_removefile_callback_t = { state, path, context in
+        guard let context, let path, let state else { return Int32(TT_REMOVEFILE_SKIP) }
         var code: Int32 = 0
-        _ = functions.stateGet(state, RemoveFileFunctions.stateErrno, &code)
+        _ = removefile_state_get(state, UInt32(TT_REMOVEFILE_STATE_ERRNO), &code)
         let log = Unmanaged<FailureLog>.fromOpaque(context).takeUnretainedValue()
         log.failures.withLock { $0.append(FailureLog.Failure(path: String(cString: path), code: code)) }
-        return RemoveFileFunctions.skip
+        return Int32(TT_REMOVEFILE_SKIP)
+    }
+
+    /// States in flight and the abort flag live under one lock: `removefile_cancel` only ever touches a state that
+    /// is still registered, and a state is freed only after it left the set under the same lock (a cancel can't
+    /// race the free).
+    private struct Registry {
+        var aborted = false
+        var states: Set<UInt> = []
     }
 
     /// Plain `RECURSIVE` instead of `RECURSIVE_SLIM` when a kernel doesn't know the flag.
     private let slim: Bool
-    /// Raw addresses of in-flight states (for `cancelInFlight`); addresses, not pointers, so they are `Sendable`.
-    private let inFlight = Mutex<Set<UInt>>([])
+    private let registry = Mutex(Registry())
     /// Rounds of "fix permissions, retry" before giving up on a tree.
     private static let maxRounds = 5
 
@@ -123,7 +82,6 @@ public final class DeleteWorker: Deleter {
     /// Launch probe: deletes a scratch tree in `scratchDir` with `RECURSIVE_SLIM` + error callback only.
     /// `EINVAL` (flag unknown) or any failure → false.
     public static func slimSupported(scratchIn scratchDir: String) -> Bool {
-        guard let functions = RemoveFileFunctions.live else { return false }
         var template = Array((scratchDir + "/slim-probe.XXXXXX").utf8CString)
         guard let created = mkdtemp(&template) else { return false }
         let probe = String(cString: created)
@@ -133,49 +91,54 @@ public final class DeleteWorker: Deleter {
         guard mkdirat(dir, "t", 0o700) == 0 else { rmdir(probe); return false }
         let file = openat(dir, "t/f", O_CREAT | O_WRONLY | O_CLOEXEC, 0o600)
         if file >= 0 { close(file) }
-        let log = FailureLog()
-        let ok = remove("t", in: dir, functions: functions, flags: RemoveFileFunctions.recursive | RemoveFileFunctions.recursiveSlim,
-                        log: log, register: { _ in }, unregister: { _ in }).rc == 0
-        var st = stat()
-        let gone = fstatat(dir, "t", &st, AT_SYMLINK_NOFOLLOW) != 0 && Darwin.errno == ENOENT
+        let worker = DeleteWorker(slim: true)
+        let ok = worker.attempt("t", in: dir, flags: UInt32(TT_REMOVEFILE_RECURSIVE | TT_REMOVEFILE_RECURSIVE_SLIM),
+                                log: FailureLog()).rc == 0
+        let gone = !exists(dir, "t")
         // Leftovers of a failed probe are plain scratch; remove them the ordinary way.
-        if !gone {
-            _ = remove("t", in: dir, functions: functions, flags: RemoveFileFunctions.recursive, log: FailureLog(),
-                       register: { _ in }, unregister: { _ in })
-        }
+        if !gone { _ = worker.attempt("t", in: dir, flags: UInt32(TT_REMOVEFILE_RECURSIVE), log: FailureLog()) }
         rmdir(probe)
         return ok && gone
     }
 
     public func delete(_ target: DeleteTarget, clearImmutable: Bool) -> DeleteOutcome {
-        guard let functions = RemoveFileFunctions.live else {
-            return DeleteOutcome(removed: false, failures: ["removefile unavailable"])
-        }
         // SLIM is a depth-first directory walk: on a plain file it fails with ENOTDIR (measured), so files and
         // symlinks use plain RECURSIVE.
-        let isDirectory = (try? CleanFS.statAt(target.commitFd, target.name)).map { ($0.st_mode & S_IFMT) == S_IFDIR }
-        let flags = RemoveFileFunctions.recursive
-            | (slim && isDirectory == true ? RemoveFileFunctions.recursiveSlim : 0)
+        let entry = try? CleanFS.statAt(target.commitFd, target.name)
+        let isDirectory = entry.map { ($0.st_mode & S_IFMT) == S_IFDIR } ?? false
+        let flags = UInt32(TT_REMOVEFILE_RECURSIVE) | (slim && isDirectory ? UInt32(TT_REMOVEFILE_RECURSIVE_SLIM) : 0)
         var failures: [FailureLog.Failure] = []
+        var last: (rc: Int32, errno: Int32) = (0, 0)
+        var cancelled = false
         for _ in 0 ..< Self.maxRounds {
             let log = FailureLog()
-            _ = Self.remove(target.name, in: target.commitFd, functions: functions, flags: flags, log: log,
-                            register: { address in inFlight.withLock { _ = $0.insert(address) } },
-                            unregister: { address in inFlight.withLock { _ = $0.remove(address) } })
+            last = attempt(target.name, in: target.commitFd, flags: flags, log: log)
             failures = log.failures.withLock { $0 }
             // Residual check: the return value can be 0 with failures reported (SLIM), so only the entry's
             // absence counts as success.
             if !Self.exists(target.commitFd, target.name) { return DeleteOutcome(removed: true) }
-            guard Self.repair(target: target, clearImmutable: clearImmutable) else { break }
+            // ECANCELED / the abort flag stop everything: no repair, no further rounds.
+            if last.errno == ECANCELED || registry.withLock({ $0.aborted }) {
+                cancelled = true
+                break
+            }
+            guard Self.repair(target: target, clearImmutable: clearImmutable, dev: entry?.st_dev) else { break }
         }
-        let lines = failures.map { "\($0.path): \(String(cString: strerror($0.code)))" }
+        var lines = failures.map { "\($0.path): \(String(cString: strerror($0.code)))" }
+        if cancelled { lines.append("cancelled") }
+        if lines.isEmpty {
+            // Nothing was reported through the callback, yet the entry is still there: say what the call returned.
+            lines.append("removefile returned \(last.rc), errno \(last.errno) (\(String(cString: strerror(last.errno)))); entry remains")
+        }
         return DeleteOutcome(removed: !Self.exists(target.commitFd, target.name), failures: lines)
     }
 
     public func cancelInFlight() {
-        guard let functions = RemoveFileFunctions.live else { return }
-        for address in inFlight.withLock({ $0 }) {
-            _ = functions.cancel(OpaquePointer(bitPattern: address))
+        registry.withLock { registry in
+            registry.aborted = true
+            for address in registry.states {
+                _ = removefile_cancel(OpaquePointer(bitPattern: address))
+            }
         }
     }
 
@@ -184,42 +147,50 @@ public final class DeleteWorker: Deleter {
         return fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW) == 0 || Darwin.errno != ENOENT
     }
 
-    private static func remove(_ name: String, in dir: Int32, functions: RemoveFileFunctions, flags: UInt32,
-                               log: FailureLog, register: (UInt) -> Void,
-                               unregister: (UInt) -> Void) -> (rc: Int32, errno: Int32) {
-        guard let state = functions.stateAlloc() else { return (-1, ENOMEM) }
+    private func attempt(_ name: String, in dir: Int32, flags: UInt32, log: FailureLog) -> (rc: Int32, errno: Int32) {
+        guard let state = removefile_state_alloc() else { return (-1, ENOMEM) }
         let address = UInt(bitPattern: state)
-        register(address)
-        defer {
-            unregister(address)
-            _ = functions.stateFree(state)
+        let registered = registry.withLock { registry -> Bool in
+            guard !registry.aborted else { return false }
+            registry.states.insert(address)
+            return true
         }
-        _ = functions.stateSet(state, RemoveFileFunctions.stateErrorCallback,
-                               unsafeBitCast(errorCallback, to: UnsafeRawPointer.self))
-        // `log` outlives the call: the callback only runs synchronously inside `removeAt`.
-        _ = functions.stateSet(state, RemoveFileFunctions.stateErrorContext,
-                               UnsafeRawPointer(Unmanaged.passUnretained(log).toOpaque()))
-        let rc = functions.removeAt(dir, name, state, flags)
+        defer {
+            // Leaves the set and is freed under the same lock `cancelInFlight` holds while it cancels.
+            registry.withLock { registry in
+                registry.states.remove(address)
+                _ = removefile_state_free(state)
+            }
+        }
+        guard registered else { return (-1, ECANCELED) }
+        _ = removefile_state_set(state, UInt32(TT_REMOVEFILE_STATE_ERROR_CALLBACK),
+                                 unsafeBitCast(Self.errorCallback, to: UnsafeRawPointer.self))
+        // `log` outlives the call: the callback only runs synchronously inside `removefileat`.
+        _ = removefile_state_set(state, UInt32(TT_REMOVEFILE_STATE_ERROR_CONTEXT),
+                                 UnsafeRawPointer(Unmanaged.passUnretained(log).toOpaque()))
+        let rc = removefileat(dir, name, state, flags)
         var code: Int32 = 0
-        _ = functions.stateGet(state, RemoveFileFunctions.stateErrno, &code)
+        _ = removefile_state_get(state, UInt32(TT_REMOVEFILE_STATE_ERRNO), &code)
         return (rc, code)
     }
 
     /// Walks what is left of the entry and makes every user-owned directory accessible (and, for Empty Trash, clears
     /// `uchg`). A tree walk rather than the failing paths: `RECURSIVE_SLIM` silently skips directories it cannot
     /// read (measured: no callback for them), so the error list alone can miss them. Everything touched is below
-    /// `commit/` (our 0700 directory), so the path-based `lchflags` can't be redirected by a foreign symlink.
-    /// Returns whether anything changed (else another attempt is pointless).
-    private static func repair(target: DeleteTarget, clearImmutable: Bool) -> Bool {
+    /// `commit/` (our 0700 directory), so the path-based `lchflags` can't be redirected by a foreign symlink, and
+    /// nothing on another device (a mount inside the entry) is touched. Returns whether anything changed (else
+    /// another attempt is pointless).
+    static func repair(target: DeleteTarget, clearImmutable: Bool, dev: dev_t?) -> Bool {
+        guard let dev else { return false }
         var changed = false
         repairEntry(in: target.commitFd, name: target.name, path: target.commitPath + "/" + target.name,
-                    clearImmutable: clearImmutable, uid: getuid(), changed: &changed)
+                    clearImmutable: clearImmutable, uid: getuid(), dev: dev, changed: &changed)
         return changed
     }
 
     private static func repairEntry(in dirFd: Int32, name: String, path: String, clearImmutable: Bool, uid: uid_t,
-                                    changed: inout Bool) {
-        guard var st = try? CleanFS.statAt(dirFd, name), st.st_uid == uid else { return }
+                                    dev: dev_t, changed: inout Bool) {
+        guard var st = try? CleanFS.statAt(dirFd, name), st.st_uid == uid, st.st_dev == dev else { return }
         if clearImmutable, st.st_flags & UInt32(UF_IMMUTABLE) != 0,
            lchflags(path, st.st_flags & ~UInt32(UF_IMMUTABLE)) == 0 {
             changed = true
@@ -235,7 +206,7 @@ public final class DeleteWorker: Deleter {
               let listing = try? CleanFS.list(dirFd: child.rawValue) else { return }
         for entry in listing.names {
             repairEntry(in: child.rawValue, name: entry, path: path + "/" + entry, clearImmutable: clearImmutable,
-                        uid: uid, changed: &changed)
+                        uid: uid, dev: dev, changed: &changed)
         }
     }
 }

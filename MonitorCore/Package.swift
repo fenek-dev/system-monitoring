@@ -68,7 +68,7 @@ let package = Package(
         .target(name: "SnapshotProcessSetup", linkerSettings: [.linkedFramework("Foundation")]),
         .target(name: "MonitorMocks", dependencies: ["MonitorModel"]),
         // Storage scanner, classifier, cleaner, scan cache (ICR 018). No AppKit; UI targets never import it.
-        .target(name: "MonitorDiskTools", dependencies: ["MonitorModel"]),
+        .target(name: "MonitorDiskTools", dependencies: ["MonitorModel", "CPrivate"]),
         .target(
             name: "MonitorScreens",
             dependencies: ["MonitorModel", "MonitorLive", "MonitorUIKit", "MonitorMocks"]

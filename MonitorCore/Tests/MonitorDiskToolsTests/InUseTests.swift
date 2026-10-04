@@ -5,6 +5,15 @@ import Testing
 @testable import MonitorDiskTools
 
 @Suite struct InUseTests {
+    private static let tempVolumeIsCaseInsensitive: Bool = {
+        let dir = NSTemporaryDirectory() + "w2c-case-\(UUID().uuidString)"
+        guard (try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)) != nil else {
+            return false
+        }
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        return access(dir.uppercased(), F_OK) == 0 && access(dir.lowercased(), F_OK) == 0
+    }()
+
     private func item(_ id: Int32, _ path: String) -> CleanupItem {
         CleanupItem(id: id, nodeID: nil, path: path, name: (path as NSString).lastPathComponent,
                     category: .userCaches, tier: .safe, mode: .remove, identity: nil, allocBytes: 1)
@@ -19,6 +28,17 @@ import Testing
                                    item(5, "/a")])
 
         #expect(inUse == [1, 3, 5])
+    }
+
+    /// Bug: an item spelled with different letter case than the on-disk (kernel) path is never matched.
+    @Test(.enabled(if: Self.tempVolumeIsCaseInsensitive, "temp volume is case-sensitive"))
+    func matchesOnDiskCaseRegardlessOfSpelling() throws {
+        let box = try CleanSandbox()
+        let held = try box.write("home/Library/Caches/Busy/file.bin")
+        let flipped = box.path("home/library/caches/busy")
+        let checker = InUseChecker(processes: StaticProcessPaths(paths: [held]))
+
+        #expect(checker.inUse([item(1, flipped)]) == [1])
     }
 
     /// Bug: the libproc vnode path retrieval is broken, so a file this process holds open is never reported.
