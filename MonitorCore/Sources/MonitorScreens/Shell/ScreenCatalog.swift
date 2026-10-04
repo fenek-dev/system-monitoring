@@ -43,6 +43,18 @@ public enum ScreenCatalog {
         e += DashboardPage.allCases.map { page in
             Entry(id: page.rawValue, size: dashboardSize) { dashboard(page, scenario: $0) }
         }
+        // Each state is built synchronously (renders can't await), so models are seeded rather than loaded.
+        for kind in MockStorageState.Kind.allCases where kind != .empty {
+            let name = "storage-" + kind.rawValue.lowercased()
+            for (suffix, size) in [("", dashboardSize), ("-1100", ShellStyle.dashboardMinSize)] {
+                e.append(Entry(id: name + suffix, size: size) {
+                    dashboard(.storage, scenario: $0, size: size, storage: kind)
+                })
+            }
+        }
+        e.append(Entry(id: "storage-1100", size: ShellStyle.dashboardMinSize) {
+            dashboard(.storage, scenario: $0, size: ShellStyle.dashboardMinSize)
+        })
         e.append(Entry(id: "settings", size: settingsSize) { scenario in
             let ctx = context(for: scenario)
             return AnyView(SettingsView(loginItem: .preview, about: .preview)
@@ -58,13 +70,40 @@ public enum ScreenCatalog {
     /// Deterministic context for renders/snapshots (ARCHITECTURE §8): `LiveModel.mock(scenario)` (presenting),
     /// mock history/actions, default settings on a scratch suite, `isSnapshot`, `now = referenceDate`.
     @MainActor public static func context(for scenario: MockScenario, page: DashboardPage = .overview,
-                                          ticks: Int = 60) -> ShellContext {
+                                          ticks: Int = 60, storage: StorageModel? = nil) -> ShellContext {
         let provider = MockDataProvider(scenario: scenario)
         let nav = NavigationModel()
         nav.page = page
         return ShellContext(live: .mock(scenario, ticks: ticks), navigation: nav, settings: snapshotSettings(),
                             history: provider.history(), processActions: provider.processActions(log: ActionLog()),
-                            appCommands: .noop, isSnapshot: true, now: MockDataProvider.referenceDate)
+                            appCommands: .noop, isSnapshot: true, now: MockDataProvider.referenceDate,
+                            storage: storage ?? storageModel(.empty))
+    }
+
+    /// A Storage model in the given mock state, built synchronously (`.task` never runs in `SnapshotRenderer`).
+    @MainActor public static func storageModel(_ kind: MockStorageState.Kind) -> StorageModel {
+        let state = MockStorageState.make(kind)
+        var actions = MockDataProvider(scenario: .calm).storageActions(log: ActionLog(), state: state)
+        if kind == .scanning {
+            // Never yields, so the seeded in-progress state is all the render shows.
+            actions.scan = { _, _ in AsyncStream { _ in } }
+        }
+        let model = StorageModel(actions: actions, home: MockStorageState.home,
+                                 now: { MockDataProvider.referenceDate })
+        model.seedAccess(hasFullDiskAccess: state.hasFullDiskAccess, availableRoots: [.home(MockStorageState.home)])
+        switch kind {
+        case .empty:
+            break
+        case .scanning:
+            model.startScan()
+            if let progress = state.progress { model.apply(.progress(progress)) }
+            if let tree = state.tree { model.apply(.partial(tree)) }
+        case .map, .cleanup, .noFDA:
+            if let tree = state.tree, let overlay = state.overlay, let set = state.cleanup {
+                model.adopt(tree: tree, overlay: overlay, cleanup: set)
+            }
+        }
+        return model
     }
 
     /// Fresh default settings held in memory only (`InMemoryDefaults`): no plist, nothing shared between
@@ -73,10 +112,13 @@ public enum ScreenCatalog {
         SettingsStore(defaults: InMemoryDefaults())
     }
 
-    @MainActor static func dashboard(_ page: DashboardPage, scenario: MockScenario) -> AnyView {
-        let ctx = context(for: scenario, page: page)
+    @MainActor static func dashboard(_ page: DashboardPage, scenario: MockScenario,
+                                     size: CGSize = dashboardSize,
+                                     storage: MockStorageState.Kind? = nil) -> AnyView {
+        let ctx = context(for: scenario, page: page, storage: storage.map(storageModel))
         return AnyView(DashboardRoot()
-            .frame(width: dashboardSize.width, height: dashboardSize.height)
+            .environment(\.storageInitialMode, storage == .cleanup ? .cleanup : .spaceMap)
+            .frame(width: size.width, height: size.height)
             .telltaleEnvironment(ctx))
     }
 
