@@ -24,6 +24,16 @@ Break-checks (red, reverted): generation checks removed (isLive/isLiveScan/emit)
 - `runningApp` compared lowercased on both sides.
 - `willUnmount` test waits 200 ms for the scanner's watcher (no observable signal); can only fail red.
 
+## Review round 1 (Codex: 1 P1, 8 P2, 1 P3; all fixed; rebased on feat/storage 7fb86e3)
+- `promptMode: .allow` explicit in the live scan policy; sidecar format needs no change (`ScanCache.saveOverlay` encodes the overlay, log replayed on load).
+- P1 cancel: runs are registered at request time in engine state; start (+ publishing the cleaner) happens under the lock `cancelClean` takes; a cancel seen first makes the run refuse (`.cancelled` outcomes, `report.cancelled`). Test `cancelBeforeTheRunStartsRefusesIt` (seam `Environment.beforeCleanRegistration`).
+- Run context: each clean/undo/Empty Trash run captures {root, tree, overlay, set, items}; sidecar (`engine.saveOverlay(_:)`, now takes the overlay) and summary go against that scan; engine overlay and pipeline set replaced only while the tree still matches. Summary file never overwritten by an older scan (scanDate guard). Tests: close mid-clean, close/rescan.
+- Summary and `adopt` use a projection (hidden nodes incl. trashed ancestors dropped, shrunk keep-parent sizes): local copy of `StorageModel.presented` minus path renames (MonitorLive is not mine). Test `summaryStaysCleanedAfterReclassify`.
+- Undo: one `UndoStore` per authorized root (`storage-undo.json` for home, `storage-undo-<hash>.json` otherwise, roots listed in `storage-undo-roots.json`); `undo(record)` uses the store that holds the id. Test with an external root.
+- `loadCached` advances the generation (and cancels a running scan); `startSizing` and the resolved set refresh running apps right before publication; first classification is emitted before owner lookups; FDA banner = confirmed grant only; quit during launch: deleter and `aborted` flag published before the sweep (sweep skipped when aborted).
+- Unmount test: no sleep (scanner ends the stream at once).
+- Break-once (red, reverted): cancel flag check removed; `loadCached` generation bump removed; sidecar write + `replaceOverlay` version guard removed.
+
 ## Requests
 None.
 

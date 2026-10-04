@@ -32,11 +32,13 @@ public final class StorageEngine: Sendable {
         public var evictor: any Evictor
         public var simctl: any SimctlRunner
         public var processes: any ProcessPathSource
-        /// Banner state; unlike the scan policy, an inconclusive probe reads as granted (no nag for users who
-        /// never used Safari).
+        /// Same rule as the scan policy: only a confirmed grant counts, so the banner shows whenever the walk is
+        /// restricted.
         public var fullDiskAccess: @Sendable () -> Bool
         public var roots: @Sendable () -> [ScanRoot]
         public var now: @Sendable () -> Date
+        /// Test seam: runs in a clean after the launch tasks, before the run is registered.
+        var beforeCleanRegistration: (@Sendable () -> Void)?
 
         public static func live(home: String, dataDirectory: URL, platform: StoragePlatform) -> Environment {
             Environment(
@@ -48,7 +50,10 @@ public final class StorageEngine: Sendable {
                 sizer: { root in
                     PrivateSizer(lister: BulkLister(rootPath: root.path, includePrivateSize: true), rootPath: root.path)
                 },
-                scanAccess: { ScanAccessPolicy(fullDiskAccess: FullDiskAccessProbe.status(home: home) == .granted) },
+                // The GUI app may raise consent prompts (Desktop, Documents, volumes): the user is there to answer.
+                scanAccess: {
+                    ScanAccessPolicy.detect(home: home, promptMode: .allow)
+                },
                 classifier: Classifier(home: home, dataDirectories: [dataDirectory.path], git: LiveGitTracking(),
                                        devTools: LiveDevToolProbe(), isUbiquitous: Self.isUbiquitous),
                 installedApps: { InstalledAppSet.build(home: home, mdfind: InstalledAppSet.liveMdfind) },
@@ -57,7 +62,7 @@ public final class StorageEngine: Sendable {
                 deleter: { DeleteWorker(slim: $0) },
                 trash: SystemTrashMover(), evictor: UbiquitousEvictor(), simctl: ProcessSimctlRunner(),
                 processes: LiveProcessPathSource(),
-                fullDiskAccess: { FullDiskAccessProbe.check(home: home) },
+                fullDiskAccess: { FullDiskAccessProbe.status(home: home) == .granted },
                 roots: { ScanRoots.available() },
                 now: { Date() })
         }
@@ -119,24 +124,32 @@ public final class StorageEngine: Sendable {
         var sizingFinal = false
         var cleaners: [String: Cleaner] = [:]
         var deleter: (any Deleter)?
-        /// Bumped by `cancelClean`; a run still waiting for the launch tasks checks it before it starts.
-        var cleanCancelEpoch = 0
+        /// App quit asked for an abort; remembered so a launch sweep that has not started yet never starts.
+        var aborted = false
+        /// Clean / Empty Trash runs from the moment they are requested: a cancel finds them before they start.
+        var runs: [UInt64: CleanRun] = [:]
+        var nextRun: UInt64 = 0
+        var undoStores: [String: UndoStore] = [:]
+    }
+
+    private struct CleanRun: Sendable {
+        var cancelled = false
+        var cleaner: Cleaner?
     }
 
     private let env: Environment
     private let state = Mutex(State())
     private let queue = DispatchQueue(label: "dev.telltale.storage.engine", qos: .utility)
     private let cache: ScanCache
-    private let undoStore: UndoStore
     private let stagingDir: String
+    /// Serializes the undo-roots registry file.
+    private let registryLock = Mutex(())
     /// Staging sweep, undo prune and the SLIM probe; no clean starts before it ends.
     private let launch = Mutex<Task<Void, Never>?>(nil)
 
     public init(_ env: Environment) {
         self.env = env
         cache = ScanCache(directory: env.dataDirectory)
-        undoStore = UndoStore(file: env.dataDirectory.appendingPathComponent("storage-undo.json").path,
-                              permittedRoot: env.home)
         stagingDir = env.dataDirectory.appendingPathComponent("staging").path
         let task = Task.detached(priority: .utility) { [self] in runLaunchTasks() }
         launch.withLock { $0 = task }
@@ -151,16 +164,77 @@ public final class StorageEngine: Sendable {
         }
         let slim = DeleteWorker.slimSupported(scratchIn: stagingDir)
         let deleter = env.deleter(slim)
-        let report = Staging(dir: stagingDir, deleter: deleter).sweep()
-        DiskTools.log.notice("staging sweep: deleted \(report.deleted) restored \(report.restored) leftovers \(report.leftovers) failures \(report.deleteFailures) slim \(slim)")
-        if let error = report.error { DiskTools.log.error("staging sweep: \(error, privacy: .public)") }
-        do { try undoStore.prune(now: env.now()) } catch {
-            DiskTools.log.error("undo prune failed: \(error.localizedDescription, privacy: .public)")
+        // Published before the sweep: a quit during it reaches the deleter, and one that came earlier is seen here.
+        let aborted = state.withLock { state -> Bool in
+            state.deleter = deleter
+            return state.aborted
         }
-        state.withLock { $0.deleter = deleter }
+        if aborted {
+            deleter.cancelInFlight()
+            DiskTools.log.notice("staging sweep skipped: quit requested during launch")
+        } else {
+            let report = Staging(dir: stagingDir, deleter: deleter).sweep()
+            DiskTools.log.notice("staging sweep: deleted \(report.deleted) restored \(report.restored) leftovers \(report.leftovers) failures \(report.deleteFailures) slim \(slim)")
+            if let error = report.error { DiskTools.log.error("staging sweep: \(error, privacy: .public)") }
+        }
+        for root in undoRoots() {
+            do { try undoStore(permittedRoot: root).prune(now: env.now()) } catch {
+                DiskTools.log.error("undo prune failed for \(root, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
-    private func awaitLaunch() async {
+    // MARK: - Undo stores
+
+    /// One store per authorized root: an undo may only move things back inside the root that trashed them
+    /// (home, or the scan root chosen for a Space Map trash), never somewhere broader.
+    private func undoStore(permittedRoot: String) -> UndoStore {
+        state.withLock { state in
+            if let known = state.undoStores[permittedRoot] { return known }
+            let name = permittedRoot == env.home ? "storage-undo.json" : "storage-undo-\(Self.stableHash(permittedRoot)).json"
+            let store = UndoStore(file: env.dataDirectory.appendingPathComponent(name).path,
+                                  permittedRoot: permittedRoot)
+            state.undoStores[permittedRoot] = store
+            return store
+        }
+    }
+
+    private var registryURL: URL { env.dataDirectory.appendingPathComponent("storage-undo-roots.json") }
+
+    /// Home plus every other root a trash was recorded for (survives restarts: an undo is offered for 7 days).
+    private func undoRoots() -> [String] {
+        let others: [String] = registryLock.withLock { _ in
+            guard let data = try? Data(contentsOf: registryURL) else { return [] }
+            do { return try JSONDecoder().decode([String].self, from: data) } catch {
+                DiskTools.log.error("undo roots registry unreadable: \(error.localizedDescription, privacy: .public)")
+                return []
+            }
+        }
+        return [env.home] + others.filter { $0 != env.home }
+    }
+
+    private func registerUndoRoot(_ root: String) {
+        guard root != env.home else { return }
+        registryLock.withLock { _ in
+            var roots = (try? Data(contentsOf: registryURL)).flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+            guard !roots.contains(root) else { return }
+            roots.append(root)
+            do {
+                try FileManager.default.createDirectory(at: env.dataDirectory, withIntermediateDirectories: true)
+                try JSONEncoder().encode(roots).write(to: registryURL, options: .atomic)
+            } catch {
+                DiskTools.log.error("undo roots registry not written: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private static func stableHash(_ text: String) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in text.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3 }
+        return String(hash, radix: 16)
+    }
+
+    func awaitLaunch() async {
         await launch.withLock { $0 }?.value
     }
 
@@ -179,9 +253,10 @@ public final class StorageEngine: Sendable {
         }
     }
 
-    /// Writes the held overlay beside the cached tree.
-    public func saveOverlay() async {
-        guard let overlay = current()?.overlay else { return }
+    /// Writes `overlay` beside the cached tree of its own scan, whether or not the engine still holds that scan
+    /// (a run that outlives the window persists its outcomes; a sidecar for a replaced tree fails the cache's
+    /// identity check and reads as no overlay).
+    public func saveOverlay(_ overlay: StorageTreeOverlay) async {
         await onQueue { [cache] in
             do { try cache.saveOverlay(overlay) } catch {
                 DiskTools.log.error("overlay sidecar not saved: \(String(describing: error), privacy: .public)")
@@ -285,11 +360,11 @@ public final class StorageEngine: Sendable {
     private func classifyScanned(tree: StorageTree, root: ScanRoot, options: ClassifyOptions, gen: UInt64,
                                  to continuation: AsyncStream<ScanEvent>.Continuation) async {
         let stopped: @Sendable () -> Bool = { [self] in !isLiveScan(gen) }
-        guard let (early, resolved) = await classify(tree: tree, options: options, gen: gen, isCancelled: stopped) else {
+        guard let resolved = await classify(tree: tree, options: options, gen: gen, isCancelled: stopped,
+                                            onEarly: { emit(.classified($0), gen: gen, to: continuation) }) else {
             cancelledTail(gen: gen, to: continuation)
             return
         }
-        emit(.classified(early), gen: gen, to: continuation)
         guard storeSet(resolved, gen: gen) else { return }
         emit(.classified(resolved), gen: gen, to: continuation)
         guard let final = await startSizing(resolved, tree: tree, root: root, gen: gen, isCancelled: stopped).value else {
@@ -309,10 +384,12 @@ public final class StorageEngine: Sendable {
 
     // MARK: - Classification
 
-    /// Classifies `tree`, then asks the platform about leftover owners. Returns the set before and after resolving
-    /// (the first one shows the map's items at once), nil if the engine moved on or `isCancelled`.
+    /// Classifies `tree`, then asks the platform about leftover owners. `onEarly` gets the set before resolving
+    /// (it shows the map's items at once, so it must not wait for the lookups). Returns the resolved set, nil if
+    /// the engine moved on or `isCancelled`.
     private func classify(tree: StorageTree, options: ClassifyOptions, gen: UInt64,
-                          isCancelled: @escaping @Sendable () -> Bool) async -> (CleanupSet, CleanupSet)? {
+                          isCancelled: @escaping @Sendable () -> Bool,
+                          onEarly: (CleanupSet) -> Void = { _ in }) async -> CleanupSet? {
         let result: ClassifyResult? = await onQueue { [self] in
             guard !isCancelled(), isLive(gen) else { return nil }
             let (installed, lastUsed) = prepareInputs(options: options, gen: gen)
@@ -321,6 +398,7 @@ public final class StorageEngine: Sendable {
         guard let result, !isCancelled(), isLive(gen) else { return nil }
         var early = result.set
         await markRunning(&early)
+        onEarly(early)
         var found: [String: [String]] = [:]
         for id in result.unresolvedBundleIDs.sorted() {
             found[id] = await env.platform.appPaths(id)
@@ -330,7 +408,7 @@ public final class StorageEngine: Sendable {
         var resolved = await onQueue { [found] in classifier.resolve(result, found: found) }
         await markRunning(&resolved)
         guard isLive(gen), !isCancelled() else { return nil }
-        return (early, resolved)
+        return resolved
     }
 
     /// Installed apps and the Spotlight map are built once per open window (released with it); a lower "old"
@@ -385,6 +463,8 @@ public final class StorageEngine: Sendable {
             final.items = output.items
             final.linkGroupSizes = output.linkGroupSizes
             final.privateSizesFinal = true
+            // The pass can take minutes: an app may have been launched or quit since classification.
+            await markRunning(&final)
             let kept = state.withLock { state -> Bool in
                 guard state.generation == gen else { return false }
                 state.sizes = Dictionary(
@@ -407,7 +487,15 @@ public final class StorageEngine: Sendable {
     /// waits for them). Non-cleanup roots get an empty set.
     public func loadCached(root: ScanRoot, options: ClassifyOptions) async
         -> (StorageTree, StorageTreeOverlay, CleanupSet)? {
-        let gen = state.withLock { $0.generation }
+        // A load is the newest operation: classification and sizing of an earlier load or scan (another root, a
+        // reopened window) must not publish after this point.
+        let gen = state.withLock { state -> UInt64 in
+            state.generation += 1
+            state.scanner?.cancel()
+            state.scanner = nil
+            state.sizing = nil
+            return state.generation
+        }
         let loaded = await onQueue { [self] in
             cache.load(root: root, volumeUUID: env.volumeUUID(root))
         }
@@ -416,7 +504,7 @@ public final class StorageEngine: Sendable {
         var set = CleanupSet(treeVersion: tree.version, items: [], ownershipResolved: true, privateSizesFinal: true,
                              trashBytes: nil)
         if root.allowsCleanup {
-            guard let (_, resolved) = await classify(tree: tree, options: options, gen: gen, isCancelled: { false }) else {
+            guard let resolved = await classify(tree: tree, options: options, gen: gen, isCancelled: { false }) else {
                 return nil
             }
             set = resolved
@@ -441,7 +529,7 @@ public final class StorageEngine: Sendable {
         guard let current, current.root.allowsCleanup else { return nil }
         _ = await sizing?.value
         guard isLive(gen),
-              let (_, resolved) = await classify(tree: current.tree, options: options, gen: gen, isCancelled: { false })
+              let resolved = await classify(tree: current.tree, options: options, gen: gen, isCancelled: { false })
         else { return nil }
         var set = resolved
         let (sizes, linkSizes, sizingFinal) = state.withLock { ($0.sizes, $0.linkGroupSizes, $0.sizingFinal) }
@@ -501,75 +589,118 @@ public final class StorageEngine: Sendable {
             DiskTools.log.error("clean requested without a loaded scan")
             return Self.refused(items, reason: "no scan loaded")
         }
-        return run(permittedRoot: current.root.path) { cleaner in
+        return run(permittedRoot: current.root.path, items: items) { cleaner in
             cleaner.clean(items, tree: current.tree, overlay: current.overlay)
         }
     }
 
     /// Empty Trash acts on `~/.Trash`: always permitted below home, whatever root is open.
     public func emptyTrash() -> AsyncStream<CleanEvent> {
-        run(permittedRoot: env.home) { $0.emptyTrash() }
+        run(permittedRoot: env.home, items: []) { $0.emptyTrash() }
     }
 
+    /// Cancels every run requested so far, including ones still waiting for the launch tasks.
     public func cancelClean() {
-        let cleaners = state.withLock { state in
-            state.cleanCancelEpoch += 1
-            return Array(state.cleaners.values)
+        let active = state.withLock { state -> [Cleaner] in
+            for id in state.runs.keys { state.runs[id]?.cancelled = true }
+            return state.runs.values.compactMap(\.cleaner)
         }
-        for cleaner in cleaners { cleaner.cancel() }
+        for cleaner in active { cleaner.cancel() }
     }
 
+    /// Restores through the store of the root that trashed the record: never a broader root than the original.
     public func undo(_ record: UndoRecord) -> AsyncStream<CleanEvent> {
-        undoStore.restore(record)
+        for root in undoRoots() {
+            let store = undoStore(permittedRoot: root)
+            do {
+                if try store.records().contains(where: { $0.id == record.id }) { return store.restore(record) }
+            } catch {
+                DiskTools.log.error("undo records of \(root, privacy: .public) unreadable: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        DiskTools.log.error("undo record \(record.id.uuidString, privacy: .public) is in no store")
+        return Self.refusedUndo(record)
     }
 
-    /// App quit: aborts deletions in flight; their staging entries are finished by the next launch's sweep.
+    /// App quit: aborts deletions in flight and refuses new ones (also when the launch sweep has not published
+    /// its deleter yet); their staging entries are finished by the next launch's sweep.
     public func abortDeletes() {
-        state.withLock { $0.deleter }?.cancelInFlight()
+        let deleter = state.withLock { state -> (any Deleter)? in
+            state.aborted = true
+            return state.deleter
+        }
+        deleter?.cancelInFlight()
     }
 
-    private func run(permittedRoot: String, start: @escaping @Sendable (Cleaner) -> AsyncStream<CleanEvent>)
-        -> AsyncStream<CleanEvent> {
+    /// The run exists (and can be cancelled) from this call on. Starting the cleaner and publishing it as the run's
+    /// cleaner happen under the lock `cancelClean` takes: a cancel is either seen before the start (the run
+    /// refuses) or finds the started run and cancels it, never lost in between.
+    private func run(permittedRoot: String, items: [CleanupItem],
+                     start: @escaping @Sendable (Cleaner) -> AsyncStream<CleanEvent>) -> AsyncStream<CleanEvent> {
         let (stream, continuation) = AsyncStream.makeStream(of: CleanEvent.self)
-        let epoch = state.withLock { $0.cleanCancelEpoch }
+        let id = state.withLock { state -> UInt64 in
+            state.nextRun += 1
+            state.runs[state.nextRun] = CleanRun()
+            return state.nextRun
+        }
         Task.detached(priority: .userInitiated) { [self] in
             await awaitLaunch()
-            let (cleaner, cancelled) = state.withLock { state -> (Cleaner?, Bool) in
-                guard let deleter = state.deleter else { return (nil, false) }
-                let cancelled = state.cleanCancelEpoch != epoch
-                if let known = state.cleaners[permittedRoot] { return (known, cancelled) }
-                let cleaner = Cleaner(context: CleanContext(
+            env.beforeCleanRegistration?()
+            enum Start { case events(AsyncStream<CleanEvent>, Cleaner), refused(String) }
+            let outcome = state.withLock { state -> Start in
+                if state.runs[id]?.cancelled == true { return .refused("cancelled") }
+                guard !state.aborted, let deleter = state.deleter else { return .refused("app is quitting") }
+                let cleaner = state.cleaners[permittedRoot] ?? Cleaner(context: CleanContext(
                     home: env.home, permittedRoot: permittedRoot, stagingDir: stagingDir,
                     dataDirectories: [env.dataDirectory.path], trash: env.trash, deleter: deleter,
                     evictor: env.evictor, simctl: env.simctl, inUse: InUseChecker(processes: env.processes)))
                 state.cleaners[permittedRoot] = cleaner
-                return (cleaner, cancelled)
+                state.runs[id]?.cleaner = cleaner
+                return .events(start(cleaner), cleaner)
             }
-            guard let cleaner else {
-                DiskTools.log.error("clean refused: launch tasks did not provide a deleter")
-                continuation.yield(.finished(CleanReport()))
-                continuation.finish()
-                return
-            }
-            let events = start(cleaner)
-            if cancelled { cleaner.cancel() }
-            for await event in events {
-                if case let .finished(report) = event, let record = report.undo {
-                    do { try undoStore.append(record) } catch {
-                        DiskTools.log.error("undo record not stored: \(error.localizedDescription, privacy: .public)")
-                    }
+            switch outcome {
+            case let .refused(reason):
+                state.withLock { _ = $0.runs.removeValue(forKey: id) }
+                for await event in Self.refused(items, reason: reason, cancelled: reason == "cancelled") {
+                    continuation.yield(event)
                 }
-                continuation.yield(event)
+            case let .events(events, _):
+                for await event in events {
+                    if case let .finished(report) = event, let record = report.undo {
+                        store(record, permittedRoot: permittedRoot)
+                    }
+                    continuation.yield(event)
+                }
+                state.withLock { _ = $0.runs.removeValue(forKey: id) }
             }
             continuation.finish()
         }
         return stream
     }
 
-    private static func refused(_ items: [CleanupItem], reason: String) -> AsyncStream<CleanEvent> {
+    private func store(_ record: UndoRecord, permittedRoot: String) {
+        registerUndoRoot(permittedRoot)
+        do { try undoStore(permittedRoot: permittedRoot).append(record) } catch {
+            DiskTools.log.error("undo record not stored: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private static func refused(_ items: [CleanupItem], reason: String, cancelled: Bool = false)
+        -> AsyncStream<CleanEvent> {
         AsyncStream { continuation in
-            let outcomes = items.map { CleanItemOutcome(itemID: $0.id, skip: .failed(reason)) }
+            let skip: SkipReason = cancelled ? .cancelled : .failed(reason)
+            let outcomes = items.map { CleanItemOutcome(itemID: $0.id, skip: skip) }
             for outcome in outcomes { continuation.yield(.item(outcome)) }
+            continuation.yield(.finished(CleanReport(outcomes: outcomes, cancelled: cancelled)))
+            continuation.finish()
+        }
+    }
+
+    private static func refusedUndo(_ record: UndoRecord) -> AsyncStream<CleanEvent> {
+        AsyncStream { continuation in
+            let outcomes = record.entries.map {
+                CleanItemOutcome(itemID: $0.itemID, skip: .failed("undo record not found"))
+            }
             continuation.yield(.finished(CleanReport(outcomes: outcomes)))
             continuation.finish()
         }

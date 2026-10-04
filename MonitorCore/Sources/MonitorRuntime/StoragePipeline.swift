@@ -8,10 +8,11 @@ import os
 /// it keeps what outlives the window: the overlay sidecar (what cleaning changed since the cached scan) and the
 /// summary file the sidebar reads without loading a tree.
 ///
-/// Clean/undo/Empty Trash streams are teed: outcomes are collected as they arrive and applied to the engine's
-/// overlay in one batch when the run finishes (one overlay recompute instead of one per item), then the sidecar and
-/// summary are written before the consumer sees `.finished`. The tee task keeps running if the consumer goes away,
-/// so a run that outlives the window still ends with persisted state.
+/// Clean/undo/Empty Trash streams are teed. Each run captures the scan it was started against (tree, overlay,
+/// classification, items); outcomes are collected and applied to that copy in one batch when the run finishes,
+/// then the sidecar and summary are written for that scan before the consumer sees `.finished`. A run that
+/// outlives the window therefore still persists its own scan, and never touches a tree opened later: the engine's
+/// copies are replaced only while they still belong to the run's tree.
 @MainActor final class StoragePipeline {
     nonisolated static let summaryFileName = "storage-summary.json"
     private static let log = Logger(subsystem: "dev.telltale", category: "storage")
@@ -20,7 +21,7 @@ import os
     private let summaryURL: URL
     /// Latest classification of the open tree, minus items cleaned since.
     private var set: CleanupSet?
-    /// Items handed to `clean`, by id: outcomes and undo events refer to them.
+    /// Items handed to `clean` this session, by id: an undo refers to them.
     private var cleaned: [Int32: CleanupItem] = [:]
 
     init(engine: StorageEngine, dataDirectory: URL) {
@@ -56,12 +57,19 @@ import os
             policy: { [engine] in engine.policy() },
             checkInUse: { [engine] items in await engine.checkInUse(items) },
             clean: { [self] items in
+                let run = Run(engine: engine, set: set, items: Dictionary(items.map { ($0.id, $0) },
+                                                                          uniquingKeysWith: { first, _ in first }))
                 for item in items { cleaned[item.id] = item }
-                return tee(engine.clean(items), kind: .clean)
+                return tee(engine.clean(items), kind: .clean, run: run)
             },
             cancelClean: { [engine] in engine.cancelClean() },
-            undo: { [self] record in tee(engine.undo(record), kind: .undo) },
-            emptyTrash: { [self] in tee(engine.emptyTrash(), kind: .emptyTrash) },
+            undo: { [self] record in
+                let run = Run(engine: engine, set: set, items: cleaned)
+                return tee(engine.undo(record), kind: .undo, run: run)
+            },
+            emptyTrash: { [self] in
+                tee(engine.emptyTrash(), kind: .emptyTrash, run: Run(engine: engine, set: set, items: [:]))
+            },
             release: { [self] in
                 engine.release()
                 set = nil
@@ -73,21 +81,37 @@ import os
 
     // MARK: - Classification state
 
-    /// A fresh classification predates this session's cleaning: items already gone stay gone.
+    /// A fresh classification predates this session's cleaning: what the overlay hides stays hidden and shrunk
+    /// folders keep their new size. A set for a tree the engine no longer holds is dropped.
     private func adopt(_ fresh: CleanupSet) {
+        guard let current = engine.current(), current.tree.version == fresh.treeVersion else { return }
         var next = fresh
-        if let current = engine.current() {
-            next.items = fresh.items.filter { item in
-                guard let node = item.nodeID else { return true }
-                do { return try !current.overlay.isRemoved(node, in: current.tree) } catch {
-                    Self.log.error("overlay check failed for \(item.path, privacy: .public): \(String(describing: error), privacy: .public)")
-                    return true
-                }
-            }
-            if let known = set?.trashBytes, set?.treeVersion == fresh.treeVersion { next.trashBytes = known }
-        }
+        next.items = Self.projected(fresh.items, tree: current.tree, overlay: current.overlay)
+        if let known = set?.trashBytes, set?.treeVersion == fresh.treeVersion { next.trashBytes = known }
         set = next
-        if next.privateSizesFinal { writeSummary() }
+        if next.privateSizesFinal { writeSummary(current.root, tree: current.tree, overlay: current.overlay, set: next) }
+    }
+
+    /// The items as the model shows them after cleaning (`StorageModel.presented`): gone when their node is hidden
+    /// (also through a trashed ancestor), smaller when part of the folder was cleaned.
+    private static func projected(_ items: [CleanupItem], tree: StorageTree, overlay: StorageTreeOverlay)
+        -> [CleanupItem] {
+        items.compactMap { item in
+            guard let node = item.nodeID else { return item }
+            do {
+                if try overlay.isRemoved(node, in: tree) { return nil }
+                var shown = item
+                if let size = try overlay.size(node, in: tree), size < item.allocBytes {
+                    let drop = item.allocBytes - size
+                    shown.allocBytes = size
+                    shown.privateBytesExcludingLinks = item.privateBytesExcludingLinks.map { $0 > drop ? $0 - drop : 0 }
+                }
+                return shown
+            } catch {
+                log.error("overlay check failed for \(item.path, privacy: .public): \(String(describing: error), privacy: .public)")
+                return item
+            }
+        }
     }
 
     private func tee(_ stream: AsyncStream<ScanEvent>) -> AsyncStream<ScanEvent> {
@@ -120,83 +144,109 @@ import os
         case restore(itemID: Int32, finalPath: String, item: CleanupItem)
     }
 
-    private func tee(_ stream: AsyncStream<CleanEvent>, kind: RunKind) -> AsyncStream<CleanEvent> {
+    /// The scan a run works on, captured when the run is requested (nil: no scan was loaded).
+    private struct Run {
+        var root: ScanRoot
+        var tree: StorageTree
+        var overlay: StorageTreeOverlay
+        var set: CleanupSet?
+        var items: [Int32: CleanupItem]
+
+        @MainActor init?(engine: StorageEngine, set: CleanupSet?, items: [Int32: CleanupItem]) {
+            guard let current = engine.current() else { return nil }
+            root = current.root
+            tree = current.tree
+            overlay = current.overlay
+            self.set = set?.treeVersion == current.tree.version ? set : nil
+            self.items = items
+        }
+    }
+
+    private func tee(_ stream: AsyncStream<CleanEvent>, kind: RunKind, run: Run?) -> AsyncStream<CleanEvent> {
         let (out, continuation) = AsyncStream.makeStream(of: CleanEvent.self)
         Task { @MainActor [self] in
             var changes: [Change] = []
             for await event in stream {
                 switch event {
                 case let .item(outcome):
-                    if let change = change(for: outcome, kind: kind) { changes.append(change) }
+                    if let run, let change = change(for: outcome, kind: kind, run: run) { changes.append(change) }
                 case let .restored(itemID, finalPath):
-                    if let item = cleaned[itemID] { changes.append(.restore(itemID: itemID, finalPath: finalPath, item: item)) }
+                    if let item = run?.items[itemID] {
+                        changes.append(.restore(itemID: itemID, finalPath: finalPath, item: item))
+                    }
                 case .finished:
-                    await persist(changes)
+                    if let run { await persist(changes, run: run) }
                     changes = []
                 case .freed:
                     break
                 }
                 continuation.yield(event)
             }
-            // A stream that ends without `.finished` (engine bug, cancelled consumer upstream) still persists.
-            if !changes.isEmpty { await persist(changes) }
+            // A stream that ends without `.finished` still persists what it did.
+            if let run, !changes.isEmpty { await persist(changes, run: run) }
             continuation.finish()
         }
         return out
     }
 
-    private func change(for outcome: CleanItemOutcome, kind: RunKind) -> Change? {
+    private func change(for outcome: CleanItemOutcome, kind: RunKind, run: Run) -> Change? {
         guard outcome.skip == nil else { return nil }
         if kind == .emptyTrash {
             // Outcome ids are listing indices: an entry is identified by its path.
-            let tree = engine.current()?.tree
-            let node = outcome.path.flatMap { path in trashEntryNode(path, tree: tree) }
+            let node = outcome.path.flatMap { trashEntryNode($0, tree: run.tree) }
             return .removeNodes(outcome.removedNodes + (node.map { [$0] } ?? []), bytes: outcome.detachedBytes)
         }
-        guard let item = cleaned[outcome.itemID] else {
+        guard let item = run.items[outcome.itemID] else {
             Self.log.error("outcome for unknown item \(outcome.itemID, privacy: .public)")
             return nil
         }
         return .outcome(outcome, item)
     }
 
-    private func trashEntryNode(_ path: String, tree: StorageTree?) -> StorageNodeID? {
-        guard let tree else { return nil }
+    private func trashEntryNode(_ path: String, tree: StorageTree) -> StorageNodeID? {
         let trash = tree.root.path + "/.Trash/"
         let full = path.hasPrefix("/") ? path : trash + path
         guard full.hasPrefix(trash), let node = tree.lookup(path: full), node != 0 else { return nil }
         return node
     }
 
-    /// Applies a run's changes to the engine's overlay and the held set, then writes sidecar and summary.
-    private func persist(_ changes: [Change]) async {
-        guard !changes.isEmpty, let current = engine.current() else { return }
-        var overlay = current.overlay
+    /// Applies a run's changes to its own copy of the scan, writes that scan's sidecar and summary, and hands the
+    /// result to the engine only while the engine still holds the same tree.
+    private func persist(_ changes: [Change], run: Run) async {
+        guard !changes.isEmpty else { return }
+        var overlay = run.overlay
         do {
-            try overlay.batch(in: current.tree) { (batch: inout StorageTreeOverlay) throws(StorageOverlayError) in
+            try overlay.batch(in: run.tree) { (batch: inout StorageTreeOverlay) throws(StorageOverlayError) in
                 for change in changes {
                     switch change {
                     case let .outcome(outcome, item):
-                        try StorageCleanMath.apply(outcome, item: item, to: &batch, tree: current.tree)
+                        try StorageCleanMath.apply(outcome, item: item, to: &batch, tree: run.tree)
                     case let .removeNodes(nodes, _):
-                        for node in nodes { try batch.remove(node, kind: .deleted, in: current.tree) }
+                        for node in nodes { try batch.remove(node, kind: .deleted, in: run.tree) }
                     case let .restore(itemID, finalPath, item):
                         try StorageCleanMath.applyRestore(itemID: itemID, finalPath: finalPath, item: item,
-                                                          to: &batch, tree: current.tree)
+                                                          to: &batch, tree: run.tree)
                     }
                 }
             }
         } catch {
             Self.log.error("overlay update failed after clean: \(String(describing: error), privacy: .public)")
         }
-        guard engine.replaceOverlay(overlay) else { return }
-        updateSet(for: changes)
-        await engine.saveOverlay()
-        writeSummary()
+        let next = Self.updated(run.set, for: changes)
+        await engine.saveOverlay(overlay)
+        let held = engine.current()?.tree.version == run.tree.version
+        if held {
+            engine.replaceOverlay(overlay)
+            if set?.treeVersion == run.tree.version { set = next }
+        }
+        // Another tree is open: its summary is not this run's to overwrite. No tree open: this scan is the latest.
+        if held || engine.current() == nil, let next {
+            writeSummary(run.root, tree: run.tree, overlay: overlay, set: next)
+        }
     }
 
-    private func updateSet(for changes: [Change]) {
-        guard var next = set else { return }
+    private static func updated(_ set: CleanupSet?, for changes: [Change]) -> CleanupSet? {
+        guard var next = set else { return nil }
         for change in changes {
             switch change {
             case let .outcome(outcome, item):
@@ -217,24 +267,28 @@ import os
                 }
             }
         }
-        set = next
+        return next
     }
 
     // MARK: - Summary file
 
-    /// Home root only: the sidebar and popover describe the home scan.
-    private func writeSummary() {
-        guard let current = engine.current(), case .home = current.root, let set else { return }
+    /// Home root only (the sidebar and popover describe the home scan). Counts what the overlay leaves: the same
+    /// projection as the page, so the sidebar never shows data that was cleaned (or sits in a trashed parent).
+    private func writeSummary(_ root: ScanRoot, tree: StorageTree, overlay: StorageTreeOverlay, set: CleanupSet) {
+        guard case .home = root else { return }
+        var shown = set
+        shown.items = Self.projected(set.items, tree: tree, overlay: overlay)
         let reclaimable: (bytes: UInt64, provenance: SizeProvenance)
         do {
-            reclaimable = try StorageCleanMath.reclaimable(set: set, tree: current.tree, overlay: current.overlay)
+            reclaimable = try StorageCleanMath.reclaimable(set: shown, tree: tree, overlay: overlay)
         } catch {
             Self.log.error("summary not written, reclaimable failed: \(String(describing: error), privacy: .public)")
             return
         }
-        let summary = StorageSummary(root: current.root, scanDate: current.tree.scanDate,
-                                     reclaimableBytes: reclaimable.bytes, provenance: reclaimable.provenance,
-                                     trashBytes: set.trashBytes)
+        // A newer scan's summary stays: a late write from an older scan (a run that outlived its window) loses.
+        if let existing = readSummary(), existing.scanDate > tree.scanDate { return }
+        let summary = StorageSummary(root: root, scanDate: tree.scanDate, reclaimableBytes: reclaimable.bytes,
+                                     provenance: reclaimable.provenance, trashBytes: set.trashBytes)
         do {
             try FileManager.default.createDirectory(at: summaryURL.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
