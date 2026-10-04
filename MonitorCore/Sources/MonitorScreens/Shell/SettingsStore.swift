@@ -25,6 +25,9 @@ public final class SettingsStore {
         public static let overlayOpacity = "overlay.opacity"
         public static let overlayHotKey = "overlay.hotkey"
         public static let extraDimEnabled = "extraDim.enabled"
+        public static let storageIgnoredPaths = "storage.ignoredPaths"
+        public static let storageLargeThreshold = "storage.largeThreshold"
+        public static let storageOldThreshold = "storage.oldThreshold"
     }
 
     /// Extra Dim as the app sees it (spec 2026-09-24 extra dim §5.7, §7), shown under the Settings toggle.
@@ -100,8 +103,38 @@ public final class SettingsStore {
         didSet { if extraDimEnabled != oldValue { defaults.set(extraDimEnabled, forKey: Key.extraDimEnabled) } }
     }
 
+    // MARK: Storage (cleanup suggestions)
+
+    /// Paths the user excluded from cleanup suggestions (stored as a sorted array of strings).
+    public var storageIgnoredPaths: Set<String> {
+        didSet { if storageIgnoredPaths != oldValue { defaults.set(storageIgnoredPaths.sorted(), forKey: Key.storageIgnoredPaths) } }
+    }
+
+    /// Byte thresholds for "Large & Old" (bytes, > 0); anything else stored reads as the classifier default.
+    public var storageLargeThreshold: UInt64 {
+        didSet { if storageLargeThreshold != oldValue { defaults.set(storageLargeThreshold, forKey: Key.storageLargeThreshold) } }
+    }
+    public var storageOldThreshold: UInt64 {
+        didSet { if storageOldThreshold != oldValue { defaults.set(storageOldThreshold, forKey: Key.storageOldThreshold) } }
+    }
+
+    public func classifyOptions(now: Date) -> ClassifyOptions {
+        ClassifyOptions(now: now, largeBytes: storageLargeThreshold, oldBytes: storageOldThreshold,
+                        ignoredPaths: storageIgnoredPaths)
+    }
+
+    private static func loadBytes(_ defaults: UserDefaults, key: String, fallback: UInt64) -> UInt64 {
+        guard let number = defaults.object(forKey: key) as? NSNumber, number.int64Value > 0 else { return fallback }
+        return UInt64(number.int64Value)
+    }
+
     public init(defaults: UserDefaults) {
         self.defaults = defaults
+        storageIgnoredPaths = Set(defaults.stringArray(forKey: Key.storageIgnoredPaths) ?? [])
+        storageLargeThreshold = Self.loadBytes(defaults, key: Key.storageLargeThreshold,
+                                               fallback: ClassifyOptions.defaultLargeBytes)
+        storageOldThreshold = Self.loadBytes(defaults, key: Key.storageOldThreshold,
+                                             fallback: ClassifyOptions.defaultOldBytes)
         units = Self.loadUnits(defaults)
         popoverLayout = Self.loadPopover(defaults)
         disabledSensors = Self.loadDisabled(defaults)

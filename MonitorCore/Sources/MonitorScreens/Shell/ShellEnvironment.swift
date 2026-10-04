@@ -14,6 +14,9 @@ public struct ShellContext {
     public var history: any HistoryProvider
     public var processActions: ProcessActions
     public var appCommands: AppCommands
+    /// Storage page state (injected as an observable) and its actions (`\.storageActions`).
+    public var storage: StorageModel
+    public var storageActions: StorageActions
     public var isSnapshot: Bool
     public var now: Date?
     /// Observed by the environment: a window built before the store finished opening updates when it resolves.
@@ -30,7 +33,10 @@ public struct ShellContext {
     public init(live: LiveModel, navigation: NavigationModel = NavigationModel(), settings: SettingsStore,
                 history: any HistoryProvider = EmptyHistoryProvider(), processActions: ProcessActions = .noop,
                 appCommands: AppCommands = .noop, isSnapshot: Bool = false, now: Date? = nil,
-                historyStatus: HistoryStatus = HistoryStatus(), hotKeyState: HotKeyState = HotKeyState()) {
+                historyStatus: HistoryStatus = HistoryStatus(), hotKeyState: HotKeyState = HotKeyState(),
+                storage: StorageModel = StorageModel(actions: .noop), storageActions: StorageActions = .noop) {
+        self.storage = storage
+        self.storageActions = storageActions
         self.historyStatus = historyStatus
         self.hotKeyState = hotKeyState
         self.live = live
@@ -89,6 +95,8 @@ private struct ShellEnvironmentModifier: ViewModifier {
             .environment(\.historyProvider, context.history)
             .environment(\.processActions, context.processActions)
             .environment(\.appCommands, context.appCommands)
+            .environment(context.storage)
+            .environment(\.storageActions, context.storageActions)
             .environment(\.isSnapshot, context.isSnapshot)
             .environment(\.now, context.now)
             .environment(\.historyPersistent, context.historyStatus.persistent)      // observed: follows resolve

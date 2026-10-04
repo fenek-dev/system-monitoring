@@ -150,6 +150,32 @@ struct StorageRuntimeTests {
         #expect(!files.contains { $0.hasPrefix("storage-scan-") })
     }
 
+    /// Bug: ejecting a volume mid-scan never reaches the scanner (the platform signal is not wired into the scan).
+    @MainActor @Test func willUnmountFailsTheScanAsVolumeRemoved() async throws {
+        let dirs = try Dirs()
+        defer { dirs.remove() }
+        let (unmounts, unmount) = AsyncStream.makeStream(of: String.self)
+        let (started, startedSignal) = AsyncStream.makeStream(of: Void.self)
+        let gate = DispatchSemaphore(value: 0)
+        let platform = StoragePlatform(willUnmount: { unmounts })
+        let engine = StorageEngine(inMemoryEnvironment(dirs, platform: platform, onList: { path throws(ListError) in
+            guard path == "Library" else { return }
+            startedSignal.yield()
+            gate.wait()
+        }))
+        let collecting = Task { await collect(engine.scan(root: .home(dirs.home), options: options)) }
+        for await _ in started { break }
+        unmount.yield(dirs.home)
+        // The scanner's watcher runs on its own task: release the listing once the failure is recorded.
+        try await Task.sleep(for: .milliseconds(200))
+        gate.signal()
+        let events = await collecting.value
+        guard case .failed(.volumeRemoved)? = events.last else {
+            Issue.record("last event is not .failed(.volumeRemoved)")
+            return
+        }
+    }
+
     /// Bug: a classification still running when the window closes delivers results and resurrects the tree.
     @MainActor @Test func releaseDropsLateClassification() async throws {
         let dirs = try Dirs()

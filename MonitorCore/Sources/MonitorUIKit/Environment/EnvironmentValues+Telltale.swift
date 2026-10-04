@@ -6,6 +6,7 @@ import SwiftUI
 public extension EnvironmentValues {
     @Entry var processActions: ProcessActions = .noop
     @Entry var appCommands: AppCommands = .noop
+    @Entry var storageActions: StorageActions = .noop
     @Entry var unitPreferences: UnitPreferences = UnitPreferences()
     @Entry var popoverLayout: PopoverLayout = PopoverLayout()
     @Entry var historyProvider: any HistoryProvider = EmptyHistoryProvider()
