@@ -131,6 +131,21 @@ import Testing
         }
     }
 
+    func expectMatches(_ rects: [CGRect], _ c: TreemapBaseline.Case, _ n: Int, sourceLocation: SourceLocation = #_sourceLocation) {
+        #expect(rects.count == c.expected.count, "case \(n)", sourceLocation: sourceLocation)
+        for (r, e) in zip(rects, c.expected) {
+            let got = [r.minX, r.minY, r.width, r.height].map(Double.init)
+            #expect(zip(got, e).allSatisfy { abs($0 - $1) <= 1e-9 }, "case \(n): \(got) vs \(e)", sourceLocation: sourceLocation)
+        }
+    }
+
+    @Test func squarifyMatchesPreRefactorBaseline() {
+        for (n, c) in TreemapBaseline.cases.enumerated() {
+            let r = CGRect(x: c.rect[0], y: c.rect[1], width: c.rect[2], height: c.rect[3])
+            expectMatches(TreemapLayout.squarify(c.values, otherIndex: c.other, in: r), c, n)
+        }
+    }
+
     @Test func squarifiedBeatsSliceAndDiceOn200Seeds() {
         for seed in 0..<200 {
             var rng = SplitMix(state: UInt64(seed))
