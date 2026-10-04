@@ -12,12 +12,13 @@ enum StorageContentState: Equatable {
     case volumeRemoved
     case unreadable(String)
 
-    static func make(phase: StorageModel.Phase, hasTree: Bool) -> StorageContentState {
+    /// `hasFinalTree`: a finished tree is on screen (the overlay exists only for those). The model's own
+    /// `hasPrevious` also counts the partial tree a cancelled scan leaves behind, so it is not used.
+    static func make(phase: StorageModel.Phase, hasFinalTree: Bool) -> StorageContentState {
         switch phase {
-        case .idle: hasTree ? .map : .neverScanned
+        case .idle, .ready: hasFinalTree ? .map : .neverScanned
         case .loadingCache: .blank
-        case .ready: .map
-        case let .scanning(hasPrevious): .scanning(hasPrevious: hasPrevious)
+        case .scanning: .scanning(hasPrevious: hasFinalTree)
         case let .failed(failure):
             switch failure {
             case .volumeRemoved: .volumeRemoved

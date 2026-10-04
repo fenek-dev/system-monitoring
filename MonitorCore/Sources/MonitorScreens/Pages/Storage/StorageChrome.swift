@@ -28,6 +28,14 @@ enum StorageChrome {
         return "~" + path.dropFirst(home.count)
     }
 
+    /// Only a finished scan has a date: a partial tree is stamped with the wall clock while it is built, so the
+    /// caller passes the tree's date only when it is a finished one. Else the saved summary of the same root.
+    static func lastScan(finishedTreeDate: Date?, summary: StorageSummary?, root: ScanRoot) -> Date? {
+        if let finishedTreeDate { return finishedTreeDate }
+        guard let summary, summary.root == root else { return nil }
+        return summary.scanDate
+    }
+
     static func subtitle(root: ScanRoot) -> String {
         let home = if case let .home(path) = root { path } else { NSHomeDirectory() }
         return abbreviated(root.path, home: home)
@@ -59,15 +67,9 @@ struct StorageHeaderControls: View {
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
 
-    /// Only a finished scan has a date: a partial tree is stamped with the wall clock while it is built.
     private var lastScan: Date? {
-        switch storage.phase {
-        case .ready, .scanning(hasPrevious: true):
-            return storage.spaceMap.tree?.scanDate
-        case .idle, .loadingCache, .failed, .scanning(hasPrevious: false):
-            guard let summary = storage.summary, summary.root == storage.root else { return nil }
-            return summary.scanDate
-        }
+        StorageChrome.lastScan(finishedTreeDate: storage.spaceMap.overlay == nil ? nil : storage.spaceMap.tree?.scanDate,
+                               summary: storage.summary, root: storage.root)
     }
 
     var body: some View {
@@ -187,7 +189,9 @@ struct StorageStatStrip: View {
         let used = v.map { $0.totalBytes - min($0.availableBytes, $0.totalBytes) }
         let reason = v == nil ? Self.notReported : nil
         var items: [TTStatStrip.Item] = [
-            .init(id: "capacity", label: "Capacity", value: v.map { bytes($0.totalBytes) }, unavailableReason: reason),
+            .init(id: "capacity", label: "Capacity",
+                  value: v.map { StorageFormat.bytes($0.totalBytes, provenance: .exact, style: .capacity) },
+                  unavailableReason: reason),
             .init(id: "used", label: "Used", value: used.map { bytes($0) },
                   detail: v.flatMap { v in used.map { TTFormat.percent(v.totalBytes > 0 ? Double($0) / Double(v.totalBytes) : 0) + " of capacity" } },
                   unavailableReason: reason),
@@ -200,7 +204,17 @@ struct StorageStatStrip: View {
         items.append(.init(id: "reclaimable", label: "Reclaimable", value: reclaimable(summary),
                            unavailableReason: "Scan your home folder first"))
         items.append(.init(id: "trash", label: "Trash", value: trash(summary), unavailableReason: "Not available"))
+        let estimated = summary?.reclaimableBytes != nil && summary?.provenance != .exact
         return TTStatStrip(items)
+            // TTStatStrip has no per-cell tooltip: equal columns are overlaid with one hover target each.
+            .overlay {
+                HStack(spacing: 0) {
+                    ForEach(items) { item in
+                        Color.clear.contentShape(Rectangle())
+                            .help(item.id == "reclaimable" && estimated ? StorageFormat.estimateTooltip : "")
+                    }
+                }
+            }
     }
 
     private func bytes(_ b: UInt64) -> String { StorageFormat.bytes(b, provenance: .exact) }

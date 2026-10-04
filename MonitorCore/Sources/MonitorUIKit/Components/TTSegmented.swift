@@ -8,11 +8,14 @@ public struct TTSegmented<T: Hashable>: View {
     @Binding private var selection: T
     private let options: [(T, String)]
     private let compact: Bool
+    private let disabled: Set<T>
 
-    public init(selection: Binding<T>, options: [(T, String)], compact: Bool = false) {
+    /// - Parameter disabled: options that stay visible but cannot be picked (40 % opacity, no hover).
+    public init(selection: Binding<T>, options: [(T, String)], compact: Bool = false, disabled: Set<T> = []) {
         _selection = selection
         self.options = options
         self.compact = compact
+        self.disabled = disabled
     }
 
     public var body: some View {
@@ -23,6 +26,7 @@ public struct TTSegmented<T: Hashable>: View {
                     t.disablesAnimations = true
                     withTransaction(t) { selection = options[i].0 }
                 }
+                .disabled(disabled.contains(options[i].0))
             }
         }
         .padding(TTSpace.x2)
@@ -38,6 +42,7 @@ public struct TTSegmented<T: Hashable>: View {
         let isOn: Bool
         let compact: Bool
         let action: () -> Void
+        @Environment(\.isEnabled) private var isEnabled
         @State private var hovering = false
 
         var body: some View {
@@ -50,8 +55,9 @@ public struct TTSegmented<T: Hashable>: View {
                     .frame(height: compact ? 20 : 24)
                     .background(
                         RoundedRectangle(cornerRadius: compact ? TTRadius.r4 : TTRadius.r5, style: .continuous)
-                            .fill(isOn ? TTColor.fillSegmentOn : (hovering ? TTColor.fillHover : .clear))
+                            .fill(isOn ? TTColor.fillSegmentOn : (hovering && isEnabled ? TTColor.fillHover : .clear))
                     )
+                    .opacity(isEnabled ? 1 : TTOpacity.disabled)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

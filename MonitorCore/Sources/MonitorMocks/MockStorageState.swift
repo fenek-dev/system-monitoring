@@ -235,7 +235,8 @@ private enum Fixture {
                 dir("Old Renders", days: 40, bulk(total: gb(3.9), dirs: 2, files: 8, seed: 131, days: 40,
                                                   names: ["Draft A", "Draft B"])),
             ] + files("Screenshot", "png", count: 22, total: gb(1.8), seed: 132, days: 8)),
-        ])
+            // A top-level folder the Space Map can only show as restricted (hatched) without Full Disk Access.
+        ] + (noFDA ? [locked("Desktop")] : []))
     }
 
     /// Breadth-first commit; `depthLimit` leaves deeper dirs unlisted, like a scan still in flight.

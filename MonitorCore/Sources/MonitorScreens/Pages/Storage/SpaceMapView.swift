@@ -18,59 +18,107 @@ struct SpaceMapRow: Identifiable, Equatable {
     let itemsText: String
     /// nil for the merged "smaller items" row and for undone entries that have no tree node.
     let node: StorageNodeID?
+    /// Size is an allocated-bytes estimate (clones may free more).
+    let estimated: Bool
 
     var drillable: Bool { kind == .normal && node != nil }
 }
 
+/// What the merged "N smaller items" tile stands for: only sizes that are actually known.
+struct SpaceMapTail: Equatable {
+    var knownBytes: UInt64 = 0
+    var knownCount = 0
+    var restrictedCount = 0
+}
+
+/// Everything the view derives from (children, size): computed once per input version, not per body.
+struct SpaceMapDerived {
+    var tiles: [TTSpaceMapTile] = []
+    var rows: [SpaceMapRow] = []
+    var order: [Int32] = []
+    var tail = SpaceMapTail()
+}
+
 enum SpaceMapLogic {
-    /// Weight of a restricted tile relative to its siblings: it has no size, but must stay visible.
+    /// Layout weight of a restricted tile relative to the known bytes of its siblings. A weight, never a size: it
+    /// is kept out of every byte total and percentage.
     static let restrictedShare = 0.02
+    /// Cap on the weight all restricted tiles together may add, so many of them cannot dwarf the known tiles.
+    static let restrictedBudget = 0.10
 
-    /// Presorted by weight (the layout requires it); restricted tiles get a nominal weight, which can move them
-    /// above tiny siblings.
-    static func tiles(_ children: [SpaceMapChild], provenance: SizeProvenance) -> [TTSpaceMapTile] {
+    private static func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
+
+    /// Presorted tiles (the layout requires it), the table rows of exactly the layout's set, the keyboard order
+    /// and the tail's known totals. Only tiles the layout keeps get a formatted size: with 10k children the
+    /// cut leaves a few hundred.
+    static func derive(children: [SpaceMapChild], tree: StorageTree?, provenance: SizeProvenance,
+                       size: CGSize) -> SpaceMapDerived {
         let known = children.reduce(0.0) { $0 + Double($1.bytes ?? 0) }
-        let nominal = max(known * restrictedShare, 1)
-        let tiles = children.map { child -> TTSpaceMapTile in
-            guard let bytes = child.bytes else {
-                return TTSpaceMapTile(id: child.tileID, value: nominal, label: child.name, valueText: TTFormat.unavailable,
-                                      kind: .restricted)
-            }
-            return TTSpaceMapTile(id: child.tileID, value: Double(bytes), label: child.name,
-                                  valueText: StorageFormat.bytes(bytes, provenance: provenance, style: .detail))
+        let restricted = children.reduce(0) { $0 + ($1.bytes == nil ? 1 : 0) }
+        let perTile: Double = min(restrictedShare, restrictedBudget / Double(max(restricted, 1)))
+        let nominal: Double = known > 0 ? max(known * perTile, 1) : 1
+        var weighted: [(index: Int, child: SpaceMapChild, weight: Double)] = []
+        for (i, child) in children.enumerated() {
+            weighted.append((i, child, child.bytes.map { Double($0) } ?? nominal))
         }
-        return tiles.enumerated().sorted { a, b in
-            a.element.value != b.element.value ? a.element.value > b.element.value : a.offset < b.offset
-        }.map(\.element)
-    }
+        weighted.sort { $0.weight != $1.weight ? $0.weight > $1.weight : $0.index < $1.index }
+        let bare: [TTSpaceMapTile] = weighted.map { entry in
+            let isRestricted = entry.child.bytes == nil
+            return TTSpaceMapTile(id: entry.child.tileID, value: entry.weight, label: entry.child.name,
+                                  valueText: isRestricted ? TTFormat.unavailable : "",
+                                  kind: isRestricted ? .restricted : .normal)
+        }
+        let layout = TTSpaceMapLayout.make(bare, in: size)
+        let shownIDs = Set(layout.shown.map(\.id))
 
-    /// The table shows exactly the layout's set: shown tiles in order, then one "N smaller items" row.
-    static func rows(layout: TTSpaceMapLayout, children: [SpaceMapChild], tree: StorageTree?,
-                     provenance: SizeProvenance) -> [SpaceMapRow] {
         let byTile = Dictionary(children.map { ($0.tileID, $0) }, uniquingKeysWith: { first, _ in first })
-        let known = children.reduce(0.0) { $0 + Double($1.bytes ?? 0) }
-        func share(_ value: Double) -> String { known > 0 ? TTFormat.percent(value / known) : TTFormat.unavailable }
+        let tiles = bare.map { tile -> TTSpaceMapTile in
+            guard shownIDs.contains(tile.id), tile.kind == .normal, let bytes = byTile[tile.id]?.bytes else { return tile }
+            var t = tile
+            t.valueText = StorageFormat.bytes(bytes, provenance: provenance, style: .headline)
+            return t
+        }
+
+        var tail = SpaceMapTail()
+        for child in children where !shownIDs.contains(child.tileID) {
+            if let bytes = child.bytes {
+                tail.knownBytes += bytes
+                tail.knownCount += 1
+            } else {
+                tail.restrictedCount += 1
+            }
+        }
+
+        func share(_ bytes: UInt64) -> String { known > 0 ? TTFormat.percent(Double(bytes) / known) : TTFormat.unavailable }
+        let estimated = provenance != .exact
         var rows: [SpaceMapRow] = []
         for tile in layout.shown {
             guard let child = byTile[tile.id] else { continue }
             var node: StorageNodeID?
             if case let .node(n) = child.id { node = n }
-            let items: String = if let tree, let node, child.isDirectory { TTFormat.count(Int(tree.childCount[Int(node)])) }
+            let items: String = if let tree, let node, child.isDirectory, child.bytes != nil { TTFormat.count(Int(tree.childCount[Int(node)])) }
                 else { TTFormat.unavailable }
             rows.append(SpaceMapRow(
                 id: tile.id, kind: tile.kind, name: child.name, bytes: child.bytes,
-                sizeText: tile.valueText, shareText: child.bytes == nil ? TTFormat.unavailable : share(Double(child.bytes ?? 0)),
-                itemsText: items, node: node))
+                sizeText: StorageFormat.bytes(child.bytes, provenance: provenance, style: .detail),
+                shareText: child.bytes.map(share) ?? TTFormat.unavailable, itemsText: items, node: node,
+                estimated: estimated && child.bytes != nil))
         }
         if layout.smallerCount > 0 {
-            let bytes = UInt64(max(0, layout.smallerValue))
+            let name = switch (tail.knownCount, tail.restrictedCount) {
+            case let (k, 0): plural(k, "smaller item", "smaller items")
+            case let (0, r): "\(r) restricted"
+            case let (k, r): plural(k, "smaller item", "smaller items") + " and \(r) restricted"
+            }
             rows.append(SpaceMapRow(
-                id: TTSpaceMapLayout.smallerID, kind: .smaller,
-                name: "\(layout.smallerCount) smaller \(layout.smallerCount == 1 ? "item" : "items")", bytes: bytes,
-                sizeText: StorageFormat.bytes(bytes, provenance: provenance, style: .detail),
-                shareText: share(layout.smallerValue), itemsText: TTFormat.unavailable, node: nil))
+                id: TTSpaceMapLayout.smallerID, kind: .smaller, name: name,
+                bytes: tail.knownCount > 0 ? tail.knownBytes : nil,
+                sizeText: tail.knownCount > 0
+                    ? StorageFormat.bytes(tail.knownBytes, provenance: provenance, style: .detail) : TTFormat.unavailable,
+                shareText: tail.knownCount > 0 ? share(tail.knownBytes) : TTFormat.unavailable,
+                itemsText: TTFormat.unavailable, node: nil, estimated: estimated && tail.knownCount > 0))
         }
-        return rows
+        return SpaceMapDerived(tiles: tiles, rows: rows, order: layout.placed.map(\.tile.id), tail: tail)
     }
 
     enum Step { case previous, next }
@@ -116,6 +164,49 @@ enum SpaceMapLogic {
     }
 }
 
+/// The one keyboard model of map and table. The table moves `selection` itself (arrows, click); the map's hover
+/// follows it, so Return and the menus never act on a hover left behind by an earlier pointer position.
+struct SpaceMapFocus: Equatable {
+    var hover: Int32?
+    var selection: Int32?
+
+    /// The pointer wins while it is over a tile; otherwise the selection.
+    var current: Int32? { hover ?? selection }
+
+    mutating func move(_ step: SpaceMapLogic.Step, order: [Int32]) -> Bool {
+        guard let next = SpaceMapLogic.step(step, from: current, in: order) else { return false }
+        hover = next
+        selection = next
+        return true
+    }
+
+    /// The table changed the selection: hover goes with it.
+    mutating func selectionChanged() {
+        if let selection { hover = selection }
+    }
+}
+
+/// Memo of `SpaceMapDerived` per input version, so a body re-run (selection, banner) does not re-layout.
+@MainActor final class SpaceMapDerivedCache {
+    struct Key: Equatable {
+        var treeVersion: UInt64?
+        var overlayVersion: UInt64?
+        var focus: StorageNodeID
+        var size: CGSize
+        var provenance: SizeProvenance
+    }
+
+    private var key: Key?
+    private var value = SpaceMapDerived()
+
+    func resolve(_ key: Key, make: () -> SpaceMapDerived) -> SpaceMapDerived {
+        if self.key == key { return value }
+        value = make()
+        self.key = key
+        return value
+    }
+}
+
 // MARK: - View
 
 /// Breadcrumb, treemap card (2/3) and children table card (1/3), one shared hover.
@@ -129,23 +220,25 @@ struct SpaceMapView: View {
     @Environment(\.presentConfirmDialog) private var confirmDialog
     @State private var mapSize = CGSize(width: 560, height: 360)
     @State private var selection: Int32?
+    @State private var cache = SpaceMapDerivedCache()
 
     var body: some View {
         let map = storage.spaceMap
         let provenance: SizeProvenance = map.overlay == nil ? .estimate : .exact
-        let children = map.children(of: map.focus)
-        let tiles = SpaceMapLogic.tiles(children, provenance: provenance)
-        let layout = TTSpaceMapLayout.make(tiles, in: mapSize)
-        let rows = SpaceMapLogic.rows(layout: layout, children: children, tree: map.tree, provenance: provenance)
-        let order = layout.placed.map(\.tile.id)
+        let key = SpaceMapDerivedCache.Key(treeVersion: map.tree?.version, overlayVersion: map.overlay?.version,
+                                           focus: map.focus, size: mapSize, provenance: provenance)
+        let derived = cache.resolve(key) {
+            SpaceMapLogic.derive(children: map.children(of: map.focus), tree: map.tree, provenance: provenance,
+                                 size: mapSize)
+        }
         let tableWidth = max(0, (contentWidth - TTSpace.gridGap) / 3)
 
         VStack(alignment: .leading, spacing: TTSpace.gridGap) {
             Breadcrumb()
             HStack(alignment: .top, spacing: TTSpace.gridGap) {
-                mapCard(tiles: tiles, rows: rows, provenance: provenance)
+                mapCard(derived: derived, provenance: provenance)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                tableCard(rows: rows)
+                tableCard(rows: derived.rows)
                     .frame(width: tableWidth)
                     .frame(maxHeight: .infinity)
             }
@@ -153,30 +246,43 @@ struct SpaceMapView: View {
         }
         .focusable()
         .focusEffectDisabled()
-        .onKeyPress(.leftArrow) { move(.previous, order: order) }
-        .onKeyPress(.upArrow) { move(.previous, order: order) }
-        .onKeyPress(.rightArrow) { move(.next, order: order) }
-        .onKeyPress(.downArrow) { move(.next, order: order) }
-        .onKeyPress(.return) { drillHovered(rows: rows) }
+        .onKeyPress(.leftArrow) { move(.previous, order: derived.order) }
+        .onKeyPress(.upArrow) { move(.previous, order: derived.order) }
+        .onKeyPress(.rightArrow) { move(.next, order: derived.order) }
+        .onKeyPress(.downArrow) { move(.next, order: derived.order) }
+        .onKeyPress(.return) { drillCurrent(rows: derived.rows) }
         .onKeyPress(.delete) { goUp() }
         .onKeyPress(phases: .down) { press in
             press.key == "[" && press.modifiers == .command ? goUp() : .ignored
         }
         .onChange(of: map.focus) { selection = nil }
+        .onChange(of: selection) {
+            var focus = focusState
+            focus.selectionChanged()
+            storage.hover.hoveredID = focus.hover
+        }
     }
+
+    private var focusState: SpaceMapFocus { SpaceMapFocus(hover: storage.hover.hoveredID, selection: selection) }
 
     private var hover: Binding<Int32?> {
         Binding(get: { storage.hover.hoveredID }, set: { storage.hover.hoveredID = $0 })
     }
 
-    private func mapCard(tiles: [TTSpaceMapTile], rows: [SpaceMapRow], provenance: SizeProvenance) -> some View {
-        TTCard(padding: TTSpace.x12) {
-            TTSpaceMap(tiles, hoveredID: hover,
-                       formatValue: { StorageFormat.bytes(UInt64(max(0, $0)), provenance: provenance, style: .detail) },
+    private func mapCard(derived: SpaceMapDerived, provenance: SizeProvenance) -> some View {
+        let tail = derived.tail
+        return TTCard(padding: TTSpace.x12) {
+            TTSpaceMap(derived.tiles, hoveredID: hover,
+                       // Only the merged tile asks: its value includes layout weights of restricted tiles.
+                       formatValue: { _ in
+                           tail.knownCount > 0
+                               ? StorageFormat.bytes(tail.knownBytes, provenance: provenance, style: .headline)
+                               : TTFormat.unavailable
+                       },
                        onDrill: drill)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onGeometryChange(for: CGSize.self, of: \.size) { mapSize = $0 }
-                .contextMenu { TileMenu(rows: rows, menu: menuActions) }
+                .contextMenu { TileMenu(rows: derived.rows, menu: menuActions) }
         }
         .frame(maxHeight: .infinity, alignment: .top)
     }
@@ -206,7 +312,8 @@ struct SpaceMapView: View {
             },
             .init(id: "size", title: "Size", width: .fixed(68), alignment: .trailing) { row in
                 AnyView(Text(row.sizeText).font(TTFont.body12).monospacedDigit().lineLimit(1)
-                    .minimumScaleFactor(0.8).foregroundStyle(TTColor.textSecondary))
+                    .minimumScaleFactor(0.8).foregroundStyle(TTColor.textSecondary)
+                    .help(row.estimated ? StorageFormat.estimateTooltip : ""))
             },
             .init(id: "share", title: "%", width: .fixed(36), alignment: .trailing) { row in
                 AnyView(Text(row.shareText).font(TTFont.body12).monospacedDigit().lineLimit(1)
@@ -231,14 +338,15 @@ struct SpaceMapView: View {
     }
 
     private func move(_ step: SpaceMapLogic.Step, order: [Int32]) -> KeyPress.Result {
-        guard let next = SpaceMapLogic.step(step, from: storage.hover.hoveredID ?? selection, in: order) else { return .ignored }
-        storage.hover.hoveredID = next
-        selection = next
+        var focus = focusState
+        guard focus.move(step, order: order) else { return .ignored }
+        storage.hover.hoveredID = focus.hover
+        selection = focus.selection
         return .handled
     }
 
-    private func drillHovered(rows: [SpaceMapRow]) -> KeyPress.Result {
-        guard let node = SpaceMapLogic.drillTarget(storage.hover.hoveredID ?? selection, rows: rows) else { return .ignored }
+    private func drillCurrent(rows: [SpaceMapRow]) -> KeyPress.Result {
+        guard let node = SpaceMapLogic.drillTarget(focusState.current, rows: rows) else { return .ignored }
         storage.spaceMap.drill(node)
         return .handled
     }

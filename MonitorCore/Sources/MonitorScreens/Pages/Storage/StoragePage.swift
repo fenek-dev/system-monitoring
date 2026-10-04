@@ -69,8 +69,9 @@ public struct StoragePage: View {
         HStack(spacing: TTSpace.x12) {
             TTSegmented(selection: Binding(
                 get: { mode },
-                set: { new in if new == .spaceMap || storage.root.allowsCleanup { chosenMode = new } }),
-                        options: [(.spaceMap, "Space Map"), (.cleanup, "Cleanup")])
+                set: { chosenMode = $0 }),
+                        options: [(.spaceMap, "Space Map"), (.cleanup, "Cleanup")],
+                        disabled: storage.root.allowsCleanup ? [] : [.cleanup])
             if !storage.root.allowsCleanup {
                 Text("Cleanup is available for your home folder only.")
                     .font(TTFont.caption).foregroundStyle(TTColor.textTertiary)
@@ -79,30 +80,23 @@ public struct StoragePage: View {
         }
     }
 
+    /// Page states come first, in both modes: loading, scan progress and errors are about the scan, not the view.
     @ViewBuilder private func content(compact: Bool, width: CGFloat) -> some View {
-        switch mode {
-        case .cleanup:
-            CleanupView(compact: compact)
-        case .spaceMap:
-            spaceMapContent(compact: compact, width: width)
-        }
-    }
-
-    @ViewBuilder private func spaceMapContent(compact: Bool, width: CGFloat) -> some View {
-        switch StorageContentState.make(phase: storage.phase, hasTree: storage.spaceMap.tree != nil) {
+        switch StorageContentState.make(phase: storage.phase, hasFinalTree: storage.spaceMap.overlay != nil) {
         case .blank:
             Color.clear
         case .neverScanned:
             StorageEmptyContent(message: "Scan your home folder to see what uses space.")
         case .map:
-            SpaceMapView(compact: compact, contentWidth: width)
+            modeContent(compact: compact, width: width)
         case .scanning(hasPrevious: false):
             VStack(spacing: TTSpace.gridGap) {
                 ScanProgressCard()
-                SpaceMapView(compact: compact, contentWidth: width)
+                // Cleanup has nothing to list before the first scan finishes; the map shows the partial tree.
+                if mode == .spaceMap { modeContent(compact: compact, width: width) } else { Color.clear }
             }
         case .scanning(hasPrevious: true):
-            SpaceMapView(compact: compact, contentWidth: width)
+            modeContent(compact: compact, width: width)
                 .overlay(alignment: .top) { ScanProgressCard().frame(maxWidth: 520).padding(.top, TTSpace.x32) }
         case .volumeRemoved:
             StorageEmptyContent(message: "Volume was removed", showsScan: false)
@@ -110,6 +104,14 @@ public struct StoragePage: View {
             StorageEmptyContent(message: "Couldn't scan this folder", detail: reason)
         }
     }
+
+    @ViewBuilder private func modeContent(compact: Bool, width: CGFloat) -> some View {
+        switch mode {
+        case .cleanup: CleanupView(compact: compact)
+        case .spaceMap: SpaceMapView(compact: compact, contentWidth: width)
+        }
+    }
+
 }
 
 /// Own view like Disk's: only it re-evaluates when the root changes.
