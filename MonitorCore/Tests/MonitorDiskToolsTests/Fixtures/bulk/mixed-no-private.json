@@ -1,0 +1,101 @@
+{
+  "entries" : [
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 0,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433153,
+      "kind" : "symlink",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1791082726,
+      "name" : "sym"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 8192,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433147,
+      "kind" : "regular",
+      "linkCount" : 2,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "hl2"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 1048576,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433151,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "clone.bin"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 1048576,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433150,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "orig.bin"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 0,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433144,
+      "kind" : "directory",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "sub"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 8192,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433147,
+      "kind" : "regular",
+      "linkCount" : 2,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "hl1"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 4096,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433146,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "small.txt"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 1048576,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433145,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "plain.bin"
+    }
+  ],
+  "origin" : "kernel recording, kernel order, no FSOPT_ATTR_CMN_EXTENDED"
+}

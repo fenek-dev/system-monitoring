@@ -1,0 +1,29 @@
+{
+  "entries" : [
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 4096,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433146,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "small.txt"
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 0,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433144,
+      "kind" : "directory",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "sub"
+    }
+  ],
+  "origin" : "kernel recording, entries reordered"
+}

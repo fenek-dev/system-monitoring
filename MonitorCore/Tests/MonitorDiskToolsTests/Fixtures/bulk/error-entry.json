@@ -1,0 +1,17 @@
+{
+  "entries" : [
+    {
+      "addedTime" : 0,
+      "allocBytes" : 0,
+      "errorCode" : 13,
+      "fileFlags" : 0,
+      "fileID" : 0,
+      "kind" : "other",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 0,
+      "name" : "denied"
+    }
+  ],
+  "origin" : "hand-built: the kernel reports ATTR_CMN_ERROR only for entries it cannot stat, which a temp tree cannot provoke; layout per man getattrlistbulk (length, returned set, error, name)"
+}

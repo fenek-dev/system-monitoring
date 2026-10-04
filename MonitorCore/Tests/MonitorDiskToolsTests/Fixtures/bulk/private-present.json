@@ -1,0 +1,57 @@
+{
+  "entries" : [
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 1048576,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433145,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "plain.bin",
+      "privateBytes" : 1048576
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 1048576,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433151,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "clone.bin",
+      "privateBytes" : 0
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 1048576,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433150,
+      "kind" : "regular",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "orig.bin",
+      "privateBytes" : 0
+    },
+    {
+      "addedTime" : 1791082726,
+      "allocBytes" : 0,
+      "errorCode" : 0,
+      "fileFlags" : 0,
+      "fileID" : 172433144,
+      "kind" : "directory",
+      "linkCount" : 1,
+      "mountStatus" : 0,
+      "mtime" : 1700000000,
+      "name" : "sub",
+      "privateBytes" : 0
+    }
+  ],
+  "origin" : "kernel recording, FSOPT_ATTR_CMN_EXTENDED"
+}
