@@ -337,6 +337,12 @@ public final class StorageModel {
         return found
     }
 
+    /// Freed bytes for deleting exactly `items` (hard-link credit, provenance), for the confirm dialog's breakdown.
+    public func reclaim(of items: [CleanupItem]) -> (bytes: UInt64, provenance: SizeProvenance)? {
+        guard let tree = spaceMap.tree else { return nil }
+        return cleanup.reclaim(of: Set(items.map(\.id)), tree: tree, overlay: spaceMap.overlay)
+    }
+
     /// false if a clean, undo or Empty Trash already runs, or the root does not allow cleaning these items.
     public func clean(_ items: [CleanupItem]) -> Bool {
         guard canStartRun, !items.isEmpty else { return false }

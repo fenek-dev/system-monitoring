@@ -70,17 +70,57 @@ struct StorageCleanupTests {
                     identity: nil, allocBytes: bytes, privateBytesExcludingLinks: bytes, sizeProvenance: provenance)
     }
 
-    /// Bugs: unbounded in-use list, "+0 more", wrong grouping of delete modes, missing "≈" on estimates.
+    private func part(_ kind: CleanConfirmText.Kind, _ bytes: UInt64?,
+                      _ provenance: SizeProvenance = .exact) -> CleanConfirmText.Part {
+        CleanConfirmText.Part(kind: kind, bytes: bytes, provenance: provenance)
+    }
+
+    /// Bug: the dialog's breakdown summed row sizes, ignoring hard-link credit, so it disagreed with the headline.
+    @Test func breakdownMatchesHeadlineForHardLinks() async {
+        let storage = model(log: ActionLog())
+        let cleanup = storage.cleanup
+        for id in cleanup.checked where id != 15 && id != 16 { cleanup.toggle(.item(id)) }
+        #expect(cleanup.checked == [15, 16])
+        var title = ""
+        var message = ""
+        _ = await CleanFlow.run(storage: storage, confirm: { t, m, _ in
+            title = t
+            message = m
+            return false
+        })
+        let headline = StorageFormat.bytes(cleanup.selectedBytes, provenance: cleanup.selectedProvenance)
+        #expect(title == "Clean \(headline)?")
+        #expect(message.hasPrefix("Delete permanently: \(headline) "))
+    }
+
+    /// Bug: unticking an unprocessed item during a clean changed the UI but not the confirmed batch.
+    @Test func selectionIsFrozenWhileCleaning() {
+        let storage = model(log: ActionLog())
+        let cleanup = storage.cleanup
+        let items = cleanup.items.filter { cleanup.checked.contains($0.id) }
+        let before = cleanup.checked
+        #expect(storage.clean(items))
+        cleanup.toggle(.item(items[0].id))
+        #expect(cleanup.checked == before)
+        for line in cleanup.lines() where line.item == nil {
+            cleanup.toggle(line.id)
+            #expect(cleanup.checked == before)
+        }
+        let line = cleanup.lines()[0]
+        #expect(CleanupRow(line: line, check: .on, inUse: false, expanded: false, locked: true).disabledReason == "Cleaning…")
+        #expect(CleanupRow(line: line, check: .on, inUse: false, expanded: false, locked: false).disabledReason == nil)
+    }
+
+    /// Bugs: unbounded in-use list, "+0 more", missing "≈" on estimates, wrong line order or labels.
     @Test func messageText() {
         let busy = (1...7).map { item(Int32($0), "app\($0)", .remove) }
-        let seven = CleanConfirmText.make(items: [], total: 0, provenance: .exact, inUse: busy)
+        let seven = CleanConfirmText.make(parts: [], total: 0, provenance: .exact, inUse: busy)
         #expect(seven.message == "\nIn use, skipped:\napp1\napp2\napp3\napp4\napp5\n+2 more")
-        let five = CleanConfirmText.make(items: [], total: 0, provenance: .exact, inUse: Array(busy.prefix(5)))
+        let five = CleanConfirmText.make(parts: [], total: 0, provenance: .exact, inUse: Array(busy.prefix(5)))
         #expect(!five.message.contains("more"))
 
         let mixed = CleanConfirmText.make(
-            items: [item(1, "a", .remove, bytes: 2_000_000_000), item(2, "b", .simctl, bytes: 1_000_000_000),
-                    item(3, "c", .trash, bytes: 500_000_000), item(4, "d", .evict, bytes: 3_000_000_000)],
+            parts: [part(.permanent, 3_000_000_000), part(.trash, 500_000_000), part(.downloads, 3_000_000_000)],
             total: 6_500_000_000, provenance: .exact, inUse: [])
         #expect(mixed.title == "Clean 6.5 GB?")
         #expect(mixed.message == """
@@ -89,7 +129,7 @@ struct StorageCleanupTests {
             Remove downloads: 3.0 GB (iCloud)
             """)
 
-        let estimate = CleanConfirmText.make(items: [item(1, "a", .trash, .estimate)], total: 1_000_000_000,
+        let estimate = CleanConfirmText.make(parts: [part(.trash, 1_000_000_000, .estimate)], total: 1_000_000_000,
                                              provenance: .estimate, inUse: [])
         #expect(estimate.title == "Clean ≈1.0 GB?")
         #expect(estimate.message == "Move to Trash: ≈1.0 GB (leftovers, large files)")

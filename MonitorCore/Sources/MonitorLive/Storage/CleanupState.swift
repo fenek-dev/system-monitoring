@@ -96,7 +96,10 @@ public final class CleanupState {
         categoryTotals[category] ?? CategoryTotal()
     }
 
+    /// A running clean works on the batch the user confirmed; changing `checked` meanwhile would show a selection the
+    /// run no longer follows, so toggles are ignored until it ends.
     public func toggle(_ line: CleanupLineID) {
+        guard cleanProgress == nil else { return }
         switch line {
         case let .item(id):
             guard let item = item(id), item.isCheckable else { return }
@@ -105,6 +108,20 @@ public final class CleanupState {
             let members = currentLines().members[line] ?? []
             let check = checkState(line) != .on
             for id in members { setChecked(id, to: check) }
+        }
+    }
+
+    /// What deleting just `ids` would free, with hard-link credit from the same accounting as the footer; nil when
+    /// the accumulator cannot be built (tree/overlay mismatch, a bug).
+    func reclaim(of ids: Set<Int32>, tree: StorageTree, overlay: StorageTreeOverlay?)
+        -> (bytes: UInt64, provenance: SizeProvenance)? {
+        do {
+            var acc = try ReclaimAccumulator(items: items, tree: tree, overlay: overlay, linkSizes: linkSizes)
+            for id in ids { acc.insert(id) }
+            return (acc.bytes, acc.provenance)
+        } catch {
+            Self.log.fault("reclaim unavailable: \(String(describing: error), privacy: .public)")
+            return nil
         }
     }
 

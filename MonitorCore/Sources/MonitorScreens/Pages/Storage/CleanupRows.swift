@@ -10,8 +10,18 @@ struct CleanupRow: Identifiable, Equatable {
     var check: CheckState
     var inUse: Bool
     var expanded: Bool
+    /// A clean is running: the checkbox is read-only (part of the row so it redraws when the run starts/ends).
+    var locked: Bool
 
     var id: CleanupLineID { line.id }
+
+    /// Why the row's checkbox is disabled, nil when it can be toggled.
+    var disabledReason: String? {
+        if locked { return "Cleaning…" }
+        guard let item = line.item else { return nil }
+        if item.ignored { return "Ignored" }
+        return item.mode == .none ? "Shown for information; Warden doesn't delete this" : nil
+    }
 }
 
 /// Items table of the Cleanup mode (DESIGN §3.17): checkbox · tile + name · size · tier · In use · last used.
@@ -27,11 +37,13 @@ struct CleanupRows: View {
 
     private var cleanup: CleanupState { storage.cleanup }
 
+    private var locked: Bool { storage.busyReason == .cleaning }
+
     private var rows: [CleanupRow] {
         cleanup.lines().map { line in
             CleanupRow(line: line, check: cleanup.checkState(line.id),
                        inUse: line.item.map { cleanup.inUse.contains($0.id) || $0.runningApp } ?? false,
-                       expanded: cleanup.expanded.contains(line.id))
+                       expanded: cleanup.expanded.contains(line.id), locked: locked)
         }
     }
 
@@ -60,7 +72,9 @@ struct CleanupRows: View {
                 rowMenu: { row in AnyView(menu(row)) },
                 style: TTTableStyle(rowHeight: 34, childRowHeight: 34, sortsRows: false, headerSorts: true,
                                     showsSortIndicator: true, emptyMessage: "Nothing to clean here"),
-                onDoubleClick: open, columnsVersion: compact ? 1 : 0, hover: $hover, onSpace: { cleanup.toggle($0.id) })
+                onDoubleClick: open, columnsVersion: compact ? 1 : 0, hover: $hover, onSpace: { row in
+                    if row.disabledReason == nil { cleanup.toggle(row.id) }
+                })
     }
 
     private func open(_ row: CleanupRow) {
@@ -102,17 +116,12 @@ struct CleanupRows: View {
     }
 
     private func checkbox(_ row: CleanupRow) -> some View {
-        let reason: String? = if let item = row.line.item {
-            item.ignored ? "Ignored" : item.mode == .none ? "Shown for information; Warden doesn't delete this" : nil
-        } else {
-            nil
-        }
         let state: TTTableCheckbox.CheckState = switch row.check {
         case .off: .off
         case .on: .on
         case .mixed: .mixed
         }
-        return TTTableCheckbox(state, disabledReason: reason) { cleanup.toggle(row.id) }
+        return TTTableCheckbox(state, disabledReason: row.disabledReason) { cleanup.toggle(row.id) }
     }
 
     private func name(_ row: CleanupRow) -> some View {

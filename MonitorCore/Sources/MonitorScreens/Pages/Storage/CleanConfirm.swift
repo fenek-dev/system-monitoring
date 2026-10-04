@@ -10,24 +10,52 @@ struct CleanConfirmText: Equatable {
     var title: String
     var message: String
 
+    enum Kind: CaseIterable {
+        case permanent, trash, downloads
+
+        var label: String {
+            switch self {
+            case .permanent: "Delete permanently"
+            case .trash: "Move to Trash"
+            case .downloads: "Remove downloads"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .permanent: "caches, build data"
+            case .trash: "leftovers, large files"
+            case .downloads: "iCloud"
+            }
+        }
+
+        init(_ mode: DeleteMode) {
+            switch mode {
+            case .remove, .simctl: self = .permanent
+            case .trash: self = .trash
+            case .evict: self = .downloads
+            // Info-only items are never checkable; they cannot be in a batch.
+            case .none: self = .permanent
+            }
+        }
+    }
+
+    /// One line of the breakdown. `bytes` is nil when the model could not account for it ("—").
+    struct Part: Equatable {
+        var kind: Kind
+        var bytes: UInt64?
+        var provenance: SizeProvenance
+    }
+
     static let maxInUseNames = 5
     static let confirmTitle = "Clean"
 
     /// - Parameter total: the footer's selection (hard-link credit included), so the title matches what the footer showed.
     /// - Parameter inUse: items the re-check found in use and unticked; listed so the skip is not silent.
-    static func make(items: [CleanupItem], total: UInt64, provenance: SizeProvenance, inUse: [CleanupItem]) -> Self {
+    static func make(parts: [Part], total: UInt64, provenance: SizeProvenance, inUse: [CleanupItem]) -> Self {
         var lines: [String] = []
-        let groups: [(label: String, detail: String, modes: Set<DeleteMode>)] = [
-            ("Delete permanently", "caches, build data", [.remove, .simctl]),
-            ("Move to Trash", "leftovers, large files", [.trash]),
-            ("Remove downloads", "iCloud", [.evict]),
-        ]
-        for group in groups {
-            let members = items.filter { group.modes.contains($0.mode) }
-            guard !members.isEmpty else { continue }
-            let bytes = members.reduce(UInt64(0)) { $0 + $1.displayBytes }
-            let provenance = members.map(\.sizeProvenance).max() ?? .exact
-            lines.append("\(group.label): \(StorageFormat.bytes(bytes, provenance: provenance)) (\(group.detail))")
+        for part in parts {
+            lines.append("\(part.kind.label): \(StorageFormat.bytes(part.bytes, provenance: part.provenance)) (\(part.kind.detail))")
         }
         if !inUse.isEmpty {
             lines.append("")
@@ -75,7 +103,14 @@ enum CleanFlow {
         let cleanup = storage.cleanup
         let items = cleanup.items.filter { cleanup.checked.contains($0.id) }
         guard !items.isEmpty else { return Result(outcome: .nothingSelected, newlyInUse: inUse.count) }
-        let text = CleanConfirmText.make(items: items, total: cleanup.selectedBytes,
+        // Per-kind totals come from the reclaim accounting (hard-link credit, provenance), not from summing rows.
+        let parts = CleanConfirmText.Kind.allCases.compactMap { kind -> CleanConfirmText.Part? in
+            let members = items.filter { CleanConfirmText.Kind($0.mode) == kind }
+            guard !members.isEmpty else { return nil }
+            let reclaim = storage.reclaim(of: members)
+            return CleanConfirmText.Part(kind: kind, bytes: reclaim?.bytes, provenance: reclaim?.provenance ?? .unavailable)
+        }
+        let text = CleanConfirmText.make(parts: parts, total: cleanup.selectedBytes,
                                          provenance: cleanup.selectedProvenance, inUse: inUse)
         guard await confirm(text.title, text.message, CleanConfirmText.confirmTitle) else { return Result(outcome: .declined, newlyInUse: inUse.count) }
         guard storage.clean(items) else {

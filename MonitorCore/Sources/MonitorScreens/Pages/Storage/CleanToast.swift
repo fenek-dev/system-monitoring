@@ -46,79 +46,129 @@ enum CleanToastActions {
     }
 }
 
-/// Page-level toast for a finished clean (DESIGN §3.12 with actions). Shows for any run that ends with a report except
-/// the Undo / Empty Trash runs it starts itself.
-struct CleanToastHost: View {
-    private struct Presented: Equatable {
+/// Toast state and lifetime, apart from the view so the timer and run bookkeeping are testable with a fake clock.
+@MainActor @Observable
+final class CleanToastController {
+    struct Presented: Equatable {
         var id: Int
         var text: String
         var trashed: Bool
         var undoID: UUID?
     }
 
+    /// What the view observes: a run is in flight, and the report it ended with (nil while running / interrupted).
+    struct RunState: Equatable {
+        var running: Bool
+        var report: CleanReport?
+    }
+
+    private(set) var toast: Presented?
+    private(set) var pinned = false
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private(set) var timer: Task<Void, Never>?
+    @ObservationIgnored private var runs = 0
+    /// An Undo / Empty Trash this controller started is in flight: its report is not a clean result.
+    @ObservationIgnored private var ownRunActive = false
+
+    init(sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.sleep = sleep
+    }
+
+    func dismiss() {
+        timer?.cancel()
+        toast = nil
+    }
+
+    /// Call right after the model accepted an Undo / Empty Trash.
+    func ownRunStarted() { ownRunActive = true }
+
+    /// Call when a started own run was refused or declined, so no run is expected.
+    func ownRunAbandoned() { ownRunActive = false }
+
+    func runStateChanged(_ state: RunState) {
+        if state.running {
+            dismiss()
+            return
+        }
+        // Any end of a run clears the own-run mark, with or without a report (an interrupted stream has none), so it
+        // cannot swallow a later clean's toast.
+        let own = ownRunActive
+        ownRunActive = false
+        guard !own, let report = state.report else { return }
+        runs += 1
+        toast = Presented(id: runs, text: CleanToastText.make(report), trashed: report.trashedBytes > 0,
+                          undoID: report.undo?.id)
+        arm()
+    }
+
+    /// The Show sheet is open: the toast stays until it closes, then gets its full lifetime again.
+    func setPinned(_ value: Bool) {
+        guard value != pinned else { return }
+        pinned = value
+        if value { timer?.cancel() } else { arm() }
+    }
+
+    private func arm() {
+        timer?.cancel()
+        guard let current = toast, !pinned else { return }
+        let id = current.id
+        let lifetime = TTToast.lifetime(hasUndo: current.undoID != nil)
+        timer = Task { [sleep] in
+            do { try await sleep(lifetime) } catch { return }
+            // A newer toast or a pin may have replaced this timer after it woke.
+            guard !Task.isCancelled, toast?.id == id, !pinned else { return }
+            toast = nil
+        }
+    }
+}
+
+/// Page-level toast for a finished clean (DESIGN §3.12 with actions). Shows for any run that ends with a report except
+/// the Undo / Empty Trash runs it starts itself.
+struct CleanToastHost: View {
     @Environment(StorageModel.self) private var storage
     @Environment(\.presentConfirmDialog) private var presenter
-    @State private var toast: Presented?
-    @State private var runs = 0
+    @State private var controller = CleanToastController()
     @State private var showSkipped = false
-    /// Set when this host started an Undo / Empty Trash: their reports are not clean results.
-    @State private var ownRun = false
 
     var body: some View {
         Group {
-            if let toast {
+            if let toast = controller.toast {
                 CleanToastView(text: toast.text, actions: actions(for: toast))
-                    .task(id: Timer(id: toast.id, pinned: showSkipped)) {
-                        guard !showSkipped else { return }
-                        try? await Task.sleep(for: TTToast.lifetime(hasUndo: toast.undoID != nil))
-                        self.toast = nil
-                    }
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: toast)
-        .onChange(of: storage.cleanup.lastReport) { _, report in
-            guard let report else {
-                toast = nil
-                return
-            }
-            if ownRun {
-                ownRun = false
-                return
-            }
-            runs += 1
-            toast = Presented(id: runs, text: CleanToastText.make(report), trashed: report.trashedBytes > 0,
-                              undoID: report.undo?.id)
+        .animation(.easeInOut(duration: 0.15), value: controller.toast)
+        .onChange(of: CleanToastController.RunState(running: storage.cleanup.cleanProgress != nil,
+                                                    report: storage.cleanup.lastReport)) { _, state in
+            controller.runStateChanged(state)
         }
+        .onChange(of: showSkipped) { _, open in controller.setPinned(open) }
         .sheet(isPresented: $showSkipped) { SkippedSheet(skipped: storage.cleanup.skipped) { showSkipped = false } }
     }
 
-    /// The timer restarts (and is paused) with the sheet.
-    private struct Timer: Equatable {
-        var id: Int
-        var pinned: Bool
-    }
-
-    private func actions(for toast: Presented) -> [TTToast.Action] {
+    private func actions(for toast: CleanToastController.Presented) -> [TTToast.Action] {
         var list: [TTToast.Action] = []
         if !storage.cleanup.skipped.isEmpty { list.append(.show { showSkipped = true }) }
         if toast.trashed {
             list.append(.emptyTrash {
                 Task {
                     let ask = CleanFlow.ask(presenter)
-                    ownRun = true
+                    // Marked before the run can start; the model reports the run's end either way.
+                    controller.ownRunStarted()
                     if await CleanToastActions.emptyTrash(storage: storage, confirm: ask) {
-                        self.toast = nil
+                        controller.dismiss()
                     } else {
-                        ownRun = false
+                        controller.ownRunAbandoned()
                     }
                 }
             })
         }
         if let undoID = toast.undoID, storage.cleanup.lastUndo?.id == undoID {
             list.append(.undo {
+                controller.ownRunStarted()
                 if storage.undoLast() {
-                    ownRun = true
-                    self.toast = nil
+                    controller.dismiss()
+                } else {
+                    controller.ownRunAbandoned()
                 }
             })
         }
@@ -168,3 +218,4 @@ private struct SkippedSheet: View {
         .frame(width: 420)
     }
 }
+
