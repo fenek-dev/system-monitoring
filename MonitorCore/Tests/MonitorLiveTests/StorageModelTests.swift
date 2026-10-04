@@ -395,9 +395,10 @@ import MonitorModel
         #expect(m.cleanup.items.isEmpty)
         #expect(m.cleanup.selectedBytes == 0)
         #expect(m.summary?.reclaimableBytes == 0)
-        // Advisory: debug build, dominated by the overlay's own O(nodes) recompute per mutation (~6 of ~8 s here).
-        // A rebuild of totals/rows/summary per event took ~24 s; the bound only catches that regression.
-        #expect(elapsed < .seconds(15), "2,000 events took \(elapsed)")
+        // Advisory (~40 ms debug, ~27 ms release here): events reach the overlay as one batch per flush window.
+        // A recompute per event took ~8 s in debug, a rebuild of totals/rows/summary per event ~24 s.
+        #expect(elapsed < .seconds(1), "2,000 events took \(elapsed)")
+        Issue.record("2,000 events: \(elapsed)", severity: .warning)
     }
 
     /// Bug: a cache hit in `lines()` reads no observable state, so a view never learns the rows changed.

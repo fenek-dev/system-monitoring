@@ -42,8 +42,13 @@ Worktree `/Users/arturvorokov/Documents/Projects/telltale-storage-w3a`, branch `
 ## Contract changes
 - `CleanItemOutcome.path: String?` (default nil, last property/init param) added in MonitorModel `Clean.swift`, exactly as the coordinator specified. W2c must fill `path` (absolute `~/.Trash` entry path) on Empty Trash outcomes; the model maps it via `tree.lookup`.
 
+## Batch API (approved follow-up)
+- `StorageTreeOverlay.batch(in:_:)` (typed throws): calls inside record state in order, one recompute and one `version` bump at the end; single calls unchanged. `matchesBruteForceModel` now applies ops in random-size batches (1-5) and compares at batch ends; `batchRecomputesOnceAndBumpsVersionOnce` added.
+- Model: `.item`/`.restored` queue overlay changes; `flush()` (50 ms window, run end, direct `apply`) applies them in one batch, and removes cleaned rows once.
+- Perf, 2,000 events: debug 42 ms (was 7.9 s), release 27 ms (`swift test -c release --filter twoThousand`).
+
 ## Requests
-- W1/overlay: `StorageTreeOverlay` mutation is O(nodes) per call; a batch API (`remove(_ nodes:)`) would take 2,000-item cleans from seconds to milliseconds in debug.
+- None.
 - None.
 
 ## Not verified

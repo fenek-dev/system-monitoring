@@ -157,6 +157,19 @@ import Testing
         let world = RefWorld(rng: &rng)
         var o = StorageTreeOverlay(tree: world.tree)
         try world.check(o, step: -1, seed: seed)
+        // Ops go to the overlay in random-size batches (1 = plain calls); the model advances per op, the overlay is
+        // compared at each batch end. Catches any divergence between `batch` and the same calls made one by one.
+        var queued: [(inout StorageTreeOverlay) throws -> Void] = []
+        var batchSize = 1 + Int(rng.next() % 5)
+        func flush(_ o: inout StorageTreeOverlay) throws {
+            if queued.count == 1 {
+                try queued[0](&o)
+            } else {
+                try o.batch(in: world.tree) { inner in for op in queued { try op(&inner) } }
+            }
+            queued = []
+            batchSize = 1 + Int(rng.next() % 5)
+        }
         for step in 0 ..< 40 {
             let candidates = world.restorable()
             if candidates.isEmpty || rng.next() % 10 < 6 {
@@ -165,16 +178,41 @@ import Testing
                 let node = visible[Int(rng.next() % UInt64(visible.count))]
                 let kind: StorageTreeOverlay.RemovalKind = rng.next() % 2 == 0 ? .deleted : .trashed
                 world.remove(node, kind: kind)
-                try o.remove(node, kind: kind, in: world.tree)
+                let tree = world.tree
+                queued.append { try $0.remove(node, kind: kind, in: tree) }
             } else {
                 let node = candidates[Int(rng.next() % UInt64(candidates.count))]
                 let name = world.tree.name(node) + (rng.next() % 2 == 0 ? "" : " (restored)")
                 world.restore(node, as: name)
-                try o.restore(RestoredEntry(parent: world.tree.parent[Int(node)], name: name, bytes: 0, itemID: 0),
-                              originalNode: node, in: world.tree)
+                let tree = world.tree
+                queued.append {
+                    try $0.restore(RestoredEntry(parent: tree.parent[Int(node)], name: name, bytes: 0, itemID: 0),
+                                   originalNode: node, in: tree)
+                }
             }
-            try world.check(o, step: step, seed: seed)
+            if queued.count >= batchSize {
+                try flush(&o)
+                try world.check(o, step: step, seed: seed)
+            }
         }
+        if !queued.isEmpty {
+            try flush(&o)
+            try world.check(o, step: 40, seed: seed)
+        }
+    }
+
+    /// Bug: a batch bumps the version per call (observers re-render per op) or leaves stale sizes after it returns.
+    @Test func batchRecomputesOnceAndBumpsVersionOnce() throws {
+        var rng = SplitMix64(seed: 7)
+        let world = RefWorld(rng: &rng)
+        var o = StorageTreeOverlay(tree: world.tree)
+        let nodes = Array(world.visibleNodes().filter { $0 != 0 }.prefix(3))
+        let before = o.version
+        try o.batch(in: world.tree) { b in
+            for n in nodes { try b.remove(n, kind: .deleted, in: world.tree) }
+        }
+        #expect(o.version == before + 1)
+        for n in nodes { #expect(try o.isRemoved(n, in: world.tree)) }
     }
 }
 

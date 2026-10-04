@@ -82,6 +82,9 @@ public struct StorageTreeOverlay: Sendable, Codable, Equatable {
     public private(set) var shrunk: [StorageNodeID: UInt128] = [:]
     private var nextSnapshot: Int32 = 0
     private var derived: Derived?
+    /// Inside `batch`: mutations record state and defer the recompute.
+    private var batching = false
+    private var batchDirty = false
 
     private enum CodingKeys: String, CodingKey {
         case treeVersion, scan, version, original, recreated, renamed, renamedRecreated, restored, restoredLocations, trashRoots, shrunk,
@@ -237,8 +240,34 @@ public struct StorageTreeOverlay: Sendable, Codable, Equatable {
     }
 
     private mutating func commit(_ tree: StorageTree) {
+        if batching {
+            batchDirty = true
+            return
+        }
         derived = Self.derive(tree: tree, from: self)
         version += 1
+    }
+
+    /// Runs several `remove`/`shrink`/`restore` calls as one change: each updates the recorded state in order (so
+    /// the result equals the same calls made one by one), but the O(nodes) recompute and the `version` bump happen
+    /// once, at the end. Sizes and visibility read through the public accessors are those from before the batch
+    /// until it returns. If `body` throws, the calls made so far stay applied and are committed.
+    public mutating func batch<E: Error>(in tree: StorageTree,
+                                         _ body: (inout StorageTreeOverlay) throws(E) -> Void) throws(E) {
+        guard !batching else {
+            try body(&self)
+            return
+        }
+        batching = true
+        batchDirty = false
+        defer {
+            batching = false
+            if batchDirty {
+                batchDirty = false
+                commit(tree)
+            }
+        }
+        try body(&self)
     }
 
     private static func within(_ node: StorageNodeID, _ root: StorageNodeID, _ tree: StorageTree) -> Bool {

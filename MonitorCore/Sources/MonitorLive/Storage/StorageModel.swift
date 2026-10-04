@@ -58,6 +58,10 @@ public final class StorageModel {
     /// Totals, hidden rows and summary are rebuilt once per burst of clean events, not once per event.
     @ObservationIgnored private var dirty = false
     @ObservationIgnored private var flushTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingChanges: [PendingChange] = []
+    /// Rows of committed items, taken out of the list at flush: removing one by one is O(rows) per event.
+    @ObservationIgnored private var pendingRemoved: Set<Int32> = []
+    @ObservationIgnored private var pendingUnchecked: Set<Int32> = []
     /// A classification that arrived during a clean: its ids would not match the run's items.
     @ObservationIgnored private var pendingClassified: CleanupSet?
     /// Rows hidden because their node is gone (e.g. a Space Map trash of a parent folder); back on undo.
@@ -156,6 +160,9 @@ public final class StorageModel {
         pendingClassified = nil
         prunedItems = [:]
         cleanedNodeless = []
+        pendingChanges = []
+        pendingRemoved = []
+        pendingUnchecked = []
         dirty = false
     }
 
@@ -425,7 +432,14 @@ public final class StorageModel {
     private func flush() {
         guard dirty else { return }
         dirty = false
-        guard let tree = spaceMap.tree, let overlay = spaceMap.overlay else { return }
+        guard let tree = spaceMap.tree, let current = spaceMap.overlay else { return }
+        // Removals first: an item cleaned and undone within one window must end up listed.
+        cleanup.remove(ids: pendingRemoved)
+        cleanup.update([], uncheck: pendingUnchecked)
+        pendingRemoved = []
+        pendingUnchecked = []
+        applyPendingChanges(tree: tree, overlay: current)
+        guard let overlay = spaceMap.overlay else { return }
         reconcileItems(tree: tree, overlay: overlay)
         rebuildTotals()
         refreshSummary()
@@ -466,20 +480,12 @@ public final class StorageModel {
     }
 
     private func applyOutcome(_ outcome: CleanItemOutcome) {
-        guard let tree = spaceMap.tree, var overlay = spaceMap.overlay else { return }
+        guard let tree = spaceMap.tree, spaceMap.overlay != nil else { return }
         if run == .emptyTrash {
             // Outcome ids are listing indices, not item ids: an entry is identified by its path. Only committed
             // entries change anything; failed and unprocessed ones stay.
             guard outcome.skip == nil else { return }
-            do {
-                for node in outcome.removedNodes + trashEntryNode(outcome.path, in: tree) {
-                    try overlay.remove(node, kind: .deleted, in: tree)
-                }
-            } catch {
-                overlayFailed(error)
-                return
-            }
-            spaceMap.setOverlay(overlay)
+            pendingChanges.append(.removeNodes(outcome.removedNodes + trashEntryNode(outcome.path, in: tree)))
             removeTrashBytes(outcome.detachedBytes)
             markDirty()
             return
@@ -493,21 +499,15 @@ public final class StorageModel {
             cleanup.skipped.append((item, reason))
             return
         }
-        do {
-            try StorageCleanMath.apply(outcome, item: item, to: &overlay, tree: tree)
-        } catch {
-            overlayFailed(error)
-            return
-        }
-        spaceMap.setOverlay(overlay)
+        pendingChanges.append(.outcome(outcome, item))
         if item.mode == .trash { addTrashBytes(outcome.detachedBytes > 0 ? outcome.detachedBytes : item.allocBytes) }
         if item.nodeID == nil { cleanedNodeless.insert(Self.nodelessKey(item)) }
         if item.keepParent, outcome.skippedChildren > 0 {
             // Part of the folder is still on disk: keep the row, smaller (sizes follow the overlay in `flush`),
             // no longer selected.
-            cleanup.update([], uncheck: [item.id])
+            pendingUnchecked.insert(item.id)
         } else {
-            cleanup.remove(ids: [item.id])
+            pendingRemoved.insert(item.id)
         }
         markDirty()
     }
@@ -532,18 +532,45 @@ public final class StorageModel {
     }
 
     private func applyRestored(itemID: Int32, finalPath: String) {
-        guard let tree = spaceMap.tree, var overlay = spaceMap.overlay,
+        guard spaceMap.tree != nil, spaceMap.overlay != nil,
               let item = runItems[itemID] ?? lastCleaned[itemID] else { return }
+        pendingChanges.append(.restore(itemID: itemID, finalPath: finalPath, item: item,
+                                       relist: listedAtStart.contains(itemID)))
+        if item.mode == .trash { removeTrashBytes(item.allocBytes) }
+        markDirty()
+    }
+
+    /// Overlay changes of the events since the last flush, applied together as one overlay batch.
+    private enum PendingChange {
+        case outcome(CleanItemOutcome, CleanupItem)
+        case removeNodes([StorageNodeID])
+        case restore(itemID: Int32, finalPath: String, item: CleanupItem, relist: Bool)
+    }
+
+    private func applyPendingChanges(tree: StorageTree, overlay: StorageTreeOverlay) {
+        guard !pendingChanges.isEmpty else { return }
+        let changes = pendingChanges
+        pendingChanges = []
+        var next = overlay
         do {
-            try StorageCleanMath.applyRestore(itemID: itemID, finalPath: finalPath, item: item, to: &overlay,
-                                              tree: tree)
+            try next.batch(in: tree) { (batch: inout StorageTreeOverlay) throws(StorageOverlayError) in
+                for change in changes {
+                    switch change {
+                    case let .outcome(outcome, item):
+                        try StorageCleanMath.apply(outcome, item: item, to: &batch, tree: tree)
+                    case let .removeNodes(nodes):
+                        for node in nodes { try batch.remove(node, kind: .deleted, in: tree) }
+                    case let .restore(itemID, finalPath, item, _):
+                        try StorageCleanMath.applyRestore(itemID: itemID, finalPath: finalPath, item: item,
+                                                          to: &batch, tree: tree)
+                    }
+                }
+            }
         } catch {
             overlayFailed(error)
-            return
         }
-        spaceMap.setOverlay(overlay)
-        if item.mode == .trash { removeTrashBytes(item.allocBytes) }
-        if listedAtStart.contains(itemID) {
+        spaceMap.setOverlay(next)
+        for case let .restore(_, finalPath, item, relist) in changes where relist {
             var back = item
             back.path = finalPath
             back.name = (finalPath as NSString).lastPathComponent
@@ -551,7 +578,6 @@ public final class StorageModel {
             if let node = item.nodeID, !spaceMap.isVisible(node) { back.nodeID = nil }
             cleanup.append(back)
         }
-        markDirty()
     }
 
     private func finish(_ report: CleanReport) {
