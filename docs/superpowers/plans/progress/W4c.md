@@ -22,7 +22,7 @@ See `git log` on ws/storage-w4c (commit "feat(storage-ui): P0 scaffold").
 - Break-check: dropped the ≈ branch -> StorageFormatTests red (2 failures), reverted.
 
 ## Requests
-- Sidebar "≈68 GB reclaimable" truncates to "≈68 GB recl…" in the 220-pt sidebar (TTSidebarItem is MonitorUIKit, not mine). Needs minimumScaleFactor / shorter copy; orchestrator decision.
+- Resolved by user decision: sidebar value is "{n} GB to free" (no ≈), fits at 220 pt (rendered storage-map-calm, storage-calm).
 
 ## Not verified
 - Flyout link click in the running app; only the mock launch line checked.

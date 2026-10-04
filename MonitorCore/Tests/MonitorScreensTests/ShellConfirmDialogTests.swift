@@ -201,10 +201,10 @@ struct ShellSidebarValueTests {
                        provenance: provenance, trashBytes: nil)
     }
 
-    /// Bug: stale or wrong sidebar value (estimate shown as exact, other roots shown as reclaimable).
+    /// Bug: stale or wrong sidebar value (a "≈" or long text overflowing the column, other roots shown as reclaimable).
     @Test(arguments: [
-        (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .exact), "14 GB reclaimable"),
-        (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .estimate), "≈14 GB reclaimable"),
+        (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .exact), "14 GB to free"),
+        (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .estimate), "14 GB to free"),
         (ShellSidebarValueTests.summary(.home("/h"), nil, .exact), "382 GB free"),
         (ShellSidebarValueTests.summary(.home("/h"), 14_200_000_000, .unavailable), "382 GB free"),
         (ShellSidebarValueTests.summary(.folder("/f"), 14_200_000_000, .exact), "382 GB free"),

@@ -50,7 +50,7 @@ public struct Sidebar: View {
     }
 
     /// Trailing values (DESIGN §3.0): CPU `{cpu}%`, GPU `{gpu}%`, Memory `{used} GB`, Network `{down rate}`,
-    /// Thermals `{socAvg}°`, Power `{package} W`, Disk `{free} GB free`; Storage `{≈}{n} GB reclaimable` after a home scan, else free space; Overview/Processes/History none.
+    /// Thermals `{socAvg}°`, Power `{package} W`, Disk `{free} GB free`; Storage `{n} GB to free` after a home scan, else free space; Overview/Processes/History none.
     /// Unavailable → "—" (TTFormat's nil rule).
     @MainActor public static func value(for page: DashboardPage, live: LiveModel, units: UnitPreferences,
                                         storage: StorageSummary? = nil) -> String? {
@@ -74,7 +74,8 @@ public struct Sidebar: View {
             // Only a home scan's number is "reclaimable"; other roots never produce one.
             if let storage, storage.root.allowsCleanup, storage.provenance != .unavailable,
                let bytes = storage.reclaimableBytes {
-                return StorageFormat.bytes(bytes, provenance: storage.provenance, style: .capacity) + " reclaimable"
+                // No "≈": "≈68 GB to free" doesn't fit the 220-pt column; the page shows the estimate marker.
+                return TTFormat.storage(bytes, style: .capacity) + " to free"
             }
             return freeSpaceValue(live)
         case .disk:
