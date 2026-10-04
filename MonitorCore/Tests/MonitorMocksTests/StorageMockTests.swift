@@ -55,6 +55,7 @@ import MonitorModel
         #expect(a.tree?.allocBytes == b.tree?.allocBytes)
         #expect(a.tree?.names == b.tree?.names)
         #expect(a.tree?.flags == b.tree?.flags)
+        #expect(a.tree?.scanDate == b.tree?.scanDate)
         guard let set = a.cleanup, let tree = a.tree else {
             #expect(kind == .empty || kind == .scanning)
             return
@@ -63,6 +64,13 @@ import MonitorModel
         #expect(set.items == other.items)
         #expect(set.trashBytes == other.trashBytes)
         #expect(set.treeVersion == tree.version)
+
+        // Bug: summary hand-summed items and skipped hard-link groups that production credits.
+        var accumulator = try ReclaimAccumulator(items: set.items, tree: tree, linkSizes: set.linkGroupSizes)
+        for item in set.items where !item.ignored && item.mode != .none { accumulator.insert(item.id) }
+        #expect(a.summary?.reclaimableBytes == accumulator.bytes)
+        #expect(a.summary?.reclaimableBytes != set.items.filter { !$0.ignored && $0.mode != .none }
+            .reduce(UInt64(0)) { $0 + ($1.privateBytesExcludingLinks ?? $1.allocBytes) })
 
         for item in set.items {
             if let node = item.nodeID { #expect(tree.path(node) == item.path) }

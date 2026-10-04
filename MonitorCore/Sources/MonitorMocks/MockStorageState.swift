@@ -31,7 +31,9 @@ public struct MockStorageState: Sendable {
             return MockStorageState(kind: kind, tree: nil, overlay: nil, cleanup: nil, progress: nil,
                                     hasFullDiskAccess: true, summary: nil, inUseIDs: [], policy: .none)
         case .scanning:
-            let tree = Fixture.populate(Fixture.homeSpec(noFDA: false, now: now), now: now, depthLimit: 3).snapshot()
+            // finalize rather than snapshot(): snapshot stamps `Date()`, which would make the tree nondeterministic.
+            let tree = Fixture.populate(Fixture.homeSpec(noFDA: false, now: now), now: now, depthLimit: 3)
+                .finalize(scanDate: referenceDate, lastEventId: 0)
             // Bytes/files are what the scanner would have counted by now, not the partial tree's rolled-up size.
             let progress = ScanProgress(files: 182_340, bytes: 41_700_000_000,
                                         currentPath: "\(home)/Library/Caches/com.google.Chrome/Default/Cache")
@@ -44,10 +46,12 @@ public struct MockStorageState: Sendable {
             let tree = Fixture.populate(Fixture.homeSpec(noFDA: noFDA, now: now), now: now, depthLimit: nil)
                 .finalize(scanDate: scanDate, lastEventId: 1)
             let (set, inUse) = Fixture.cleanupSet(tree: tree, now: now)
-            let reclaimable = set.items.filter { !$0.ignored && $0.mode != .none }
-                .reduce(UInt64(0)) { $0 + ($1.privateBytesExcludingLinks ?? $1.allocBytes) }
-            let summary = StorageSummary(root: .home(home), scanDate: scanDate, reclaimableBytes: reclaimable,
-                                         provenance: .estimate, trashBytes: set.trashBytes)
+            // Same accumulator production uses, so eligible hard-link groups are credited. Only throws on an
+            // overlay/tree version mismatch, and no overlay is passed.
+            var accumulator = try! ReclaimAccumulator(items: set.items, tree: tree, linkSizes: set.linkGroupSizes)
+            for item in set.items where !item.ignored && item.mode != .none { accumulator.insert(item.id) }
+            let summary = StorageSummary(root: .home(home), scanDate: scanDate, reclaimableBytes: accumulator.bytes,
+                                         provenance: accumulator.provenance, trashBytes: set.trashBytes)
             let anchors = Set([tree.lookup(path: home), tree.lookup(path: "\(home)/Library")].compactMap { $0 })
             let protected = Set([tree.lookup(path: "\(home)/Library/Mail")].compactMap { $0 })
             return MockStorageState(
