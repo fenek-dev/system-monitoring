@@ -71,10 +71,13 @@ final class ScanRun: Sendable {
         startTicker()
     }
 
-    /// First failure wins; the stream ends once every worker has left its listing.
+    /// First failure wins. The terminal event goes out now, without waiting for workers that may be stuck in a
+    /// syscall (a consent prompt, a dying disk): they own their descriptors and everything else they touch is
+    /// reference-counted, and whatever they produce afterwards is dropped at the publication gate.
     func fail(_ reason: ScanFailure) {
         failure.withLock { if $0 == nil { $0 = reason } }
         queue.cancel()
+        sendTerminal()
     }
 
     /// Cleanup to run when the scan ends (watch sources, helper tasks).
@@ -117,14 +120,23 @@ final class ScanRun: Sendable {
     }
 
     private func walkDirectory(_ item: WalkItem) {
+        // Policy before the open, here as well as at the parent: nothing closed is ever listed.
+        if rules.blocks(item.components, access: access) {
+            builder.withLock { $0.setRestricted(item.node) }
+            return
+        }
         let role = rules.role(of: item.components)
+        let guarded = rules.mayBeGuarded(depth: item.components.count + 1)
+        let isBlocked: ((_ name: [UInt8]) -> Bool)? = guarded ? { [rules, access] name in
+            rules.blocks(item.components + [String(decoding: name, as: UTF8.self)], access: access)
+        } : nil
         // Small files are folded into counters as each batch arrives; only kept records, subdirectories and link
         // occurrences are retained. Children are committed in one call, since another worker appending between two
         // batches would break the arena's contiguous-children rule.
         var prepared = PreparedListing()
         do {
             try forEachBatch(item.components) { batch in
-                prepared.absorb(batch, role: role, access: access, rules: rules, dev: info.dev)
+                prepared.absorb(batch, role: role, isBlocked: isBlocked, rules: rules, dev: info.dev)
             }
         } catch {
             handleFailure(error, item: item)
@@ -183,10 +195,11 @@ final class ScanRun: Sendable {
                         case .directory:
                             let skipped = entry.mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0
                                 || entry.fileFlags & UInt32(SF_DATALESS) != 0
-                            if skipped {
+                            let child = components + [String(decoding: entry.name, as: UTF8.self)]
+                            if skipped || (rules.mayBeGuarded(depth: child.count) && rules.blocks(child, access: access)) {
                                 incomplete = true
                             } else {
-                                pending.append(components + [String(decoding: entry.name, as: UTF8.self)])
+                                pending.append(child)
                             }
                         case .regular, .symlink, .other:
                             count += 1
@@ -293,7 +306,7 @@ final class ScanRun: Sendable {
         var deviceGone = false
 
         /// Spec §5.2 / §5.3 keep and fold rules for one batch of entries.
-        mutating func absorb(_ entries: [ListedEntry], role: WalkRules.Role, access: ScanAccessPolicy,
+        mutating func absorb(_ entries: [ListedEntry], role: WalkRules.Role, isBlocked: ((_ name: [UInt8]) -> Bool)?,
                              rules: WalkRules, dev: Int32) {
             records.reserveCapacity(records.count + entries.count)
             for entry in entries {
@@ -320,8 +333,9 @@ final class ScanRun: Sendable {
                         flags.insert(.skippedMount)
                         enter = false
                     }
-                    if role.holdsAppContainers, !access.fullDiskAccess, !access.isOwnContainer(entry.name) {
-                        // Opening it would raise a consent prompt and block this worker until answered.
+                    if enter, let isBlocked, isBlocked(entry.name) {
+                        // Opening it would raise a consent prompt (blocking this worker until answered) or touch
+                        // sensitive data: recorded as unreadable, never opened.
                         flags.insert(.restricted)
                         enter = false
                     }
@@ -404,19 +418,21 @@ final class ScanRun: Sendable {
                             currentPath: path)
     }
 
-    /// Exactly one terminal event, from the last worker to leave, so no listing is still open when it is sent.
-    /// The root descriptor is released first: a consumer that sees the terminal event may eject the volume.
+    /// Exactly one terminal event: from `fail`, or from the last worker to leave after a complete walk. Whoever
+    /// gets there first closes the gate; the root descriptor is released before the event is visible, since a
+    /// consumer that sees it may eject the volume.
     private func sendTerminal() {
+        guard !isClosed else { return }
         let terminal: ScanEvent
         if let reason = failure.withLock({ $0 }) {
             terminal = .failed(reason)
         } else {
             terminal = .finished(builder.withLock { $0 }.finalize(scanDate: Date(), lastEventId: lastEventId))
         }
-        lister.release()
         let first = closed.withLock { closed -> Bool in
             guard !closed else { return false }
             closed = true
+            lister.release()
             continuation.yield(terminal)
             return true
         }

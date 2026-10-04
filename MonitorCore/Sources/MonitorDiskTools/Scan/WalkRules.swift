@@ -59,30 +59,70 @@ struct WalkRules: Sendable {
     struct Role: Sendable {
         /// Direct children are all kept as nodes (a `~/Library` subfolder the classifier reads).
         var keepAllChildren = false
-        /// `~/Library/Containers` or `Group Containers`: other apps' data, behind a consent prompt.
-        var holdsAppContainers = false
     }
+
+    /// Locations (relative to home) whose first open raises a macOS consent prompt or is sensitive category data
+    /// (Mail, Messages, Safari, Calendars…). `restrict`: never opened without Full Disk Access. `prompt`: one-time,
+    /// user-meaningful consents (Desktop, Documents, iCloud…), opened only when prompts are allowed.
+    private static let restrictedRules: [[String]] = [
+        ["Library", "Calendars"], ["Library", "Application Support", "AddressBook"], ["Library", "Reminders"],
+        ["Library", "Group Containers", "group.com.apple.reminders"], ["Library", "Mail"], ["Library", "Messages"],
+        ["Library", "Safari"],
+        // The package's size is unknown rather than 0: a restricted leaf.
+        ["Pictures", "Photos Library.photoslibrary"],
+    ]
+    private static let promptRules: [[String]] = [
+        ["Desktop"], ["Documents"], ["Downloads"], ["Library", "Mobile Documents"], ["Library", "CloudStorage"],
+    ]
 
     /// Scan root and home, normalized the same way, as component lists.
     private let rootParts: [String]
-    private let homeLibrary: [String]
+    private let homeParts: [String]
+    private var homeLibrary: [String] { homeParts + ["Library"] }
+    /// Deepest absolute path length a rule can match by equality: deeper entries need no rule lookup.
+    private let maxRuleDepth: Int
 
     init(root: ScanRoot, home: String, markers: MarkerTable = .standard) {
         self.markers = markers
         rootParts = Self.normalized(root.path)
-        homeLibrary = Self.normalized(home) + ["Library"]
+        homeParts = Self.normalized(home)
+        maxRuleDepth = max(homeParts.count + 3, 2)
+    }
+
+    /// True when an entry at this depth below the root could fall under an access rule (cheap pre-test).
+    func mayBeGuarded(depth components: Int) -> Bool { rootParts.count + components <= maxRuleDepth }
+
+    /// True if the directory at `components` below the scan root is, or lies inside, a location the policy keeps
+    /// closed: it must then be recorded as restricted without being opened. Evaluated before the root is acquired,
+    /// before every directory open, and for package traversal. With Full Disk Access nothing is closed (no prompts
+    /// exist then); `promptMode == .never` closes the prompt locations too.
+    func blocks(_ components: [String], access: ScanAccessPolicy) -> Bool {
+        if access.fullDiskAccess { return false }
+        let absolute = rootParts + components
+        for rule in Self.restrictedRules where absolute.starts(with: homeParts + rule) { return true }
+        if access.promptMode == .never {
+            for rule in Self.promptRules where absolute.starts(with: homeParts + rule) { return true }
+            // A volume the user chose (removable, network): `/Volumes/<name>` and everything on it.
+            if absolute.count >= 2, absolute[0] == "Volumes" { return true }
+        }
+        // Other apps' containers; this app's own are always readable.
+        let library = homeLibrary
+        if absolute.count > library.count + 1, absolute.starts(with: library),
+           absolute[library.count] == "Containers" || absolute[library.count] == "Group Containers",
+           !access.isOwnContainer(absolute[library.count + 1]) {
+            return true
+        }
+        return false
     }
 
     /// Role of the directory at `components` below the scan root. Resolved from absolute locations, so a root
     /// inside `~/Library`, or spelled through the `/System/Volumes/Data` alias, behaves like the home scan.
     func role(of components: [String]) -> Role {
-        let depth = rootParts.count + components.count
-        guard depth == homeLibrary.count + 1 else { return Role() }
+        let library = homeLibrary
+        guard rootParts.count + components.count == library.count + 1 else { return Role() }
         let absolute = rootParts + components
-        guard absolute.starts(with: homeLibrary) else { return Role() }
-        let name = absolute[homeLibrary.count]
-        return Role(keepAllChildren: Self.libraryKeepDirs.contains(name),
-                    holdsAppContainers: name == "Containers" || name == "Group Containers")
+        guard absolute.starts(with: library) else { return Role() }
+        return Role(keepAllChildren: Self.libraryKeepDirs.contains(absolute[library.count]))
     }
 
     /// Symlinks resolved when the path exists; the Data volume's firmlink prefix dropped, so `/Users/x` and

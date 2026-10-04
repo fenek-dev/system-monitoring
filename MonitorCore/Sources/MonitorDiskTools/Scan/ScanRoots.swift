@@ -38,27 +38,39 @@ public enum FullDiskAccessProbe {
     }
 }
 
-/// What the scan may touch. Opening another app's container without Full Disk Access raises a consent prompt and
-/// blocks the opening thread until someone answers it (an unattended scan then hangs), so without a *confirmed*
-/// grant those folders become restricted nodes and are never opened.
+/// Whether the scan may trigger macOS consent prompts. A prompt blocks the opening thread until someone answers it,
+/// so an unattended run (CLI, tests) must never allow them.
+public enum PromptMode: Sendable, Equatable {
+    /// GUI app: one-time consents for Desktop, Documents, Downloads, iCloud and chosen volumes may appear.
+    case allow
+    /// Every location that could prompt is recorded as restricted and never opened.
+    case never
+}
+
+/// What the scan may open, as data: path rules (see `WalkRules.blocks`) switched by these fields. Without a
+/// *confirmed* Full Disk Access grant, other apps' containers and sensitive category folders are never opened;
+/// with `promptMode == .never` the prompting locations are closed as well. Closed locations become restricted
+/// nodes (size unknown) instead of being listed.
 public struct ScanAccessPolicy: Sendable, Equatable {
     public var fullDiskAccess: Bool
     /// Container names containing one of these belong to this app and are always readable.
     public var ownBundleMarkers: [String]
+    public var promptMode: PromptMode
 
-    public init(fullDiskAccess: Bool, ownBundleMarkers: [String] = ["dev.warden", "dev.telltale"]) {
+    public init(fullDiskAccess: Bool, ownBundleMarkers: [String] = ["dev.warden", "dev.telltale"],
+                promptMode: PromptMode = .allow) {
         self.fullDiskAccess = fullDiskAccess
         self.ownBundleMarkers = ownBundleMarkers
+        self.promptMode = promptMode
     }
 
     /// Probes now; an inconclusive probe counts as not granted.
-    public static func detect(home: String) -> ScanAccessPolicy {
-        ScanAccessPolicy(fullDiskAccess: FullDiskAccessProbe.status(home: home) == .granted)
+    public static func detect(home: String, promptMode: PromptMode = .allow) -> ScanAccessPolicy {
+        ScanAccessPolicy(fullDiskAccess: FullDiskAccessProbe.status(home: home) == .granted, promptMode: promptMode)
     }
 
-    func isOwnContainer(_ name: [UInt8]) -> Bool {
-        let text = String(decoding: name, as: UTF8.self)
-        return ownBundleMarkers.contains { text.contains($0) }
+    func isOwnContainer(_ name: String) -> Bool {
+        ownBundleMarkers.contains { name.contains($0) }
     }
 }
 

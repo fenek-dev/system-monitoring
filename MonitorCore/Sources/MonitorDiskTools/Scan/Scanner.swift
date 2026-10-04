@@ -51,6 +51,16 @@ public final class Scanner: Sendable {
         let lastEventId = FSEventsGetCurrentEventId()
         // Access policy first, before anything below the root is opened.
         let policy = access ?? .detect(home: home)
+        let rules = WalkRules(root: root, home: home)
+        if rules.blocks([], access: policy) {
+            // The root itself is a closed location (or inside one): not even acquired, reported as an unreadable
+            // root node with no contents.
+            var builder = StorageTreeBuilder(root: root, dev: 0, volumeUUID: nil)
+            builder.setRestricted(0)
+            continuation.yield(.finished(builder.finalize(scanDate: Date(), lastEventId: lastEventId)))
+            continuation.finish()
+            return stream
+        }
         let info: ScanRootInfo
         do {
             info = try lister.rootInfo()
@@ -62,7 +72,7 @@ public final class Scanner: Sendable {
         }
 
         let run = ScanRun(root: root, info: info, lastEventId: lastEventId, lister: lister,
-                          rules: WalkRules(root: root, home: home), access: policy,
+                          rules: rules, access: policy,
                           progressInterval: progressInterval, threads: threads, continuation: continuation)
         current.withLock { previous in
             previous?.fail(.cancelled)
@@ -86,7 +96,8 @@ public final class Scanner: Sendable {
         return stream
     }
 
-    /// Cancels the running scan: its stream ends with `.failed(.cancelled)` once every worker left its listing.
+    /// Cancels the running scan: its stream yields `.failed(.cancelled)` and ends at once. Workers stuck in a syscall
+    /// leave later; their results are dropped.
     public func cancel() {
         current.withLock { $0?.fail(.cancelled) }
     }

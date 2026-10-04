@@ -23,6 +23,7 @@ struct ProbeOptions: Sendable {
     var trimIdle = false
     var benchReplay = false
     var scanThreads: Int?
+    var allowPrompts = false
 
     static let usage = """
     telltale-probe — exercise Telltale sensors, the engine and the store without the app.
@@ -39,8 +40,11 @@ struct ProbeOptions: Sendable {
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
       brightness / --brightness      Extra Dim: DisplayServices availability, built-in display ID, backlight level,
                                      gamma table capacity and size
-      --scan <root> [--threads N]    Storage scanner on a folder (~ = home): entries, nodes, wall time, RSS,
-                                     entries/s, then scan-cache save/load time
+      --scan <root> [--threads N] [--allow-prompts]
+                                     Storage scanner on a folder (~ = home): entries, nodes, restricted nodes, wall
+                                     time, RSS, entries/s, then scan-cache save/load time. Folders that would raise a
+                                     macOS consent prompt (Desktop, Documents, iCloud…) are skipped unless
+                                     --allow-prompts, so unattended runs never hang
 
     options:
       --ticks N (5)  --interval S (1)  --mode background|interactive|overlay
@@ -82,6 +86,7 @@ struct ProbeOptions: Sendable {
             case "--crash-sensor": command = .crash(try sensorID(try value(a)))
             case "brightness", "--brightness": command = .brightness
             case "--scan": command = .scan(try value(a))
+            case "--allow-prompts": o.allowPrompts = true
             case "--threads":
                 guard let n = Int(try value(a)), n > 0 else { throw ParseError(description: "--threads N > 0") }
                 o.scanThreads = n

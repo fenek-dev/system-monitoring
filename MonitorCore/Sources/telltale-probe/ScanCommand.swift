@@ -10,10 +10,10 @@ extension Commands {
         let path = rootArgument == "~" ? home : (rootArgument as NSString).expandingTildeInPath
         let root: ScanRoot = path == home ? .home(home) : .folder(path)
         let threads = o.scanThreads ?? MonitorDiskTools.Scanner.defaultThreadCount()
-        let access = ScanAccessPolicy.detect(home: home)
+        let access = ScanAccessPolicy.detect(home: home, promptMode: o.allowPrompts ? .allow : .never)
         let scanner = MonitorDiskTools.Scanner(lister: BulkLister(rootPath: path), threads: threads, home: home,
                                                access: access)
-        print("scan \(path) with \(threads) threads (FDA confirmed: \(access.fullDiskAccess ? "yes" : "no"))")
+        print("scan \(path) with \(threads) threads (FDA confirmed: \(access.fullDiskAccess ? "yes" : "no"), prompts: \(access.promptMode == .allow ? "allowed" : "never"))")
 
         let t0 = Clock.ns()
         var finished: StorageTree?

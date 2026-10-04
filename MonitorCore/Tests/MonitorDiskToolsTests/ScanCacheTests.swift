@@ -6,7 +6,7 @@ import Testing
 @Suite struct ScanCacheTests {
     private static let uuid = UUID(uuidString: "6F1C2A52-0000-4000-8000-00000000ABCD")!
     private static let otherUUID = UUID(uuidString: "6F1C2A52-0000-4000-8000-00000000DCBA")!
-    /// Fractional seconds: rebasing an overlay compares scan dates for exact equality.
+    /// Fractional seconds: the sidecar's scan identity compares dates for exact equality.
     private static let scanDate = Date(timeIntervalSinceReferenceDate: 780_000_000.123_456_789)
 
     private func tempDirectory() throws -> URL {
@@ -44,7 +44,8 @@ import Testing
         )
     }
 
-    /// Bug: a wrong or torn cache is loaded (any array lost or reordered, scan date rounded, overlay unbound).
+    /// Bug: a wrong or torn cache is loaded: any array lost or reordered after the recompute (sizes, link credits,
+    /// child order, prefix sums), scan date rounded, mutations of the overlay not replayed.
     @Test func roundTripsTreeAndOverlay() throws {
         let cache = ScanCache(directory: try tempDirectory())
         let tree = sampleTree()
@@ -52,6 +53,7 @@ import Testing
         var overlay = StorageTreeOverlay(tree: tree)
         let caches = try #require(tree.lookup(path: "/Users/test/Library/Caches"))
         try overlay.remove(caches, kind: .deleted, in: tree)
+        try overlay.shrink(try #require(tree.lookup(path: "/Users/test/Foo.app")), by: 10, in: tree)
         try cache.saveOverlay(overlay)
 
         let loaded = try #require(cache.load(root: tree.root, volumeUUID: Self.uuid))
@@ -68,7 +70,8 @@ import Testing
         #expect(t.linkGroups == tree.linkGroups)
         #expect(t.linkGroups.first?.privateBytes == 777)
         #expect(try loaded.overlay.isRemoved(caches, in: t))
-        #expect(try loaded.overlay.size(0, in: t) == t.allocBytes[0] - tree.allocBytes[Int(caches)])
+        #expect(try loaded.overlay.size(0, in: t) == overlay.size(0, in: tree))
+        #expect(loaded.overlay.log == overlay.log)
     }
 
     /// Bug: a rescan leaves the previous scan's overlay behind, hiding nodes of the new tree.
@@ -85,8 +88,9 @@ import Testing
     }
 
     enum Corruption: CaseIterable {
-        case otherVolumeInHeader, schemaPlusOne, truncatedMidArray, truncatedInHeader, flippedParent, garbageMagic
-        case parentSmallerThanChildren, leafWithNegativeFirstChild, wrongPrefixSum, duplicateChildOrder, inflatedNodeCount
+        case otherVolumeInHeader, schemaPlusOne, truncatedMidArray, truncatedInHeader, garbageMagic
+        case inflatedNodeCount, parentPastItself, splitChildRun, ownBytesOverflow, linkGroupBytesOverflow
+        case nameLengthsDoNotTile, linkOccurrenceOutOfRange
     }
 
     /// Bug: a cache that belongs elsewhere, predates a layout change, or is torn/corrupt is trusted (or crashes the
@@ -99,6 +103,7 @@ import Testing
         try cache.save(tree)
         let url = cache.treeURL(root: tree.root, volumeUUID: Self.uuid)
         var bytes = [UInt8](try Data(contentsOf: url))
+        let layout = Layout(tree)
         switch corruption {
         case .otherVolumeInHeader:
             // A file under this key whose header names another volume (hash collision / copied file).
@@ -113,22 +118,10 @@ import Testing
             bytes = Array(bytes.prefix(bytes.count / 2))
         case .truncatedInHeader:
             bytes = Array(bytes.prefix(20))
-        case .flippedParent:
-            // The last node's parent index pointing past itself would index out of range in every tree reader.
-            Self.poke(&bytes, tree, .parent, node: tree.nodeCount - 1, value: UInt64(tree.nodeCount + 4))
-        case .parentSmallerThanChildren:
-            Self.poke(&bytes, tree, .allocBytes, node: 0, value: 0)
-        case .leafWithNegativeFirstChild:
-            let leaf = (0 ..< tree.nodeCount).last { tree.childCount[$0] == 0 }!
-            Self.poke(&bytes, tree, .firstChild, node: leaf, value: UInt64(UInt32.max))
-        case .wrongPrefixSum:
-            let root = Int(tree.firstChild[0])
-            Self.poke(&bytes, tree, .childPrefix, node: root, value: tree.childPrefix[root] + 1)
-        case .duplicateChildOrder:
-            let start = Int(tree.firstChild[0])
-            Self.poke(&bytes, tree, .childOrder, node: start + 1, value: UInt64(tree.childOrder[start]))
+        case .garbageMagic:
+            bytes[0] = 0
         case .inflatedNodeCount:
-            let length = Self.headerLength(bytes)
+            let length = layout.headerLength(bytes)
             let header = String(decoding: bytes[16 ..< 16 + length], as: UTF8.self)
             let digits = "\(tree.nodeCount)"
             // Same digit count (the header length field stays valid), different value.
@@ -136,69 +129,167 @@ import Testing
             let bad = header.replacingOccurrences(of: "\"nodeCount\":\(digits)", with: "\"nodeCount\":\(wrong)")
             #expect(bad != header)
             bytes.replaceSubrange(16 ..< 16 + length, with: Array(bad.utf8))
-        case .garbageMagic:
-            bytes[0] = 0
+        case .parentPastItself:
+            layout.poke(&bytes, .parent, index: tree.nodeCount - 1, value: UInt64(tree.nodeCount + 4), bytes)
+        case .splitChildRun:
+            // The last node claims root as parent again: root's children would no longer be one run.
+            layout.poke(&bytes, .parent, index: tree.nodeCount - 1, value: 0, bytes)
+            layout.poke(&bytes, .parent, index: tree.nodeCount - 2, value: 1, bytes)
+        case .ownBytesOverflow:
+            layout.poke(&bytes, .own, index: 1, value: UInt64.max, bytes)
+            layout.poke(&bytes, .own, index: 2, value: UInt64.max, bytes)
+        case .linkGroupBytesOverflow:
+            layout.pokeLink(&bytes, field: .groupBytes, value: UInt64.max)
+        case .nameLengthsDoNotTile:
+            layout.poke(&bytes, .nameLength, index: 0, value: 1 + UInt64(tree.nameLength[0]), bytes)
+        case .linkOccurrenceOutOfRange:
+            layout.pokeLink(&bytes, field: .firstOccurrenceNode, value: UInt64(tree.nodeCount + 9))
         }
         try Data(bytes).write(to: url)
         #expect(cache.load(root: tree.root, volumeUUID: Self.uuid) == nil)
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
-    private static func headerLength(_ out: [UInt8]) -> Int {
-        Int(out[12]) | Int(out[13]) << 8 | Int(out[14]) << 16 | Int(out[15]) << 24
-    }
-
-    /// Encoded sections in file order with their element size.
-    enum Section: CaseIterable {
-        case allocBytes, smallBytes, fileID, mtime, subtreeMaxMtime, addedTime, childPrefix
-        case parent, firstChild, childCount, smallCount, nameOffset, childOrder, markerMask
-
-        var width: Int {
-            switch self {
-            case .allocBytes, .smallBytes, .fileID, .mtime, .subtreeMaxMtime, .addedTime, .childPrefix: 8
-            default: 4
-            }
-        }
-    }
-
-    /// Overwrites element `node` of `section` in the encoded file (sections are 8-byte aligned, in file order).
-    private static func poke(_ bytes: inout [UInt8], _ tree: StorageTree, _ section: Section, node: Int, value: UInt64) {
-        var offset = (16 + headerLength(bytes) + 7) / 8 * 8
-        for s in Section.allCases {
-            if s == section { break }
-            offset += (tree.nodeCount * s.width + 7) / 8 * 8
-        }
-        let at = offset + node * section.width
-        withUnsafeBytes(of: value.littleEndian) { for i in 0 ..< section.width { bytes[at + i] = $0[i] } }
-    }
-
-    /// Bug: a corrupt overlay sidecar naming nodes outside the tree is rebased onto it and crashes the first read.
-    /// It must be discarded (deleted) and replaced by a fresh overlay, leaving the tree cache intact.
-    @Test(arguments: ["original", "restoredParent", "trashRoot", "parallelArrays"])
-    func corruptOverlaySidecarIsDiscarded(field: String) throws {
+    /// Bug (reproduced crash): a stored link credit that disagrees with the node that holds it (credit 20 against
+    /// 10 own bytes) used to trap in the overlay's size math. Nothing derived is stored now, so the tampered file
+    /// rebuilds into a self-consistent tree and the overlay works on it.
+    @Test func tamperedLinkCreditCannotMakeAnInconsistentTree() throws {
         let cache = ScanCache(directory: try tempDirectory())
         let tree = sampleTree()
         try cache.save(tree)
-        var overlay = StorageTreeOverlay(tree: tree)
-        try overlay.remove(try #require(tree.lookup(path: "/Users/test/Foo.app")), kind: .trashed, in: tree)
-        try overlay.restore(RestoredEntry(parent: 0, name: "x", bytes: 5, itemID: 1), originalNode: nil, in: tree)
-        try cache.saveOverlay(overlay)
-        let sidecar = cache.treeURL(root: tree.root, volumeUUID: Self.uuid)
-            .deletingPathExtension().appendingPathExtension("overlay.json")
-        var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: sidecar)) as? [String: Any])
-        let outside = tree.nodeCount + 100
-        switch field {
-        case "original": json["original"] = ["\(outside)": "deleted"]
-        case "restoredParent":
-            json["restored"] = [["parent": outside, "name": "x", "bytes": 5, "itemID": 1]]
-        case "trashRoot": json["trashRoots"] = ["0": outside]
-        default: json["restoredLocations"] = []
+        let url = cache.treeURL(root: tree.root, volumeUUID: Self.uuid)
+        var bytes = [UInt8](try Data(contentsOf: url))
+        Layout(tree).pokeLink(&bytes, field: .groupBytes, value: 20)
+        try Data(bytes).write(to: url)
+
+        let loaded = try #require(cache.load(root: tree.root, volumeUUID: Self.uuid))
+        var overlay = loaded.overlay
+        try overlay.remove(try #require(loaded.tree.lookup(path: "/Users/test/Library")), kind: .deleted, in: loaded.tree)
+        #expect(try overlay.size(0, in: loaded.tree) != nil)
+        #expect(loaded.tree.linkGroups.first?.allocBytes == 20)
+        #expect(loaded.tree.allocBytes[0] == (0 ..< loaded.tree.nodeCount).reduce(0) { sum, i in
+            loaded.tree.parent[i] == 0 && i != 0 ? sum + loaded.tree.allocBytes[i] : sum
+        })
+    }
+
+    /// Where each section of the encoded file starts (format v2: primary data only).
+    struct Layout {
+        enum Section: CaseIterable {
+            case own, fileID, mtime, addedTime, subtreeMaxMtime, parent, smallCount, markerMask, flags, nameLength, names
+
+            func width(_ tree: StorageTree) -> Int {
+                switch self {
+                case .own, .fileID, .mtime, .addedTime, .subtreeMaxMtime: 8
+                case .parent, .smallCount, .markerMask: 4
+                case .flags, .nameLength: 2
+                case .names: 1
+                }
+            }
         }
-        try JSONSerialization.data(withJSONObject: json).write(to: sidecar)
+
+        enum LinkField { case groupBytes, firstOccurrenceNode }
+
+        let tree: StorageTree
+
+        init(_ tree: StorageTree) { self.tree = tree }
+
+        func headerLength(_ out: [UInt8]) -> Int {
+            Int(out[12]) | Int(out[13]) << 8 | Int(out[14]) << 16 | Int(out[15]) << 24
+        }
+
+        private func sectionsStart(_ bytes: [UInt8]) -> Int { (16 + headerLength(bytes) + 7) / 8 * 8 }
+
+        private func count(_ section: Section) -> Int { section == .names ? tree.names.count : tree.nodeCount }
+
+        /// Offset of the first link record: after the names section.
+        private func linkStart(_ bytes: [UInt8]) -> Int {
+            var offset = sectionsStart(bytes)
+            for s in Section.allCases { offset += (count(s) * s.width(tree) + 7) / 8 * 8 }
+            return offset
+        }
+
+        /// Overwrites element `index` of `section`.
+        func poke(_ bytes: inout [UInt8], _ section: Section, index: Int, value: UInt64, _ original: [UInt8]) {
+            var offset = sectionsStart(original)
+            for s in Section.allCases {
+                if s == section { break }
+                offset += (count(s) * s.width(tree) + 7) / 8 * 8
+            }
+            write(&bytes, at: offset + index * section.width(tree), width: section.width(tree), value: value)
+        }
+
+        /// Overwrites a field of link group 0 (one 40-byte record; occurrence records follow the group table).
+        func pokeLink(_ bytes: inout [UInt8], field: LinkField, value: UInt64) {
+            let start = linkStart(bytes)
+            switch field {
+            case .groupBytes: write(&bytes, at: start + 16, width: 8, value: value)
+            case .firstOccurrenceNode:
+                write(&bytes, at: start + tree.linkGroups.count * 40, width: 4, value: value)
+            }
+        }
+
+        private func write(_ bytes: inout [UInt8], at: Int, width: Int, value: UInt64) {
+            withUnsafeBytes(of: value.littleEndian) { for i in 0 ..< width { bytes[at + i] = $0[i] } }
+        }
+    }
+
+    // MARK: Sidecar (mutation log)
+
+    private func sidecarURL(_ cache: ScanCache, _ tree: StorageTree) -> URL {
+        cache.treeURL(root: tree.root, volumeUUID: Self.uuid).deletingPathExtension().appendingPathExtension("overlay.json")
+    }
+
+    private func writeSidecar(_ url: URL, scan: StorageTreeOverlay.ScanIdentity, log: [StorageTreeOverlay.Mutation]) throws {
+        struct Payload: Codable {
+            var scan: StorageTreeOverlay.ScanIdentity
+            var log: [StorageTreeOverlay.Mutation]
+        }
+        try JSONEncoder().encode(Payload(scan: scan, log: log)).write(to: url)
+    }
+
+    /// Bug: a sidecar that decodes fine but means something impossible for this tree (a node that does not exist,
+    /// another scan's identity) is applied, or crashes the replay. Each payload is well-formed JSON of the real
+    /// format; the load must discard it, delete it and hand back a fresh overlay, leaving the tree cache alone.
+    @Test(arguments: ["removeOutsideTree", "shrinkOutsideTree", "restoreParentOutsideTree", "restoreOriginalOutsideTree",
+                      "negativeNode", "otherScanIdentity"])
+    func semanticallyWrongSidecarIsDiscarded(_ kind: String) throws {
+        let cache = ScanCache(directory: try tempDirectory())
+        let tree = sampleTree()
+        try cache.save(tree)
+        let outside = StorageNodeID(tree.nodeCount + 100)
+        var scan = StorageTreeOverlay.ScanIdentity(tree)
+        let log: [StorageTreeOverlay.Mutation]
+        switch kind {
+        case "removeOutsideTree": log = [.remove(outside, .deleted)]
+        case "shrinkOutsideTree": log = [.shrink(outside, 5)]
+        case "restoreParentOutsideTree": log = [.restore(RestoredEntry(parent: outside, name: "x", bytes: 5, itemID: 1), nil)]
+        case "restoreOriginalOutsideTree": log = [.restore(RestoredEntry(parent: 0, name: "x", bytes: 5, itemID: 1), outside)]
+        case "negativeNode": log = [.remove(-1, .trashed)]
+        default:
+            scan.nodeCount += 1
+            log = [.remove(1, .deleted)]
+        }
+        let url = sidecarURL(cache, tree)
+        try writeSidecar(url, scan: scan, log: log)
 
         let loaded = try #require(cache.load(root: tree.root, volumeUUID: Self.uuid))
         #expect(loaded.overlay == StorageTreeOverlay(tree: loaded.tree))
-        #expect(!FileManager.default.fileExists(atPath: sidecar.path))
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// Bug (reproduced crash): a snapshot counter at `Int32.max` (decoded overlay state) trapped on the next trashed
+    /// removal. The counter is checked now: the removal throws instead.
+    @Test func snapshotCounterOverflowThrowsInsteadOfTrapping() throws {
+        let tree = sampleTree()
+        let overlay = StorageTreeOverlay(tree: tree)
+        var json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(overlay)) as? [String: Any])
+        json["nextSnapshot"] = Int(Int32.max)
+        var decoded = try JSONDecoder().decode(StorageTreeOverlay.self, from: JSONSerialization.data(withJSONObject: json))
+            .rebased(onto: tree)
+        #expect(throws: StorageOverlayError.counterOverflow) {
+            try decoded.remove(1, kind: .trashed, in: tree)
+        }
+        try decoded.remove(1, kind: .deleted, in: tree)
     }
 
     @Test func missingFileIsAMissWithoutSideEffects() throws {

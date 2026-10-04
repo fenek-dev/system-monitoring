@@ -9,15 +9,19 @@ public struct ScanCacheError: Error, Equatable, Sendable {
 
 /// On-disk copy of the last complete scan per (volume, root) so the app opens with a tree instead of a rescan.
 ///
-/// File `storage-scan-<fnv1a64(uuid + root path)>.bin`: magic, schema, JSON header (identity, counts), then the
-/// tree's arrays as raw little-endian sections, 8-byte aligned. Written to a temp file and renamed into place; read
-/// through a memory map with every count and length checked against the file size first, and the tree's structural
-/// invariants checked before it is built. Anything off deletes the file and reads as a miss.
+/// File `storage-scan-<fnv1a64(uuid + kind + root path)>.bin`: magic, schema, JSON header (identity, counts), then
+/// the tree's *primary* data as raw little-endian sections: structure (parent per node), per-node own bytes, flags,
+/// ids, times, names, markers, and the hard-link groups with their occurrences. Nothing derived is stored. On load
+/// the tree is rebuilt through `StorageTreeBuilder`, the same path a scan takes, so rollups, link credits, child
+/// order and prefix sums are recomputed and can never disagree with each other; the only checks left are range and
+/// size checks on the primary data (including that no byte sum can overflow). Anything off deletes the file and
+/// reads as a miss. Written to a temp file and renamed into place; read through a memory map.
 ///
-/// The overlay (cleanup changes since the scan) lives beside it as `<same name>.overlay.json`.
+/// The overlay is persisted as its mutation log (`<same name>.overlay.json`) and replayed through the public
+/// overlay API on load, so an overlay's internal state is never decoded from disk.
 public final class ScanCache: Sendable {
-    /// Bump when the layout changes: older files read as a miss.
-    public static let schema: UInt32 = 1
+    /// Bump when the layout changes: older files read as a miss. 2: primary data only, derived data recomputed.
+    public static let schema: UInt32 = 2
 
     private static let magic = Array("TTSCACHE".utf8)
     private static let prefixLength = 16 // magic + schema + header length
@@ -42,18 +46,23 @@ public final class ScanCache: Sendable {
         remove(overlayURL(for: url))
     }
 
+    private struct Sidecar: Codable {
+        var scan: StorageTreeOverlay.ScanIdentity
+        var log: [StorageTreeOverlay.Mutation]
+    }
+
     public func saveOverlay(_ overlay: StorageTreeOverlay) throws(ScanCacheError) {
         let url = overlayURL(for: treeURL(root: overlay.scan.root, volumeUUID: overlay.scan.volumeUUID))
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(overlay).write(to: url, options: .atomic)
+            try JSONEncoder().encode(Sidecar(scan: overlay.scan, log: overlay.log)).write(to: url, options: .atomic)
         } catch {
             throw ScanCacheError("write \(url.lastPathComponent): \(error.localizedDescription)")
         }
     }
 
-    /// The cached tree with its overlay (rebased onto the loaded tree; a fresh one when there is none or it no
-    /// longer matches), or nil if there is no valid cache for this root and volume.
+    /// The cached tree with its overlay (the saved mutations replayed on it; a fresh one when there is none or it
+    /// does not fit), or nil if there is no valid cache for this root and volume.
     public func load(root: ScanRoot, volumeUUID: UUID?) -> (tree: StorageTree, overlay: StorageTreeOverlay)? {
         let url = treeURL(root: root, volumeUUID: volumeUUID)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -92,9 +101,9 @@ public final class ScanCache: Sendable {
         let url = overlayURL(for: treeURL)
         guard FileManager.default.fileExists(atPath: url.path) else { return StorageTreeOverlay(tree: tree) }
         do {
-            let decoded = try JSONDecoder().decode(StorageTreeOverlay.self, from: Data(contentsOf: url))
-            try Self.validate(decoded, nodeCount: tree.nodeCount)
-            return try decoded.rebased(onto: tree)
+            let sidecar = try JSONDecoder().decode(Sidecar.self, from: Data(contentsOf: url))
+            guard sidecar.scan == StorageTreeOverlay.ScanIdentity(tree) else { throw StorageOverlayError.treeMismatch }
+            return try StorageTreeOverlay.replaying(sidecar.log, onto: tree)
         } catch {
             DiskTools.log.error("overlay sidecar \(url.lastPathComponent) rejected: \(String(describing: error))")
             remove(url)
@@ -124,7 +133,7 @@ public final class ScanCache: Sendable {
         var root: ScanRoot
         var volumeUUID: UUID?
         var dev: Int32
-        /// Bit pattern of `scanDate.timeIntervalSinceReferenceDate`: overlay rebasing compares dates for equality.
+        /// Bit pattern of `scanDate.timeIntervalSinceReferenceDate`: sidecar identity compares dates for equality.
         var scanDateBits: UInt64
         var lastEventId: UInt64
         var nodeCount: Int
@@ -157,6 +166,10 @@ public final class ScanCache: Sendable {
     private static let provenanceByCode: [SizeProvenance] = [.exact, .estimate, .unavailable]
 
     private static func encode(_ tree: StorageTree) throws(ScanCacheError) -> Data {
+        let n = tree.nodeCount
+        // A node's stored size is its own: the tree's size includes the group credit that `finalize` adds at each
+        // group's first occurrence, and the rebuild adds it again, so it is taken out here.
+        var credit = [UInt64](repeating: 0, count: n)
         var records: [LinkRecord] = []
         var occurrences: [OccurrenceRecord] = []
         for group in tree.linkGroups {
@@ -173,11 +186,21 @@ public final class ScanCache: Sendable {
                 occurrences.append(OccurrenceRecord(node: occurrence.node, depth: occurrence.depth,
                                                     folded: occurrence.isFolded ? 1 : 0, pad: (0, 0, 0)))
             }
+            if let first = group.occurrences.first {
+                credit[Int(first.node)] = try checkedSum(credit[Int(first.node)], group.allocBytes)
+            }
+        }
+        var own = [UInt64](repeating: 0, count: n)
+        for i in 0 ..< n where !tree.flags[i].contains(.restricted) {
+            let held = tree.flags[i].contains(.directory) ? tree.smallBytes[i] : tree.allocBytes[i]
+            let (rest, underflow) = held.subtractingReportingOverflow(credit[i])
+            guard !underflow else { throw ScanCacheError("node \(i) holds less than its link credit") }
+            own[i] = rest
         }
         let header = Header(
             root: tree.root, volumeUUID: tree.volumeUUID, dev: tree.dev,
             scanDateBits: tree.scanDate.timeIntervalSinceReferenceDate.bitPattern, lastEventId: tree.lastEventId,
-            nodeCount: tree.nodeCount, namesCount: tree.names.count, linkGroupCount: records.count,
+            nodeCount: n, namesCount: tree.names.count, linkGroupCount: records.count,
             occurrenceCount: occurrences.count
         )
         let headerJSON: Data
@@ -188,19 +211,16 @@ public final class ScanCache: Sendable {
         }
 
         var out = Data()
-        out.reserveCapacity(prefixLength + headerJSON.count + tree.nodeCount * 120 + tree.names.count)
+        out.reserveCapacity(prefixLength + headerJSON.count + n * 80 + tree.names.count)
         out.append(contentsOf: magic)
         append(UInt32(schema), to: &out)
         append(UInt32(headerJSON.count), to: &out)
         out.append(headerJSON)
         pad(&out)
         // Wider elements first; every section stays 8-byte aligned.
-        section(tree.allocBytes, &out); section(tree.smallBytes, &out); section(tree.fileID, &out)
-        section(tree.mtime, &out); section(tree.subtreeMaxMtime, &out); section(tree.addedTime, &out)
-        section(tree.childPrefix, &out)
-        section(tree.parent, &out); section(tree.firstChild, &out); section(tree.childCount, &out)
-        section(tree.smallCount, &out); section(tree.nameOffset, &out); section(tree.childOrder, &out)
-        section(tree.markerMask.map(\.rawValue), &out)
+        section(own, &out); section(tree.fileID, &out); section(tree.mtime, &out); section(tree.addedTime, &out)
+        section(tree.subtreeMaxMtime, &out)
+        section(tree.parent, &out); section(tree.smallCount, &out); section(tree.markerMask.map(\.rawValue), &out)
         section(tree.flags.map(\.rawValue), &out); section(tree.nameLength, &out)
         section(tree.names, &out)
         section(records, &out); section(occurrences, &out)
@@ -248,6 +268,12 @@ public final class ScanCache: Sendable {
         }
     }
 
+    private static func checkedSum(_ a: UInt64, _ b: UInt64) throws(ScanCacheError) -> UInt64 {
+        let (sum, overflow) = a.addingReportingOverflow(b)
+        guard !overflow else { throw ScanCacheError("byte sum overflows") }
+        return sum
+    }
+
     private static func decode(_ data: Data, expectedRoot: ScanRoot,
                                expectedVolume: UUID?) throws(ScanCacheError) -> StorageTree {
         guard data.count >= prefixLength, data.prefix(magic.count).elementsEqual(magic) else {
@@ -269,26 +295,21 @@ public final class ScanCache: Sendable {
             throw ScanCacheError("belongs to another root or volume")
         }
         let n = header.nodeCount
-        // 8 + 8 + … bytes per node alone exceed the file if the count lies; reject before allocating.
-        guard n > 0, n <= data.count / 64, header.namesCount >= 0, header.namesCount <= data.count,
+        // Every node costs well over 32 bytes in the file: a count the file cannot hold is rejected before any
+        // allocation sized by it.
+        guard n > 0, n <= Int(Int32.max), n <= data.count / 32, header.namesCount >= 0, header.namesCount <= data.count,
               header.linkGroupCount >= 0, header.occurrenceCount >= 0 else {
             throw ScanCacheError("implausible counts")
         }
 
         var reader = Reader(data: data, offset: (prefixLength + headerLength + 7) / 8 * 8)
-        let allocBytes = try reader.array(UInt64.self, count: n)
-        let smallBytes = try reader.array(UInt64.self, count: n)
+        let own = try reader.array(UInt64.self, count: n)
         let fileID = try reader.array(UInt64.self, count: n)
         let mtime = try reader.array(Int64.self, count: n)
-        let subtreeMaxMtime = try reader.array(Int64.self, count: n)
         let addedTime = try reader.array(Int64.self, count: n)
-        let childPrefix = try reader.array(UInt64.self, count: n)
+        let subtreeMaxMtime = try reader.array(Int64.self, count: n)
         let parent = try reader.array(Int32.self, count: n)
-        let firstChild = try reader.array(Int32.self, count: n)
-        let childCount = try reader.array(Int32.self, count: n)
         let smallCount = try reader.array(UInt32.self, count: n)
-        let nameOffset = try reader.array(UInt32.self, count: n)
-        let childOrder = try reader.array(Int32.self, count: n)
         let markers = try reader.array(UInt32.self, count: n)
         let flags = try reader.array(UInt16.self, count: n)
         let nameLength = try reader.array(UInt16.self, count: n)
@@ -297,120 +318,78 @@ public final class ScanCache: Sendable {
         let occurrenceRecords = try reader.array(OccurrenceRecord.self, count: header.occurrenceCount)
         guard reader.offset == data.count else { throw ScanCacheError("trailing bytes") }
 
-        try validate(Arrays(parent: parent, firstChild: firstChild, childCount: childCount, childOrder: childOrder,
-                            childPrefix: childPrefix, allocBytes: allocBytes, smallBytes: smallBytes, flags: flags,
-                            nameOffset: nameOffset, nameLength: nameLength, namesCount: names.count))
-        let groups = try linkRecords.map { record throws(ScanCacheError) in
+        // Structure: every parent precedes its children, and each parent's children are one run of consecutive ids
+        // (the shape a scan produces); that is all the builder needs, and all it will be given.
+        guard parent[0] == 0 else { throw ScanCacheError("root parent") }
+        var runs: [(parent: Int32, range: Range<Int>)] = []
+        var hasRun = [Bool](repeating: false, count: n)
+        var i = 1
+        while i < n {
+            let p = parent[i]
+            guard p >= 0, Int(p) < i, !hasRun[Int(p)] else { throw ScanCacheError("parent of node \(i)") }
+            hasRun[Int(p)] = true
+            var j = i
+            while j < n, parent[j] == p { j += 1 }
+            runs.append((p, i ..< j))
+            i = j
+        }
+        // Names: the lengths must tile the pool exactly.
+        var nameStart = [Int](repeating: 0, count: n)
+        var cursor = 0
+        for k in 0 ..< n {
+            nameStart[k] = cursor
+            cursor += Int(nameLength[k])
+        }
+        guard cursor == names.count else { throw ScanCacheError("names do not tile the pool") }
+        // Sizes: every rolled-up value is a partial sum of the own bytes and group sizes, so if their total fits no
+        // addition in the rebuild can overflow.
+        var total: UInt64 = 0
+        for value in own { total = try checkedSum(total, value) }
+        for record in linkRecords { total = try checkedSum(total, record.allocBytes) }
+        for record in linkRecords {
             let first = Int(record.firstOccurrence), count = Int(record.occurrenceCount)
             guard first + count <= occurrenceRecords.count else { throw ScanCacheError("link occurrences exceed table") }
-            let code = Int(record.flags >> 2 & 3)
-            guard code < provenanceByCode.count else { throw ScanCacheError("link provenance") }
-            var occurrences: [LinkOccurrence] = []
-            for o in occurrenceRecords[first ..< first + count] {
-                guard o.node >= 0, Int(o.node) < n else { throw ScanCacheError("link occurrence node") }
-                occurrences.append(LinkOccurrence(node: o.node, depth: o.depth, isFolded: o.folded != 0))
-            }
-            // The group's bytes are credited once, at its first occurrence: that node must hold at least that much.
-            if let credited = occurrences.first,
-               !StorageNodeFlags(rawValue: flags[Int(credited.node)]).contains(.restricted),
-               allocBytes[Int(credited.node)] < record.allocBytes {
-                throw ScanCacheError("link credit missing at its first occurrence")
-            }
-            return HardLinkGroup(
-                identity: FileIdentity(dev: record.dev, ino: record.ino, isDirectory: record.flags & 1 != 0),
-                linkCount: record.linkCount, allocBytes: record.allocBytes,
-                privateBytes: record.flags & 2 != 0 ? record.privateBytes : nil,
-                provenance: provenanceByCode[code], occurrences: occurrences
-            )
+            guard Int(record.flags >> 2 & 3) < provenanceByCode.count else { throw ScanCacheError("link provenance") }
         }
-        return StorageTree(
-            root: header.root, volumeUUID: header.volumeUUID, dev: header.dev,
+        for occurrence in occurrenceRecords where occurrence.node < 0 || Int(occurrence.node) >= n {
+            throw ScanCacheError("link occurrence node")
+        }
+
+        var builder = StorageTreeBuilder(root: header.root, dev: header.dev, volumeUUID: header.volumeUUID,
+                                         rootFileID: fileID[0], rootMtime: mtime[0])
+        for run in runs {
+            let children = run.range.map { k in
+                let nodeFlags = StorageNodeFlags(rawValue: flags[k])
+                return NodeRecord(name: Array(names[nameStart[k] ..< nameStart[k] + Int(nameLength[k])]),
+                                  flags: nodeFlags, allocBytes: nodeFlags.contains(.directory) ? 0 : own[k],
+                                  fileID: fileID[k], mtime: mtime[k], addedTime: addedTime[k])
+            }
+            builder.appendChildren(of: run.parent, children)
+        }
+        for k in 0 ..< n {
+            let nodeFlags = StorageNodeFlags(rawValue: flags[k])
+            if nodeFlags.contains(.directory), own[k] > 0 || smallCount[k] > 0 || subtreeMaxMtime[k] > mtime[k] {
+                // Folded small files: bytes, count, and the newest mtime in this subtree (the one input of
+                // `subtreeMaxMtime` that is not recoverable from other nodes).
+                builder.addSmall(Int32(k), bytes: own[k], count: smallCount[k], maxMtime: subtreeMaxMtime[k])
+            }
+            let extra = k == 0 ? nodeFlags.subtracting(.directory) : []
+            if markers[k] != 0 || !extra.isEmpty {
+                builder.setDirFacts(Int32(k), markers: StorageMarker(rawValue: markers[k]), flags: extra)
+            }
+        }
+        for record in linkRecords {
+            let identity = FileIdentity(dev: record.dev, ino: record.ino, isDirectory: record.flags & 1 != 0)
+            let first = Int(record.firstOccurrence)
+            for occurrence in occurrenceRecords[first ..< first + Int(record.occurrenceCount)] {
+                builder.addLink(identity, linkCount: record.linkCount, bytes: record.allocBytes,
+                                occurrence: occurrence.node,
+                                privateBytes: record.flags & 2 != 0 ? record.privateBytes : nil,
+                                depth: occurrence.depth)
+            }
+        }
+        return builder.finalize(
             scanDate: Date(timeIntervalSinceReferenceDate: Double(bitPattern: header.scanDateBits)),
-            lastEventId: header.lastEventId, parent: parent, firstChild: firstChild, childCount: childCount,
-            allocBytes: allocBytes, smallBytes: smallBytes, smallCount: smallCount, fileID: fileID, mtime: mtime,
-            subtreeMaxMtime: subtreeMaxMtime, addedTime: addedTime, flags: flags.map(StorageNodeFlags.init),
-            markerMask: markers.map(StorageMarker.init), nameOffset: nameOffset, nameLength: nameLength, names: names,
-            childOrder: childOrder, childPrefix: childPrefix, linkGroups: groups
-        )
-    }
-
-    private struct Arrays {
-        var parent: [Int32], firstChild: [Int32], childCount: [Int32], childOrder: [Int32]
-        var childPrefix: [UInt64], allocBytes: [UInt64], smallBytes: [UInt64], flags: [UInt16]
-        var nameOffset: [UInt32], nameLength: [UInt16]
-        var namesCount: Int
-    }
-
-    private static func checkedSum(_ a: UInt64, _ b: UInt64) throws(ScanCacheError) -> UInt64 {
-        let (sum, overflow) = a.addingReportingOverflow(b)
-        guard !overflow else { throw ScanCacheError("byte sum overflows") }
-        return sum
-    }
-
-    /// Everything the tree's readers index or rely on, checked before the tree exists: ranges, ordering, names,
-    /// and the size arithmetic (a directory is its folded bytes plus its children; prefix sums follow the sorted
-    /// order). A corrupt file must fail here, not as a crash or a wrong size later.
-    private static func validate(_ a: Arrays) throws(ScanCacheError) {
-        let n = a.parent.count
-        guard a.parent[0] == 0 else { throw ScanCacheError("root parent") }
-        var childSum = [UInt64](repeating: 0, count: n)
-        for i in 1 ..< n {
-            guard a.parent[i] >= 0, Int(a.parent[i]) < i else { throw ScanCacheError("parent of \(i)") }
-            let p = Int(a.parent[i])
-            childSum[p] = try checkedSum(childSum[p], a.allocBytes[i])
-            // The node must lie inside its parent's child range, or the parent would not list it.
-            let start = Int(a.firstChild[p])
-            guard a.childCount[p] > 0, i >= start, i < start + Int(a.childCount[p]) else {
-                throw ScanCacheError("node \(i) outside its parent's range")
-            }
-        }
-        var inOrder = [Bool](repeating: false, count: n)
-        for i in 0 ..< n {
-            guard Int(a.nameOffset[i]) + Int(a.nameLength[i]) <= a.namesCount else { throw ScanCacheError("name out of pool") }
-            let count = Int(a.childCount[i])
-            let start = Int(a.firstChild[i])
-            guard count >= 0, start >= 0, start <= n else { throw ScanCacheError("child range of node \(i)") }
-            let flags = StorageNodeFlags(rawValue: a.flags[i])
-            if count > 0 {
-                guard start > i, start + count <= n else { throw ScanCacheError("child range of node \(i)") }
-                var running: UInt64 = 0
-                var previous = UInt64.max
-                for k in start ..< start + count {
-                    guard Int(a.parent[k]) == i else { throw ScanCacheError("child \(k) not owned by \(i)") }
-                    let ordered = Int(a.childOrder[k])
-                    guard ordered >= start, ordered < start + count, !inOrder[ordered] else {
-                        throw ScanCacheError("child order of \(i)")
-                    }
-                    inOrder[ordered] = true
-                    let size = a.allocBytes[ordered]
-                    guard size <= previous else { throw ScanCacheError("child order of \(i) not by size") }
-                    previous = size
-                    running = try checkedSum(running, size)
-                    guard a.childPrefix[k] == running else { throw ScanCacheError("prefix sums of \(i)") }
-                }
-            }
-            if flags.contains(.restricted) {
-                guard a.allocBytes[i] == 0 else { throw ScanCacheError("restricted node \(i) has size") }
-            } else if flags.contains(.directory) {
-                guard a.allocBytes[i] == (try checkedSum(a.smallBytes[i], childSum[i])) else {
-                    throw ScanCacheError("size of directory \(i) is not its contents")
-                }
-            }
-        }
-    }
-
-    /// An overlay sidecar is untrusted input too, and `rebased(onto:)` indexes the tree with what it names, so this
-    /// runs first: every node it mentions must exist and its parallel arrays must agree.
-    private static func validate(_ overlay: StorageTreeOverlay, nodeCount n: Int) throws(ScanCacheError) {
-        func inTree(_ node: StorageNodeID) -> Bool { node >= 0 && Int(node) < n }
-        guard overlay.original.keys.allSatisfy(inTree), overlay.recreated.keys.allSatisfy(inTree),
-              overlay.renamed.keys.allSatisfy(inTree), overlay.renamedRecreated.keys.allSatisfy(inTree),
-              overlay.shrunk.keys.allSatisfy(inTree), overlay.trashRoots.values.allSatisfy(inTree),
-              overlay.restored.allSatisfy({ inTree($0.parent) }) else {
-            throw ScanCacheError("overlay names a node outside the tree")
-        }
-        guard overlay.restored.count == overlay.restoredLocations.count else {
-            throw ScanCacheError("overlay restored entries and locations disagree")
-        }
+            lastEventId: header.lastEventId)
     }
 }

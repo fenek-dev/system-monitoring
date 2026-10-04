@@ -211,10 +211,11 @@ func full(_ relative: String) -> String { home + "/" + relative }
         #expect(finishedTree(of: events)?.allocBytes[0] == 2_000_000)
     }
 
-    /// Bug: cancel waits for (or is undone by) workers stuck in a listing: with two workers held inside listings,
-    /// `cancel()` must return at once, the terminal event must wait for them, and nothing they would have queued
-    /// afterwards may be walked. Gates stay closed until after the cancel and one progress tick.
-    @Test func cancelReturnsWhileWorkersAreHeldAndStopsFurtherWork() async throws {
+    /// Bug: cancel waits for workers stuck in a syscall (a consent prompt never answered): with two workers held
+    /// inside listings for the whole test, the stream must still yield `.failed(.cancelled)` and finish, the root
+    /// must be released, and when the workers eventually leave they must not walk anything further or leak a handle.
+    /// The gate is opened only at the end.
+    @Test func cancelCompletesWhileWorkersAreHeldAndStopsFurtherWork() async throws {
         let heldEntered = Gate()
         let freeListed = Gate()
         let hold = Gate()
@@ -236,22 +237,21 @@ func full(_ relative: String) -> String { home + "/" + relative }
         #expect(freeListed.awaitEntry(times: 6))
         scanner.cancel()
 
-        var released = false
-        var terminalBeforeRelease = false
-        var events: [ScanEvent] = []
-        for await event in stream {
-            events.append(event)
-            switch event {
-            case .finished, .failed: if !released { terminalBeforeRelease = true }
-            case .progress: if !released { released = true; hold.open(2) }
-            default: break
-            }
-        }
-        #expect(!terminalBeforeRelease)
+        // Both workers are still held: the stream ends anyway.
+        let events = await drain(stream)
         #expect(failure(of: events) == .cancelled)
+        #expect(lister.rootReleased.load(ordering: .sequentiallyConsistent) == 1)
+
+        hold.open(2)
+        // Workers leave on their own threads: wait (bounded) until every handle they held is closed.
+        let deadline = Date().addingTimeInterval(10)
+        while lister.opened.load(ordering: .sequentiallyConsistent) != lister.closed.load(ordering: .sequentiallyConsistent),
+              Date() < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(lister.opened.load(ordering: .sequentiallyConsistent) == lister.closed.load(ordering: .sequentiallyConsistent))
         let listed = lister.listedPaths.withLock { $0 }
         #expect(!listed.contains("H1/late1") && !listed.contains("H2/late2"))
-        #expect(lister.opened.load(ordering: .sequentiallyConsistent) == lister.closed.load(ordering: .sequentiallyConsistent))
     }
 
     // MARK: Hard links
@@ -397,17 +397,9 @@ func full(_ relative: String) -> String { home + "/" + relative }
         #expect(entered.awaitEntry())
         send.yield("/Volumes/Other")
         send.yield("/Volumes/Backup")
-        // The scan reacts on its own task; the second progress tick (100 ms apart) is the clock that says it has
-        // had both messages to consider before the listing is released.
-        var ticks = 0
-        var events: [ScanEvent] = []
-        for await event in stream {
-            events.append(event)
-            if case .progress = event {
-                ticks += 1
-                if ticks == 2 { proceed.open() }
-            }
-        }
+        // The terminal event does not wait for the worker held in `sub`; it is released only at the end.
+        let events = await drain(stream)
+        proceed.open()
         #expect(failure(of: events) == .volumeRemoved)
     }
 

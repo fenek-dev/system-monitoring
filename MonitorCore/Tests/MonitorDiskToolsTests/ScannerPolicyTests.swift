@@ -47,6 +47,83 @@ private func atomicValue(_ counter: borrowing Atomic<Int>) -> Int { counter.load
         #expect(tree.allocBytes[0] == (granted ? 10_000_000 : 6_000_000))
     }
 
+    private static let modes: [(name: String, policy: ScanAccessPolicy)] = [
+        ("noFDA-allowPrompts", ScanAccessPolicy(fullDiskAccess: false, promptMode: .allow)),
+        ("noFDA-never", ScanAccessPolicy(fullDiskAccess: false, promptMode: .never)),
+        ("FDA", ScanAccessPolicy(fullDiskAccess: true, promptMode: .never)),
+    ]
+
+    /// Path → decision for each mode. Bug: a location that raises a consent prompt (or holds category data) is
+    /// opened, or a location the user consents to once is closed in the GUI.
+    @Test(arguments: [
+        (["Library", "Containers", "com.other.App"], [true, true, false]),
+        (["Library", "Containers", "dev.warden.Own"], [false, false, false]),
+        (["Library", "Group Containers", "group.other"], [true, true, false]),
+        (["Library", "Group Containers", "group.com.apple.reminders"], [true, true, false]),
+        (["Library", "Mail"], [true, true, false]), (["Library", "Messages"], [true, true, false]),
+        (["Library", "Safari"], [true, true, false]), (["Library", "Calendars"], [true, true, false]),
+        (["Library", "Reminders"], [true, true, false]),
+        (["Library", "Application Support", "AddressBook"], [true, true, false]),
+        (["Pictures", "Photos Library.photoslibrary"], [true, true, false]),
+        (["Library", "Mail", "V10", "deep"], [true, true, false]),
+        (["Desktop"], [false, true, false]), (["Documents"], [false, true, false]),
+        (["Downloads"], [false, true, false]), (["Library", "Mobile Documents"], [false, true, false]),
+        (["Library", "CloudStorage"], [false, true, false]), (["Documents", "project"], [false, true, false]),
+        (["Library", "Application Support", "Other"], [false, false, false]), (["Pictures"], [false, false, false]),
+        (["Library", "Caches"], [false, false, false]),
+    ] as [([String], [Bool])])
+    func accessRuleTable(path: [String], blocked: [Bool]) {
+        let rules = WalkRules(root: homeRoot, home: home)
+        for (mode, expected) in zip(Self.modes, blocked) {
+            #expect(rules.blocks(path, access: mode.policy) == expected, "\(path.joined(separator: "/")) in \(mode.name)")
+        }
+    }
+
+    /// Bug: a prompting folder is listed although the run must never prompt, or a restricted-without-opening
+    /// folder is opened. The lister is never asked to open a closed path; allowed ones are opened.
+    @Test(arguments: [0, 1, 2])
+    func closedLocationsAreNeverOpened(modeIndex: Int) async throws {
+        let mode = Self.modes[modeIndex]
+        let dirs = ["Desktop", "Documents", "Downloads", "Library/Mobile Documents", "Library/CloudStorage",
+                    "Library/Mail", "Pictures/Photos Library.photoslibrary", "Projects"]
+        var tree: [Item] = [.dir("Desktop", [.file("f", 1_000_000)]), .dir("Documents", [.file("f", 1_000_000)]),
+                            .dir("Downloads", [.file("f", 1_000_000)]), .dir("Projects", [.file("f", 1_000_000)])]
+        tree.append(.dir("Library", [.dir("Mobile Documents", [.file("f", 1_000_000)]),
+                                     .dir("CloudStorage", [.file("f", 1_000_000)]), .dir("Mail", [.file("f", 1_000_000)])]))
+        tree.append(.dir("Pictures", [.dir("Photos Library.photoslibrary", [.file("f", 1_000_000)])]))
+        let (events, lister) = await run(tree, access: mode.policy)
+        let result = try #require(finishedTree(of: events))
+        let attempts = lister.openAttempts.withLock { $0 }
+        let alwaysClosedWithoutFDA: Set = ["Library/Mail", "Pictures/Photos Library.photoslibrary"]
+        for dir in dirs {
+            let closed = !mode.policy.fullDiskAccess
+                && (alwaysClosedWithoutFDA.contains(dir) || (mode.policy.promptMode == .never && dir != "Projects"))
+            #expect(attempts.contains(dir) == !closed, "\(dir) in \(mode.name)")
+            let node = Int(try #require(result.lookup(path: full(dir))))
+            #expect(result.flags[node].contains(.restricted) == closed, "\(dir) in \(mode.name)")
+        }
+    }
+
+    /// Bug: a scan root that is itself (or inside) a closed location is acquired and listed; it must be reported as
+    /// a restricted root without the lister being touched at all.
+    @Test(arguments: [("/Users/test/Library/Mail/V10", ScanAccessPolicy(fullDiskAccess: false, promptMode: .allow)),
+                      ("/Users/test/Documents", ScanAccessPolicy(fullDiskAccess: false, promptMode: .never)),
+                      ("/Volumes/Backup", ScanAccessPolicy(fullDiskAccess: false, promptMode: .never))])
+    func closedScanRootIsARestrictedLeafWithoutAcquiringIt(rootPath: String, policy: ScanAccessPolicy) async throws {
+        let (events, lister) = await run([.file("f", 2_000_000)], root: .folder(rootPath), access: policy)
+        let result = try #require(finishedTree(of: events))
+        #expect(result.flags[0].contains(.restricted) && result.nodeCount == 1)
+        #expect(atomicValue(lister.rootAcquired) == 0)
+        #expect(lister.openAttempts.withLock { $0 }.isEmpty)
+    }
+
+    /// The same roots are scanned normally when the policy allows them.
+    @Test func allowedPromptRootIsScanned() async throws {
+        let (events, _) = await run([.file("f", 2_000_000)], root: .folder("/Users/test/Documents"),
+                                    access: ScanAccessPolicy(fullDiskAccess: false, promptMode: .allow))
+        #expect(try #require(finishedTree(of: events)).allocBytes[0] == 2_000_000)
+    }
+
     /// Bug: the `~/Library/*` keep rule only worked for a scan rooted at the home folder.
     @Test(arguments: ["/Users/test/Library/Caches", "/System/Volumes/Data/Users/test/Library/Caches"])
     func keepRuleFollowsTheRealLocationOfTheRoot(rootPath: String) async throws {

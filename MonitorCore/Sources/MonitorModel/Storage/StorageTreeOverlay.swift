@@ -20,6 +20,8 @@ public enum StorageOverlayError: Error, Equatable, Sendable {
     /// The overlay was recorded on another tree (a different version, or a different scan for `rebased(onto:)`),
     /// or was decoded and not yet `rebased(onto:)` a tree.
     case treeMismatch
+    /// A counter that numbers Trash snapshots would overflow (decoded state or an absurd number of removals).
+    case counterOverflow
 }
 
 /// Changes after cleaning or undo over an immutable tree, kept as a declarative record of where each node's content
@@ -107,6 +109,42 @@ public struct StorageTreeOverlay: Sendable, Codable, Equatable {
         return copy
     }
 
+    /// One public mutation, as called. The ordered log is all that has to be persisted: replaying it on a fresh
+    /// overlay of the same scan reproduces every other field, so a stored overlay never needs its internals trusted.
+    public enum Mutation: Sendable, Codable, Equatable {
+        case remove(StorageNodeID, RemovalKind)
+        case shrink(StorageNodeID, UInt64)
+        case restore(RestoredEntry, StorageNodeID?)
+    }
+
+    /// Every `remove` / `shrink` / `restore` made on this overlay, in order. Not part of `Codable` state.
+    public private(set) var log: [Mutation] = []
+
+    /// A fresh overlay of `tree` with `log` applied in order, as one batch. Node references are checked first (a
+    /// log is untrusted input when it comes from disk); any error means the log does not fit this tree.
+    public static func replaying(_ log: [Mutation], onto tree: StorageTree) throws(StorageOverlayError) -> StorageTreeOverlay {
+        func inTree(_ node: StorageNodeID) -> Bool { node >= 0 && Int(node) < tree.nodeCount }
+        for mutation in log {
+            switch mutation {
+            case let .remove(node, _), let .shrink(node, _):
+                guard inTree(node) else { throw .treeMismatch }
+            case let .restore(entry, original):
+                guard inTree(entry.parent), original.map(inTree) ?? true else { throw .treeMismatch }
+            }
+        }
+        var overlay = StorageTreeOverlay(tree: tree)
+        try overlay.batch(in: tree) { (overlay: inout StorageTreeOverlay) throws(StorageOverlayError) in
+            for mutation in log {
+                switch mutation {
+                case let .remove(node, kind): try overlay.remove(node, kind: kind, in: tree)
+                case let .shrink(node, bytes): try overlay.shrink(node, by: bytes, in: tree)
+                case let .restore(entry, original): try overlay.restore(entry, originalNode: original, in: tree)
+                }
+            }
+        }
+        return overlay
+    }
+
     public var isEmpty: Bool { original.isEmpty && recreated.isEmpty && restored.isEmpty && shrunk.isEmpty }
 
     // MARK: - Mutations
@@ -115,15 +153,18 @@ public struct StorageTreeOverlay: Sendable, Codable, Equatable {
     public mutating func remove(_ node: StorageNodeID, kind: RemovalKind,
                                 in tree: StorageTree) throws(StorageOverlayError) {
         try check(tree)
+        log.append(.remove(node, kind))
         guard isVisible(node) else { return }
         let target: Location
         switch kind {
         case .deleted:
             target = .deleted
         case .trashed:
+            let (next, overflow) = nextSnapshot.addingReportingOverflow(1)
+            guard !overflow else { throw .counterOverflow }
             target = .trashed(snapshot: nextSnapshot)
             trashRoots[nextSnapshot] = node
-            nextSnapshot += 1
+            nextSnapshot = next
         }
         for d in Self.subtree(of: node, tree) {
             if (original[d] ?? .live) == .live { original[d] = target }
@@ -141,6 +182,7 @@ public struct StorageTreeOverlay: Sendable, Codable, Equatable {
     public mutating func shrink(_ node: StorageNodeID, by bytes: UInt64,
                                 in tree: StorageTree) throws(StorageOverlayError) {
         try check(tree)
+        log.append(.shrink(node, bytes))
         guard isVisible(node), bytes > 0 else { return }
         shrunk[node, default: 0] += UInt128(bytes)
         commit(tree)
@@ -152,6 +194,7 @@ public struct StorageTreeOverlay: Sendable, Codable, Equatable {
     public mutating func restore(_ entry: RestoredEntry, originalNode: StorageNodeID?,
                                  in tree: StorageTree) throws(StorageOverlayError) {
         try check(tree)
+        log.append(.restore(entry, originalNode))
         if let node = originalNode, node != 0, tree.parent[Int(node)] == entry.parent, !isVisible(node),
            let snapshot = trashRoots.filter({ $0.value == node }).keys.max() {
             let source = Location.trashed(snapshot: snapshot)

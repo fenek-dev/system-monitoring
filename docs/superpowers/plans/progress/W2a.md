@@ -80,7 +80,37 @@ Files under `Sources/MonitorDiskTools/`.
 - P3: 18 smoke/fixture expectations from `lstat` + single-object `getattrlist` (flags, added time, mount status); 19 probe prints
   `Scanner.enumeratedEntries` and the restricted-node count.
 
+## Review round 2 (final; P1-1/2/3 redesigned, supersedes the r1 versions of those items)
+- TCC: access policy is data, path rules in `WalkRules.blocks(_:access:)` (home-relative, normalized incl. the Data-volume alias),
+  evaluated before root acquisition (closed root -> `.finished` tree with a restricted root node, lister never touched), at the
+  parent when entries are classified, before every directory open, and for package subdirectories. Restricted without opening
+  (unless FDA confirmed): other apps' `~/Library/Containers/*` and `Group Containers/*` (own = name contains `dev.warden` /
+  `dev.telltale`), Calendars, Application Support/AddressBook, Reminders, Group Containers/group.com.apple.reminders, Mail,
+  Messages, Safari, `~/Pictures/Photos Library.photoslibrary`. Prompt locations (Desktop, Documents, Downloads, Library/Mobile
+  Documents, Library/CloudStorage, `/Volumes/*`) are opened only with `promptMode == .allow`. FDA confirmed = nothing closed.
+- Cancel/unmount/volume failure: `ScanRun.fail` sends the terminal event and finishes the stream immediately; workers stuck in a
+  syscall leave later, own their fds, and their results are dropped at the publication gate. Test: one/two workers gated until the
+  end of the test, stream still ends with `.failed(.cancelled)`; handles close and nothing further is walked after release.
+- Cache schema 2: primary data only (parent, per-node own bytes, flags, ids, times, names, markers, link groups + occurrences with
+  depth); on load the tree is rebuilt through `StorageTreeBuilder` (rollups, link credits, child order, prefix sums recomputed).
+  Remaining checks: header/section sizes, parent order and one child run per parent, names tile the pool, link/occurrence ranges,
+  total of all byte values fits UInt64 (so no rebuild addition can overflow). Break-once: total-overflow check removed -> trap.
+  Reproduced crash (link credit 20 vs own 10): tampered group bytes now rebuild a consistent tree; overlay works on it.
+  Load time rose (recompute): 451k nodes 148 ms; budget is advisory.
+- Sidecar: persists `{scan identity, mutation log}`; load replays via `StorageTreeOverlay.replaying` (one batch); node references
+  are range-checked, any thrown error or identity mismatch discards the sidecar. Tests use well-formed JSON of the real format
+  with impossible content (nodes outside the tree, other scan identity, negative node).
+- Overlay snapshot counter is checked: `remove(.trashed)` throws `StorageOverlayError.counterOverflow` at `Int32.max`.
+- API additions for W3b (signatures of `Scanner(lister:threads:home:access:progressInterval:)` and `ScanCache` unchanged):
+  `ScanAccessPolicy.promptMode: PromptMode (.allow default | .never)` (+ `detect(home:promptMode:)`), `PromptMode`,
+  `StorageTreeOverlay.log` / `.Mutation` / `.replaying(_:onto:)`, `StorageOverlayError.counterOverflow`. telltale-probe: `--scan`
+  uses `.never` unless `--allow-prompts`. A closed scan root yields `.finished` with a one-node restricted tree (do not cache it).
+- Probe (release, default `.never`, no FDA): `--scan ~` entries 3,153,980, nodes 451,335, restricted 1,014, wall 16.4 s,
+  193k entries/s, RSS 254 MB; cache save 17 ms, load 148 ms. (Documents/Desktop/Downloads are skipped, hence fewer entries
+  than r1.) Note: a stale `.build/.../release` made release builds fail on CPrivate symbols; wiping it fixed it (not a code issue).
+
 ## Contract changes
+- `StorageTreeOverlay.swift` (W1 file, approved): `Mutation` log + `replaying`, `counterOverflow`; the log is not part of `Codable`.
 - `MonitorModel/Storage/StorageTreeBuilder.swift` (W1 file, approved by the orchestrator): `addLink(..., depth: Int32? = nil)`; the
   override replaces the node-derived link depth (used for links inside packages, which are folded into the package node but live
   deeper). Default behaviour unchanged.
