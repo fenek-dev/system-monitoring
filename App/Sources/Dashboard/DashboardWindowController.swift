@@ -24,7 +24,10 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
 
     func show(page: DashboardPage? = nil) {
         env.navigation.open(page)
+        let isNew = window == nil
         let w = window ?? makeWindow()
+        // A window's lifetime brackets the engine's memory (spec §3.4): summary load now, release on close.
+        if isNew { Task { [storage = env.runtime.storage] in await storage.windowDidOpen() } }
         if w.isMiniaturized { w.deminiaturize(nil) }
         NSApp.activate()
         w.makeKeyAndOrderFront(nil)
@@ -91,6 +94,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        env.runtime.storage.windowDidClose()
         dialogs?.cancelAll()                                    // pending confirm → cancel (async form → false)
         dialogs = nil
         observers.forEach(NotificationCenter.default.removeObserver)

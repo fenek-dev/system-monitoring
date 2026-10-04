@@ -33,7 +33,8 @@ final class AppEnvironment {
         self.options = options
         dataDirectory = options.dataDirectory ?? Self.defaultDataDirectory()
         try? FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
-        settings = SettingsStore(defaults: SettingsStore.defaults(for: options.dataDirectory))
+        let settings = SettingsStore(defaults: SettingsStore.defaults(for: options.dataDirectory))
+        self.settings = settings
 
         let mode: RuntimeMode = options.mockScenario.map { .mock($0) } ?? .live
         let disabled = options.disabledSensors.union(settings.disabledSensors)
@@ -47,7 +48,9 @@ final class AppEnvironment {
         let canarySuite = options.dataDirectory.map(SettingsStore.suiteName(for:))
         self.canarySuite = canarySuite
         runtime = TelltaleRuntime.make(mode: mode, dataDirectory: dataDirectory, disabledSensors: disabled,
-                                       crashSensor: crash, canarySuite: canarySuite)
+                                       crashSensor: crash, canarySuite: canarySuite,
+                                       storagePlatform: StorageActionsLive.platform(),
+                                       decorateStorageActions: { StorageActionsLive.decorate($0, settings: settings) })
         settings.reenableCrashedSensors = { TelltaleRuntime.reenableCrashedSensors(canarySuite: canarySuite) }
         historyStatus.persistent = runtime.historyPersistent
         Task { [runtime = self.runtime, historyStatus] in
@@ -69,7 +72,8 @@ final class AppEnvironment {
     func context() -> ShellContext {
         ShellContext(live: runtime.live, navigation: navigation, settings: settings, history: runtime.history,
                      processActions: processActions, appCommands: commands,
-                     historyStatus: historyStatus, hotKeyState: hotKeyState)
+                     historyStatus: historyStatus, hotKeyState: hotKeyState,
+                     storage: runtime.storage, storageActions: runtime.storageActions)
     }
 
     static func defaultDataDirectory() -> URL {
