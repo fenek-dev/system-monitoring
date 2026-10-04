@@ -27,4 +27,5 @@ case .frames: await Commands.frames(options)
 case .maintainNow: await Commands.maintainNow(options)
 case .crash(let id): await Commands.crash(id, options)
 case .brightness: Commands.brightness()
+case .scan(let root): await Commands.scan(root, options)
 }

@@ -318,18 +318,26 @@ final class ScanRun: Sendable {
 
     private func startTicker() {
         let ticker = Task.detached(priority: .utility) { [self] in
-            var tick = 0
+            let clock = ContinuousClock()
+            var nextPartial = clock.now + .milliseconds(300)
             while !terminalSent.load(ordering: .acquiring) {
                 do {
                     try await Task.sleep(for: .milliseconds(100))
                 } catch {
                     return
                 }
-                tick += 1
                 if terminalSent.load(ordering: .acquiring) { return }
                 continuation.yield(.progress(progress()))
-                // ~3 Hz: every third progress tick.
-                if tick % 3 == 0 { continuation.yield(.partial(builder.withLock { $0.snapshot() })) }
+                // ~3 Hz, but a snapshot sorts every node, so it backs off to keep its share of the scan's
+                // wall time near a fifth on huge trees.
+                if clock.now >= nextPartial {
+                    let started = clock.now
+                    // Copy the arrays' references under the lock, sort outside it: workers only wait for the
+                    // reference copy (they pay one copy-on-write per array afterwards).
+                    let frozen = builder.withLock { $0 }
+                    continuation.yield(.partial(frozen.snapshot()))
+                    nextPartial = clock.now + max(.milliseconds(300), (clock.now - started) * 4)
+                }
             }
         }
         onFinish { ticker.cancel() }

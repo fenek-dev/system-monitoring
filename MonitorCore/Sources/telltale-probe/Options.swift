@@ -4,7 +4,7 @@ import MonitorModel
 /// Command line of `telltale-probe` (W7 T2). One command per run; see `ProbeOptions.usage`.
 struct ProbeOptions: Sendable {
     enum Command: Sendable, Equatable {
-        case list, sensor(SensorID), bench, record(String), replay(String), frames, maintainNow, crash(SensorID), brightness, help
+        case list, sensor(SensorID), bench, record(String), replay(String), frames, maintainNow, crash(SensorID), brightness, scan(String), help
     }
 
     var command: Command = .help
@@ -22,6 +22,7 @@ struct ProbeOptions: Sendable {
     var json = false
     var trimIdle = false
     var benchReplay = false
+    var scanThreads: Int?
 
     static let usage = """
     telltale-probe — exercise Telltale sensors, the engine and the store without the app.
@@ -38,6 +39,8 @@ struct ProbeOptions: Sendable {
       --crash-sensor <id>            engine with SensorFactory.crashing(id): aborts in the first prepare()
       brightness / --brightness      Extra Dim: DisplayServices availability, built-in display ID, backlight level,
                                      gamma table capacity and size
+      --scan <root> [--threads N]    Storage scanner on a folder (~ = home): entries, nodes, wall time, RSS,
+                                     entries/s, then scan-cache save/load time
 
     options:
       --ticks N (5)  --interval S (1)  --mode background|interactive|overlay
@@ -78,6 +81,10 @@ struct ProbeOptions: Sendable {
             case "--maintain-now": command = .maintainNow
             case "--crash-sensor": command = .crash(try sensorID(try value(a)))
             case "brightness", "--brightness": command = .brightness
+            case "--scan": command = .scan(try value(a))
+            case "--threads":
+                guard let n = Int(try value(a)), n > 0 else { throw ParseError(description: "--threads N > 0") }
+                o.scanThreads = n
             case "--ticks":
                 guard let n = Int(try value(a)), n > 0 else { throw ParseError(description: "--ticks N > 0") }
                 o.ticks = n
