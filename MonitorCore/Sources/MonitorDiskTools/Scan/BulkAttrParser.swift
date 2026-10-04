@@ -14,6 +14,8 @@ enum BulkAttrParser {
         case truncated
         /// The returned mask names an attribute this parser has no layout for.
         case unsupported(String)
+        /// The name reference is malformed (see `readName`).
+        case badName(String)
     }
 
     private static let cmnName = attrgroup_t(ATTR_CMN_NAME)
@@ -48,10 +50,10 @@ enum BulkAttrParser {
         return list
     }
 
+    /// No `FSOPT_PACK_INVAL_ATTRS`: it pads entries with defaults for attributes the filesystem cannot supply, which
+    /// hides "not returned" behind plausible zeros. The returned mask alone says what is present.
     private static func options(includePrivateSize: Bool) -> UInt64 {
-        var value = UInt64(FSOPT_PACK_INVAL_ATTRS)
-        if includePrivateSize { value |= UInt64(FSOPT_ATTR_CMN_EXTENDED) }
-        return value
+        includePrivateSize ? UInt64(FSOPT_ATTR_CMN_EXTENDED) : 0
     }
 
     /// One raw `getattrlistbulk` call into `buffer`: the number of entries written (0 = directory exhausted). Split
@@ -79,18 +81,20 @@ enum BulkAttrParser {
         }
     }
 
-    /// Attributes of the object behind `fd` (same record layout as one bulk entry).
-    static func fetchOne(fd: Int32, includePrivateSize: Bool) throws(ListError) -> ListedEntry {
+    /// Attributes of `name` inside `parent` (same record layout as one bulk entry), without opening the object and
+    /// without following a final symlink: a dataless file is described, never materialized.
+    static func fetchOne(parent: Int32, name: String, includePrivateSize: Bool) throws(ListError) -> ListedEntry {
         var list = attrList(includePrivateSize: includePrivateSize)
         let size = 4096
         let storage = UnsafeMutableRawBufferPointer.allocate(byteCount: size, alignment: 8)
         defer { storage.deallocate() }
-        guard fgetattrlist(fd, &list, storage.baseAddress, size, UInt32(options(includePrivateSize: includePrivateSize))) == 0
-        else { throw ListError(errno: Darwin.errno, op: "fgetattrlist") }
+        let flags = UInt(FSOPT_NOFOLLOW) | UInt(options(includePrivateSize: includePrivateSize))
+        guard getattrlistat(parent, name, &list, storage.baseAddress, size, flags) == 0
+        else { throw ListError(errno: Darwin.errno, op: "getattrlistat \(name)") }
         do {
             return try parse(UnsafeRawBufferPointer(rebasing: storage[...]), count: 1)[0]
         } catch {
-            throw ListError(errno: EIO, op: "fgetattrlist buffer: \(error)")
+            throw ListError(errno: EIO, op: "getattrlistat buffer: \(error)")
         }
     }
 
@@ -135,17 +139,12 @@ enum BulkAttrParser {
         guard file & ~(fileLinkCount | fileAllocSize) == 0 else { throw .unsupported("file \(file)") }
         guard fork & ~forkPrivateSize == 0 else { throw .unsupported("fork \(fork)") }
 
+        guard common & cmnName != 0 else { throw .badName("no name returned") }
         var result = ListedEntry(name: [], kind: .other)
         if common & cmnError != 0 { result.errorCode = Int32(bitPattern: try r.read(UInt32.self)) }
-        if common & cmnName != 0 {
-            let referenceAt = r.position
-            let nameOffset = Int(try r.read(Int32.self))
-            let nameLength = Int(try r.read(UInt32.self))
-            let start = referenceAt + nameOffset
-            // The stored length counts the terminating NUL.
-            guard nameOffset >= 0, nameLength >= 1, start + nameLength <= entry.count else { throw .truncated }
-            result.name = Array(entry[start ..< start + nameLength - 1])
-        }
+        let referenceAt = r.position
+        let nameOffset = Int(try r.read(Int32.self))
+        let nameLength = Int(try r.read(UInt32.self))
         if common & cmnObjType != 0 {
             switch try r.read(UInt32.self) {
             case objTypeRegular: result.kind = .regular
@@ -162,7 +161,28 @@ enum BulkAttrParser {
         if file & fileLinkCount != 0 { result.linkCount = try r.read(UInt32.self) }
         if file & fileAllocSize != 0 { result.allocBytes = UInt64(clamping: try r.read(Int64.self)) }
         if fork & forkPrivateSize != 0 { result.privateBytes = UInt64(clamping: try r.read(Int64.self)) }
+        result.name = try readName(in: entry, referenceAt: referenceAt, offset: nameOffset, length: nameLength,
+                                   fixedEnd: r.position)
         return result
+    }
+
+    /// The name is variable data after the fixed fields: it must start behind them (never overlap an attribute),
+    /// end inside the entry with a NUL, and be a plausible single path component. A corrupt buffer is rejected here
+    /// rather than becoming a name that escapes the directory (`/`, `..`) or aliases other fields.
+    private static func readName(in entry: UnsafeRawBufferPointer, referenceAt: Int, offset: Int, length: Int,
+                                 fixedEnd: Int) throws(ParseError) -> [UInt8] {
+        let start = referenceAt + offset
+        guard offset >= 0, start >= fixedEnd else { throw .badName("starts inside the fixed fields") }
+        // `length` counts the terminating NUL: at least one name byte plus the NUL, at most NAME_MAX bytes.
+        guard length >= 2, length <= Int(NAME_MAX) + 1 else { throw .badName("length \(length)") }
+        guard start + length <= entry.count else { throw .truncated }
+        guard entry[start + length - 1] == 0 else { throw .badName("not NUL-terminated") }
+        let name = Array(entry[start ..< start + length - 1])
+        guard !name.contains(0), !name.contains(UInt8(ascii: "/")) else { throw .badName("NUL or '/' in name") }
+        guard name != [UInt8(ascii: ".")], name != [UInt8(ascii: "."), UInt8(ascii: ".")] else {
+            throw .badName("dot entry")
+        }
+        return name
     }
 
     private static func readSeconds(_ r: inout Reader) throws(ParseError) -> Int64 {

@@ -19,6 +19,8 @@ final class ScanRun: Sendable {
     let lastEventId: UInt64
     private let lister: any DirectoryLister
     private let rules: WalkRules
+    private let access: ScanAccessPolicy
+    private let progressInterval: Duration
     private let queue: WorkQueue<WalkItem>
     private let builder: Mutex<StorageTreeBuilder>
     private let continuation: AsyncStream<ScanEvent>.Continuation
@@ -26,19 +28,24 @@ final class ScanRun: Sendable {
 
     private let failure = Mutex<ScanFailure?>(nil)
     private let aliveWorkers: Atomic<Int>
-    private let terminalSent = Atomic<Bool>(false)
+    /// True once the terminal event is out: the single gate every publication passes through, so nothing can follow
+    /// the terminal event.
+    private let closed = Mutex<Bool>(false)
     private let files = Atomic<Int>(0)
     private let bytes = Atomic<UInt64>(0)
     private let currentComponents = Mutex<[String]>([])
     private let helpers = Mutex<[@Sendable () -> Void]>([])
 
     init(root: ScanRoot, info: ScanRootInfo, lastEventId: UInt64, lister: any DirectoryLister, rules: WalkRules,
-         threads: Int, continuation: AsyncStream<ScanEvent>.Continuation) {
+         access: ScanAccessPolicy, progressInterval: Duration, threads: Int,
+         continuation: AsyncStream<ScanEvent>.Continuation) {
         self.root = root
         self.info = info
         self.lastEventId = lastEventId
         self.lister = lister
         self.rules = rules
+        self.access = access
+        self.progressInterval = progressInterval
         self.threadCount = threads
         self.queue = WorkQueue(workers: threads)
         self.builder = Mutex(StorageTreeBuilder(root: root, dev: info.dev, volumeUUID: info.volumeUUID,
@@ -46,6 +53,9 @@ final class ScanRun: Sendable {
         self.continuation = continuation
         self.aliveWorkers = Atomic(threads)
     }
+
+    /// Entries the walk has enumerated so far (kept and folded alike).
+    var enumeratedEntries: Int { files.load(ordering: .relaxed) }
 
     // MARK: - Control
 
@@ -75,11 +85,7 @@ final class ScanRun: Sendable {
     // MARK: - Workers
 
     private func worker() {
-        // Workers must never materialize iCloud placeholders by touching them (spikes §8).
-        if setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD,
-                          IOPOL_MATERIALIZE_DATALESS_FILES_OFF) != 0 {
-            DiskTools.log.error("setiopolicy_np(materialize dataless) failed, errno \(Darwin.errno)")
-        }
+        DatalessPolicy.disableForCurrentThread()
         while let item = queue.pop() {
             currentComponents.withLock { $0 = item.components }
             switch item.kind {
@@ -100,31 +106,36 @@ final class ScanRun: Sendable {
         }
     }
 
-    /// Every batch of one directory. Collected locally and committed once: another worker appending between two
-    /// batches would break the arena's contiguous-children rule.
-    private func listAll(_ components: [String]) throws(ListError) -> [ListedEntry] {
+    /// Feeds each batch of one directory to `body`; the handle is closed when this returns.
+    private func forEachBatch(_ components: [String], _ body: ([ListedEntry]) -> Void) throws(ListError) {
         let handle = try lister.open(try relative(components))
-        var all: [ListedEntry] = []
         while !queue.isCancelled {
             let batch = try lister.list(handle)
-            all.append(contentsOf: batch.entries)
+            body(batch.entries)
             if batch.done || batch.entries.isEmpty { break }
         }
-        return all
     }
 
     private func walkDirectory(_ item: WalkItem) {
-        let entries: [ListedEntry]
+        let role = rules.role(of: item.components)
+        // Small files are folded into counters as each batch arrives; only kept records, subdirectories and link
+        // occurrences are retained. Children are committed in one call, since another worker appending between two
+        // batches would break the arena's contiguous-children rule.
+        var prepared = PreparedListing()
         do {
-            entries = try listAll(item.components)
+            try forEachBatch(item.components) { batch in
+                prepared.absorb(batch, role: role, access: access, rules: rules, dev: info.dev)
+            }
         } catch {
             handleFailure(error, item: item)
             return
         }
         if queue.isCancelled { return }
+        if prepared.deviceGone {
+            fail(.volumeRemoved)
+            return
+        }
 
-        let keepAll = rules.keepAllChildrenOf.contains(item.components)
-        let prepared = Self.prepare(entries, keepAll: keepAll, rules: rules, dev: info.dev)
         let first = builder.withLock { builder -> StorageNodeID in
             let range = builder.appendChildren(of: item.node, prepared.records)
             builder.setDirFacts(item.node, markers: prepared.markers, flags: [])
@@ -148,18 +159,48 @@ final class ScanRun: Sendable {
         })
     }
 
-    /// Sizes a package's whole subtree into the package node: no children, no markers, nothing kept.
+    /// Sizes a package's whole subtree into the package node: no children, no markers, nothing kept. If any part
+    /// cannot be read the package is marked restricted (size unknown) rather than shown smaller than it is.
     private func walkPackage(_ item: WalkItem) {
         var total: UInt64 = 0
         var count: UInt32 = 0
         var maxMtime: Int64 = 0
         var links: [PendingLink] = []
         var seen = 0
+        var incomplete = false
+        var deviceGone = false
         var pending = [item.components]
         while let components = pending.popLast(), !queue.isCancelled {
-            let entries: [ListedEntry]
             do {
-                entries = try listAll(components)
+                try forEachBatch(components) { entries in
+                    seen += entries.count
+                    for entry in entries {
+                        if entry.errorCode != 0 {
+                            if VolumeWatch.isVolumeGone(errno: entry.errorCode) { deviceGone = true } else { incomplete = true }
+                            continue
+                        }
+                        switch entry.kind {
+                        case .directory:
+                            let skipped = entry.mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0
+                                || entry.fileFlags & UInt32(SF_DATALESS) != 0
+                            if skipped {
+                                incomplete = true
+                            } else {
+                                pending.append(components + [String(decoding: entry.name, as: UTF8.self)])
+                            }
+                        case .regular, .symlink, .other:
+                            count += 1
+                            maxMtime = max(maxMtime, entry.mtime)
+                            if entry.kind == .regular, entry.linkCount > 1 {
+                                // The package node holds the occurrence, but the link's own depth is below it.
+                                links.append(PendingLink(entry, dev: info.dev, recordIndex: nil,
+                                                         depth: Int32(components.count + 1)))
+                            } else {
+                                total += entry.allocBytes
+                            }
+                        }
+                    }
+                }
             } catch {
                 if components == item.components {
                     handleFailure(error, item: item)
@@ -169,35 +210,26 @@ final class ScanRun: Sendable {
                     fail(.volumeRemoved)
                     return
                 }
+                if error.errno != ENOENT { incomplete = true }
                 DiskTools.log.info("package walk skipped \(components.joined(separator: "/")): \(error.op) errno \(error.errno)")
-                continue
-            }
-            seen += entries.count
-            for entry in entries where entry.errorCode == 0 {
-                switch entry.kind {
-                case .directory:
-                    let skipped = entry.mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0
-                        || entry.fileFlags & UInt32(SF_DATALESS) != 0
-                    if !skipped { pending.append(components + [String(decoding: entry.name, as: UTF8.self)]) }
-                case .regular, .symlink, .other:
-                    count += 1
-                    maxMtime = max(maxMtime, entry.mtime)
-                    if entry.kind == .regular, entry.linkCount > 1 {
-                        links.append(PendingLink(entry, dev: info.dev, recordIndex: nil))
-                    } else {
-                        total += entry.allocBytes
-                    }
-                }
             }
         }
         if queue.isCancelled { return }
+        if deviceGone {
+            fail(.volumeRemoved)
+            return
+        }
         files.add(seen, ordering: .relaxed)
         bytes.add(total, ordering: .relaxed)
         builder.withLock { builder in
+            if incomplete {
+                builder.setRestricted(item.node)
+                return
+            }
             builder.addSmall(item.node, bytes: total, count: count, maxMtime: maxMtime)
             for link in links {
                 builder.addLink(link.identity, linkCount: link.linkCount, bytes: link.bytes, occurrence: item.node,
-                                privateBytes: link.privateBytes)
+                                privateBytes: link.privateBytes, depth: link.depth)
             }
         }
     }
@@ -228,13 +260,15 @@ final class ScanRun: Sendable {
         /// Index into the listing's records for a kept file; nil = folded into the directory.
         var recordIndex: Int?
         var privateBytes: UInt64?
+        var depth: Int32?
 
-        init(_ entry: ListedEntry, dev: Int32, recordIndex: Int?) {
+        init(_ entry: ListedEntry, dev: Int32, recordIndex: Int?, depth: Int32? = nil) {
             identity = FileIdentity(dev: dev, ino: entry.fileID, isDirectory: false)
             linkCount = UInt16(clamping: entry.linkCount)
             bytes = entry.allocBytes
             self.recordIndex = recordIndex
             privateBytes = entry.privateBytes
+            self.depth = depth
         }
     }
 
@@ -244,6 +278,7 @@ final class ScanRun: Sendable {
         var isPackage: Bool
     }
 
+    /// Everything one directory's listing contributes, built batch by batch.
     struct PreparedListing: Sendable {
         var records: [NodeRecord] = []
         var subdirs: [Subdir] = []
@@ -254,88 +289,108 @@ final class ScanRun: Sendable {
         var markers: StorageMarker = []
         var files = 0
         var bytes: UInt64 = 0
-    }
+        /// An entry reported the device gone (`ENXIO`/`EIO`/`ENODEV`): the volume is failing, not just one file.
+        var deviceGone = false
 
-    /// Spec §5.2 / §5.3 keep and fold rules for one directory's entries.
-    static func prepare(_ entries: [ListedEntry], keepAll: Bool, rules: WalkRules, dev: Int32) -> PreparedListing {
-        var out = PreparedListing()
-        out.records.reserveCapacity(entries.count)
-        for entry in entries {
-            out.files += 1
-            if entry.errorCode != 0 {
-                // The kernel could not read this entry; show it as unreadable rather than lose its place.
-                out.records.append(NodeRecord(name: entry.name, flags: [.directory, .restricted], allocBytes: 0,
+        /// Spec §5.2 / §5.3 keep and fold rules for one batch of entries.
+        mutating func absorb(_ entries: [ListedEntry], role: WalkRules.Role, access: ScanAccessPolicy,
+                             rules: WalkRules, dev: Int32) {
+            records.reserveCapacity(records.count + entries.count)
+            for entry in entries {
+                files += 1
+                if entry.errorCode != 0 {
+                    if VolumeWatch.isVolumeGone(errno: entry.errorCode) { deviceGone = true }
+                    // The kernel could not read this entry; show it as unreadable rather than lose its place.
+                    records.append(NodeRecord(name: entry.name, flags: [.directory, .restricted], allocBytes: 0,
                                               fileID: 0, mtime: 0, addedTime: 0))
-                continue
-            }
-            if let marker = rules.markers.marker(for: entry.name) { out.markers.formUnion(marker) }
-            var flags: StorageNodeFlags = []
-            if WalkRules.isHidden(entry.name, fileFlags: entry.fileFlags) { flags.insert(.hidden) }
-            let dataless = entry.fileFlags & UInt32(SF_DATALESS) != 0
-            if dataless { flags.insert(.dataless) }
+                    continue
+                }
+                if let marker = rules.markers.marker(for: entry.name) { markers.formUnion(marker) }
+                var flags: StorageNodeFlags = []
+                if WalkRules.isHidden(entry.name, fileFlags: entry.fileFlags) { flags.insert(.hidden) }
+                let dataless = entry.fileFlags & UInt32(SF_DATALESS) != 0
+                if dataless { flags.insert(.dataless) }
 
-            switch entry.kind {
-            case .directory:
-                flags.insert(.directory)
-                var enter = !dataless
-                if entry.mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0
-                    || WalkRules.skippedSystemDirs.contains(entry.name) {
-                    flags.insert(.skippedMount)
-                    enter = false
-                }
-                if WalkRules.isBuildDir(entry.name) { flags.insert(.buildDir) }
-                let package = enter && WalkRules.isPackage(entry.name)
-                if package { flags.insert(.package) }
-                if enter {
-                    out.subdirs.append(Subdir(recordIndex: out.records.count, name: entry.name, isPackage: package))
-                }
-                out.records.append(NodeRecord(name: entry.name, flags: flags, allocBytes: 0, fileID: entry.fileID,
+                switch entry.kind {
+                case .directory:
+                    flags.insert(.directory)
+                    var enter = !dataless
+                    if entry.mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0
+                        || WalkRules.skippedSystemDirs.contains(entry.name) {
+                        flags.insert(.skippedMount)
+                        enter = false
+                    }
+                    if role.holdsAppContainers, !access.fullDiskAccess, !access.isOwnContainer(entry.name) {
+                        // Opening it would raise a consent prompt and block this worker until answered.
+                        flags.insert(.restricted)
+                        enter = false
+                    }
+                    if WalkRules.isBuildDir(entry.name) { flags.insert(.buildDir) }
+                    let package = enter && WalkRules.isPackage(entry.name)
+                    if package { flags.insert(.package) }
+                    if enter {
+                        subdirs.append(Subdir(recordIndex: records.count, name: entry.name, isPackage: package))
+                    }
+                    records.append(NodeRecord(name: entry.name, flags: flags, allocBytes: 0, fileID: entry.fileID,
                                               mtime: entry.mtime, addedTime: entry.addedTime))
-            case .regular:
-                let isLink = entry.linkCount > 1
-                out.bytes += entry.allocBytes
-                if keepAll || entry.allocBytes >= WalkRules.keptFileThreshold {
-                    if isLink { out.links.append(PendingLink(entry, dev: dev, recordIndex: out.records.count)) }
-                    out.records.append(NodeRecord(name: entry.name, flags: flags,
+                case .regular:
+                    let isLink = entry.linkCount > 1
+                    bytes += entry.allocBytes
+                    if role.keepAllChildren || entry.allocBytes >= WalkRules.keptFileThreshold {
+                        if isLink { links.append(PendingLink(entry, dev: dev, recordIndex: records.count)) }
+                        records.append(NodeRecord(name: entry.name, flags: flags,
                                                   allocBytes: isLink ? 0 : entry.allocBytes, fileID: entry.fileID,
                                                   mtime: entry.mtime, addedTime: entry.addedTime))
-                } else {
-                    out.fold(entry, bytes: isLink ? 0 : entry.allocBytes)
-                    if isLink { out.links.append(PendingLink(entry, dev: dev, recordIndex: nil)) }
-                }
-            case .symlink where keepAll:
-                flags.insert(.symlink)
-                out.records.append(NodeRecord(name: entry.name, flags: flags, allocBytes: entry.allocBytes,
+                    } else {
+                        fold(entry, bytes: isLink ? 0 : entry.allocBytes)
+                        if isLink { links.append(PendingLink(entry, dev: dev, recordIndex: nil)) }
+                    }
+                case .symlink where role.keepAllChildren:
+                    flags.insert(.symlink)
+                    records.append(NodeRecord(name: entry.name, flags: flags, allocBytes: entry.allocBytes,
                                               fileID: entry.fileID, mtime: entry.mtime, addedTime: entry.addedTime))
-            case .symlink, .other:
-                out.fold(entry, bytes: entry.allocBytes)
+                case .symlink, .other:
+                    fold(entry, bytes: entry.allocBytes)
+                }
             }
         }
-        return out
+
+        private mutating func fold(_ entry: ListedEntry, bytes folded: UInt64) {
+            smallBytes += folded
+            smallCount += 1
+            maxMtime = max(maxMtime, entry.mtime)
+        }
     }
 
     // MARK: - Events
+
+    private func publish(_ event: ScanEvent) {
+        closed.withLock { closed in
+            if !closed { continuation.yield(event) }
+        }
+    }
+
+    private var isClosed: Bool { closed.withLock { $0 } }
 
     private func startTicker() {
         let ticker = Task.detached(priority: .utility) { [self] in
             let clock = ContinuousClock()
             var nextPartial = clock.now + .milliseconds(300)
-            while !terminalSent.load(ordering: .acquiring) {
+            while !isClosed {
                 do {
-                    try await Task.sleep(for: .milliseconds(100))
+                    try await Task.sleep(for: progressInterval)
                 } catch {
                     return
                 }
-                if terminalSent.load(ordering: .acquiring) { return }
-                continuation.yield(.progress(progress()))
+                publish(.progress(progress()))
                 // ~3 Hz, but a snapshot sorts every node, so it backs off to keep its share of the scan's
                 // wall time near a fifth on huge trees.
-                if clock.now >= nextPartial {
+                if clock.now >= nextPartial, !isClosed {
                     let started = clock.now
                     // Copy the arrays' references under the lock, sort outside it: workers only wait for the
                     // reference copy (they pay one copy-on-write per array afterwards).
                     let frozen = builder.withLock { $0 }
-                    continuation.yield(.partial(frozen.snapshot()))
+                    publish(.partial(frozen.snapshot()))
                     nextPartial = clock.now + max(.milliseconds(300), (clock.now - started) * 4)
                 }
             }
@@ -350,23 +405,23 @@ final class ScanRun: Sendable {
     }
 
     /// Exactly one terminal event, from the last worker to leave, so no listing is still open when it is sent.
+    /// The root descriptor is released first: a consumer that sees the terminal event may eject the volume.
     private func sendTerminal() {
-        guard !terminalSent.exchange(true, ordering: .acquiringAndReleasing) else { return }
+        let terminal: ScanEvent
         if let reason = failure.withLock({ $0 }) {
-            continuation.yield(.failed(reason))
+            terminal = .failed(reason)
         } else {
-            let tree = builder.withLock { $0 }.finalize(scanDate: Date(), lastEventId: lastEventId)
-            continuation.yield(.finished(tree))
+            terminal = .finished(builder.withLock { $0 }.finalize(scanDate: Date(), lastEventId: lastEventId))
         }
+        lister.release()
+        let first = closed.withLock { closed -> Bool in
+            guard !closed else { return false }
+            closed = true
+            continuation.yield(terminal)
+            return true
+        }
+        guard first else { return }
         for cleanup in helpers.withLock({ $0 }) { cleanup() }
         continuation.finish()
-    }
-}
-
-extension ScanRun.PreparedListing {
-    fileprivate mutating func fold(_ entry: ListedEntry, bytes: UInt64) {
-        smallBytes += bytes
-        smallCount += 1
-        maxMtime = max(maxMtime, entry.mtime)
     }
 }

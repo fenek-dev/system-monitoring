@@ -9,22 +9,56 @@ public enum FullDiskAccessProbe {
     /// `EPERM`/`EACCES` → not granted. A missing folder or any other failure gives no evidence of a denial, so it
     /// reads as granted (the banner would otherwise nag users who never used Safari).
     public static func check(home: String) -> Bool {
+        status(home: home) != .denied
+    }
+
+    public enum Status: Sendable, Equatable {
+        case granted, denied
+        /// The probe folder is missing or failed for another reason: no evidence either way.
+        case inconclusive
+    }
+
+    public static func status(home: String) -> Status {
         let path = home + "/Library/Safari"
         do {
             _ = try FileDescriptor.open(at: AT_FDCWD, path, flags: O_RDONLY | O_DIRECTORY)
-            return true
+            return .granted
         } catch {
             switch error.errno {
             case EPERM, EACCES:
-                return false
+                return .denied
             case ENOENT:
-                DiskTools.log.info("FDA probe: \(path) does not exist; assuming access")
-                return true
+                DiskTools.log.info("FDA probe: \(path) does not exist")
+                return .inconclusive
             default:
-                DiskTools.log.error("FDA probe: open \(path) failed, errno \(error.errno ?? 0); assuming access")
-                return true
+                DiskTools.log.error("FDA probe: open \(path) failed, errno \(error.errno ?? 0)")
+                return .inconclusive
             }
         }
+    }
+}
+
+/// What the scan may touch. Opening another app's container without Full Disk Access raises a consent prompt and
+/// blocks the opening thread until someone answers it (an unattended scan then hangs), so without a *confirmed*
+/// grant those folders become restricted nodes and are never opened.
+public struct ScanAccessPolicy: Sendable, Equatable {
+    public var fullDiskAccess: Bool
+    /// Container names containing one of these belong to this app and are always readable.
+    public var ownBundleMarkers: [String]
+
+    public init(fullDiskAccess: Bool, ownBundleMarkers: [String] = ["dev.warden", "dev.telltale"]) {
+        self.fullDiskAccess = fullDiskAccess
+        self.ownBundleMarkers = ownBundleMarkers
+    }
+
+    /// Probes now; an inconclusive probe counts as not granted.
+    public static func detect(home: String) -> ScanAccessPolicy {
+        ScanAccessPolicy(fullDiskAccess: FullDiskAccessProbe.status(home: home) == .granted)
+    }
+
+    func isOwnContainer(_ name: [UInt8]) -> Bool {
+        let text = String(decoding: name, as: UTF8.self)
+        return ownBundleMarkers.contains { text.contains($0) }
     }
 }
 
@@ -32,7 +66,8 @@ public enum ScanRoots {
     /// Home first, then every mounted volume the user can browse (system plumbing and snapshots left out).
     public static func available() -> [ScanRoot] {
         var roots: [ScanRoot] = [.home(NSHomeDirectory())]
-        for mount in mounts() where !isHidden(flags: mount.flags) {
+        // The Data volume is flagged DONTBROWSE like system plumbing, but it is the user's "Macintosh HD".
+        for mount in mounts() where !isHidden(flags: mount.flags) || mount.path == "/System/Volumes/Data" {
             let name = mount.path == "/System/Volumes/Data"
                 ? "Macintosh HD"
                 : (mount.path.split(separator: "/").last.map(String.init) ?? mount.path)

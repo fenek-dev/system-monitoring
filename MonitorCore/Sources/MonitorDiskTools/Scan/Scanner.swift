@@ -13,12 +13,23 @@ public final class Scanner: Sendable {
     private let home: String
     private let current = Mutex<ScanRun?>(nil)
 
-    /// `home` anchors the `~/Library/*` keep rule.
-    public init(lister: any DirectoryLister, threads: Int, home: String) {
+    private let access: ScanAccessPolicy?
+    private let progressInterval: Duration
+
+    /// `home` anchors the `~/Library/*` rules. `access` nil = probe Full Disk Access at the start of each scan
+    /// (tests inject a policy). A scan blocked inside `openat` (a consent prompt) cannot be interrupted: cancel
+    /// takes effect when that call returns, which is why the policy keeps the walk away from prompting folders.
+    public init(lister: any DirectoryLister, threads: Int, home: String, access: ScanAccessPolicy? = nil,
+                progressInterval: Duration = .milliseconds(100)) {
         self.lister = lister
         self.threads = max(1, threads)
         self.home = home
+        self.access = access
+        self.progressInterval = progressInterval
     }
+
+    /// Entries the current (or last) scan has enumerated, kept and folded alike.
+    public var enumeratedEntries: Int { current.withLock { $0?.enumeratedEntries ?? 0 } }
 
     /// Spikes §6: 16 threads gain nothing over 8; fewer on small machines.
     public static func defaultThreadCount() -> Int {
@@ -38,6 +49,8 @@ public final class Scanner: Sendable {
         let (stream, continuation) = AsyncStream.makeStream(of: ScanEvent.self, bufferingPolicy: .bufferingNewest(16))
         // Taken before the walk, so anything changing during it counts as "changed since scan".
         let lastEventId = FSEventsGetCurrentEventId()
+        // Access policy first, before anything below the root is opened.
+        let policy = access ?? .detect(home: home)
         let info: ScanRootInfo
         do {
             info = try lister.rootInfo()
@@ -49,7 +62,8 @@ public final class Scanner: Sendable {
         }
 
         let run = ScanRun(root: root, info: info, lastEventId: lastEventId, lister: lister,
-                          rules: WalkRules(root: root, home: home), threads: threads, continuation: continuation)
+                          rules: WalkRules(root: root, home: home), access: policy,
+                          progressInterval: progressInterval, threads: threads, continuation: continuation)
         current.withLock { previous in
             previous?.fail(.cancelled)
             previous = run

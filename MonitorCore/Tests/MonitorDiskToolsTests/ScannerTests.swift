@@ -6,10 +6,10 @@ import Synchronization
 import Testing
 @testable import MonitorDiskTools
 
-private typealias Item = InMemoryLister.Item
+typealias Item = InMemoryLister.Item
 
 /// Blocks a lister call until the test opens the gate.
-private final class Gate: Sendable {
+final class Gate: Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
     func wait() { semaphore.wait() }
     func open(_ times: Int = 1) { for _ in 0 ..< times { semaphore.signal() } }
@@ -30,34 +30,35 @@ private struct SplitMix: RandomNumberGenerator {
     }
 }
 
-private func finishedTree(of events: [ScanEvent]) -> StorageTree? {
+func finishedTree(of events: [ScanEvent]) -> StorageTree? {
     if case let .finished(tree) = events.last { return tree }
     return nil
 }
 
-private func failure(of events: [ScanEvent]) -> ScanFailure? {
+func failure(of events: [ScanEvent]) -> ScanFailure? {
     if case let .failed(reason) = events.last { return reason }
     return nil
 }
 
-private func drain(_ stream: AsyncStream<ScanEvent>) async -> [ScanEvent] {
+func drain(_ stream: AsyncStream<ScanEvent>) async -> [ScanEvent] {
     var events: [ScanEvent] = []
     for await event in stream { events.append(event) }
     return events
 }
 
-private let home = "/Users/test"
-private let homeRoot = ScanRoot.home(home)
+let fdaGranted = ScanAccessPolicy(fullDiskAccess: true)
+let home = "/Users/test"
+let homeRoot = ScanRoot.home(home)
 
 private func scan(_ items: [Item], threads: Int = 4, batchSize: Int = 1000,
                   onList: @escaping @Sendable (String) throws(ListError) -> Void = { _ in })
     async -> (events: [ScanEvent], lister: InMemoryLister) {
     let lister = InMemoryLister(items, batchSize: batchSize, onList: onList)
-    let events = await drain(Scanner(lister: lister, threads: threads, home: home).scan(root: homeRoot))
+    let events = await drain(Scanner(lister: lister, threads: threads, home: home, access: fdaGranted).scan(root: homeRoot))
     return (events, lister)
 }
 
-private func full(_ relative: String) -> String { home + "/" + relative }
+func full(_ relative: String) -> String { home + "/" + relative }
 
 @Suite struct ScannerTests {
     // MARK: Random trees
@@ -156,7 +157,7 @@ private func full(_ relative: String) -> String { home + "/" + relative }
                 siblingListed.open()
             }
         }
-        let scanner = Scanner(lister: lister, threads: 2, home: home)
+        let scanner = Scanner(lister: lister, threads: 2, home: home, access: fdaGranted)
         let stream = scanner.scan(root: homeRoot)
         #expect(entered.awaitEntry())
         #expect(siblingListed.awaitEntry())
@@ -193,7 +194,7 @@ private func full(_ relative: String) -> String { home + "/" + relative }
                 blocked.wait()
             }
         }
-        let stream = Scanner(lister: lister, threads: 8, home: home).scan(root: homeRoot)
+        let stream = Scanner(lister: lister, threads: 8, home: home, access: fdaGranted).scan(root: homeRoot)
         #expect(entered.awaitEntry())
         var terminalBeforeRelease = false
         var released = false
@@ -210,24 +211,46 @@ private func full(_ relative: String) -> String { home + "/" + relative }
         #expect(finishedTree(of: events)?.allocBytes[0] == 2_000_000)
     }
 
-    /// Bug: cancelling while every worker is inside a listing hangs the stream or leaks a descriptor.
-    @Test func cancelWithAllWorkersInsideListings() async throws {
-        let entered = Gate()
-        let proceed = Gate()
-        let items = (0 ..< 8).map { Item.dir("d\($0)", [.file("f", 2_000_000)]) }
+    /// Bug: cancel waits for (or is undone by) workers stuck in a listing: with two workers held inside listings,
+    /// `cancel()` must return at once, the terminal event must wait for them, and nothing they would have queued
+    /// afterwards may be walked. Gates stay closed until after the cancel and one progress tick.
+    @Test func cancelReturnsWhileWorkersAreHeldAndStopsFurtherWork() async throws {
+        let heldEntered = Gate()
+        let freeListed = Gate()
+        let hold = Gate()
+        let items = [
+            Item.dir("H1", [.dir("late1", [.file("f", 2_000_000)])]),
+            Item.dir("H2", [.dir("late2", [.file("f", 2_000_000)])]),
+        ] + (0 ..< 6).map { Item.dir("free\($0)", [.file("f", 2_000_000)]) }
         let lister = InMemoryLister(items) { path throws(ListError) in
-            if path.hasPrefix("d") {
-                entered.open()
-                proceed.wait()
+            if path == "H1" || path == "H2" {
+                heldEntered.open()
+                hold.wait()
+            } else if path.hasPrefix("free") {
+                freeListed.open()
             }
         }
-        let scanner = Scanner(lister: lister, threads: 8, home: home)
+        let scanner = Scanner(lister: lister, threads: 8, home: home, access: fdaGranted)
         let stream = scanner.scan(root: homeRoot)
-        #expect(entered.awaitEntry(times: 8))
+        #expect(heldEntered.awaitEntry(times: 2))
+        #expect(freeListed.awaitEntry(times: 6))
         scanner.cancel()
-        proceed.open(8)
-        let events = await drain(stream)
+
+        var released = false
+        var terminalBeforeRelease = false
+        var events: [ScanEvent] = []
+        for await event in stream {
+            events.append(event)
+            switch event {
+            case .finished, .failed: if !released { terminalBeforeRelease = true }
+            case .progress: if !released { released = true; hold.open(2) }
+            default: break
+            }
+        }
+        #expect(!terminalBeforeRelease)
         #expect(failure(of: events) == .cancelled)
+        let listed = lister.listedPaths.withLock { $0 }
+        #expect(!listed.contains("H1/late1") && !listed.contains("H2/late2"))
         #expect(lister.opened.load(ordering: .sequentiallyConsistent) == lister.closed.load(ordering: .sequentiallyConsistent))
     }
 
@@ -369,7 +392,7 @@ private func full(_ relative: String) -> String { home + "/" + relative }
             }
         }
         let (unmounts, send) = AsyncStream.makeStream(of: String.self)
-        let scanner = Scanner(lister: lister, threads: 2, home: home)
+        let scanner = Scanner(lister: lister, threads: 2, home: home, access: fdaGranted)
         let stream = scanner.scan(root: .volume(path: "/Volumes/Backup", name: "Backup"), willUnmount: unmounts)
         #expect(entered.awaitEntry())
         send.yield("/Volumes/Other")

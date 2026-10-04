@@ -29,7 +29,11 @@ Files under `Sources/MonitorDiskTools/`.
   `attributes(of: RelativePath) throws(ListError) -> ListedEntry` (single file, `fgetattrlist`).
   `ListedEntry {name: [UInt8], kind, fileID, mtime, addedTime, fileFlags, mountStatus, linkCount, allocBytes, privateBytes?, errorCode}`.
   `ListError {errno, op}`.
-- `BulkLister(root: TrustedRoot, includePrivateSize: Bool = false)`, `InMemoryLister(_ items, batchSize:, info:, onList:, onOpen:)`
+- Review r1 deltas: `DirectoryLister.release()` (paired with each successful `rootInfo()`; `Scanner` and `PrivateSizer` call it,
+  BulkLister refcounts the root so overlapping uses are safe); `BulkLister(rootPath: String, includePrivateSize:)` (root opened in
+  `rootInfo()`, not at init); `Scanner(lister:threads:home:access: ScanAccessPolicy? = nil, progressInterval:)` +
+  `enumeratedEntries`; `ScanAccessPolicy(fullDiskAccess:ownBundleMarkers:)`, `FullDiskAccessProbe.status(home:)`.
+- `BulkLister(rootPath: String, includePrivateSize: Bool = false)`, `InMemoryLister(_ items, batchSize:, info:, onList:, onOpen:)`
   (counters `opened`/`closed`, `listedPaths`), `FileManagerLister(rootPath:)`.
 - `Scanner(lister: any DirectoryLister, threads: Int, home: String)` (`Scan/Scanner.swift`):
   `scan(root: ScanRoot, willUnmount: AsyncStream<String> = finished) -> AsyncStream<ScanEvent>`, `cancel()`,
@@ -54,11 +58,40 @@ Files under `Sources/MonitorDiskTools/`.
 - Error entries (`ATTR_CMN_ERROR`) become `.directory|.restricted` nodes.
 - Bundle extension table in `Scan/WalkRules.swift` (`packageExtensions`).
 
+## Review round 1 (Codex: 5 P1, 12 P2, 2 P3; all addressed)
+- P1-1 TCC: `ScanAccessPolicy` resolved before the root is opened (`Scanner` probes FDA; inconclusive = not granted). Without a confirmed
+  grant, non-own entries of `~/Library/Containers` and `Group Containers` (own = name contains `dev.warden`/`dev.telltale`) become
+  `.restricted` nodes and are never opened. Test: lister `openAttempts` (`ScannerPolicyTests`, break-once: policy check disabled -> red).
+  Cancel test now holds two workers in listings, cancels, and releases only after a progress tick. A worker blocked in `openat`
+  still cannot be interrupted (cancel/terminal wait for it); the policy exists to avoid reaching those opens.
+- P1-2 cache: full validation before the tree exists (ranges, parent/child ordering, sort order + prefix sums, checked byte sums,
+  directory = folded + children, link credit at first occurrence, header counts). Table test with 11 corruptions
+  (break-once: validation skipped -> `Fatal error: Index out of range`).
+- P1-3 overlay sidecar: validated (node refs, parallel arrays) before `rebased`; bad sidecar deleted, fresh overlay returned.
+  The overlay model was redesigned on feat/storage after my first pass; validation follows the new fields.
+- P1-4 root listing opens "." relative to the root fd per listing (dup shared the cursor). Test `BulkListerRescanTests`
+  (break-once: dup -> second listing empty, red).
+- P1-5 `DatalessPolicy.withMaterializationOff` wraps the private-size pass (restores the previous policy); `BulkLister.attributes`
+  uses `getattrlistat(FSOPT_NOFOLLOW)` on the parent fd (no open of the target); dataless top-level dirs are not entered.
+- P2: 6 no `FSOPT_PACK_INVAL_ATTRS` (fixtures re-recorded); 7 root fd released at terminal (`release()`); 8 single publication gate;
+  9 entry errno volume-gone -> `.volumeRemoved` in both traversals; 10/11 PrivateSizer estimates; 12 `addLink(depth:)`;
+  13 package with unreadable parts -> restricted; 14 `/System/Volumes/Data` kept in `ScanRoots`; 15 keep rule resolved from absolute
+  locations (root inside `~/Library`, Data alias); 16 small files folded per batch; 17 name reference validation (8 corruption cases).
+- P3: 18 smoke/fixture expectations from `lstat` + single-object `getattrlist` (flags, added time, mount status); 19 probe prints
+  `Scanner.enumeratedEntries` and the restricted-node count.
+
+## Contract changes
+- `MonitorModel/Storage/StorageTreeBuilder.swift` (W1 file, approved by the orchestrator): `addLink(..., depth: Int32? = nil)`; the
+  override replaces the node-derived link depth (used for links inside packages, which are folded into the package node but live
+  deeper). Default behaviour unchanged.
+
 ## Requests
 None.
 
 ## Not verified
-- Full `~` scan (TCC prompt blocked it); no run with FDA granted.
+- Round 1 re-run: `telltale-probe --scan ~` (release, no FDA) finished: entries 6,221,820, nodes 930,061, restricted 1,012,
+  wall 31.2 s, 199k entries/s, RSS 497 MB; cache save 51 ms, load 84 ms (930k nodes). No run with FDA granted.
+- Whether `~/Library/Containers` opens prompt for files inside own containers: not observed.
 - Forced-removal path (`.revoke` source, real ENXIO) only through injected errors; revoke source never fired on real hardware.
 - `.volume` scans and `/System/Volumes/Data`; `ScanRoots.available()` output only compiled, not inspected.
 - `FullDiskAccessProbe` positive/negative cases (this terminal has no FDA: result "no").

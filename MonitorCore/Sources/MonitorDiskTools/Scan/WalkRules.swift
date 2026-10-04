@@ -55,20 +55,47 @@ struct WalkRules: Sendable {
     static let keptFileThreshold: UInt64 = 1_000_000
 
     let markers: MarkerTable
-    /// Paths (relative to the scan root) of the directories whose direct children are all kept.
-    let keepAllChildrenOf: Set<[String]>
+    /// What a directory's own location means for its children.
+    struct Role: Sendable {
+        /// Direct children are all kept as nodes (a `~/Library` subfolder the classifier reads).
+        var keepAllChildren = false
+        /// `~/Library/Containers` or `Group Containers`: other apps' data, behind a consent prompt.
+        var holdsAppContainers = false
+    }
+
+    /// Scan root and home, normalized the same way, as component lists.
+    private let rootParts: [String]
+    private let homeLibrary: [String]
 
     init(root: ScanRoot, home: String, markers: MarkerTable = .standard) {
         self.markers = markers
-        let rootParts = root.path.split(separator: "/").map(String.init)
-        let homeParts = home.split(separator: "/").map(String.init)
-        // The rule only applies when the home folder lies inside the scanned root.
-        guard homeParts.starts(with: rootParts) else {
-            keepAllChildrenOf = []
-            return
+        rootParts = Self.normalized(root.path)
+        homeLibrary = Self.normalized(home) + ["Library"]
+    }
+
+    /// Role of the directory at `components` below the scan root. Resolved from absolute locations, so a root
+    /// inside `~/Library`, or spelled through the `/System/Volumes/Data` alias, behaves like the home scan.
+    func role(of components: [String]) -> Role {
+        let depth = rootParts.count + components.count
+        guard depth == homeLibrary.count + 1 else { return Role() }
+        let absolute = rootParts + components
+        guard absolute.starts(with: homeLibrary) else { return Role() }
+        let name = absolute[homeLibrary.count]
+        return Role(keepAllChildren: Self.libraryKeepDirs.contains(name),
+                    holdsAppContainers: name == "Containers" || name == "Group Containers")
+    }
+
+    /// Symlinks resolved when the path exists; the Data volume's firmlink prefix dropped, so `/Users/x` and
+    /// `/System/Volumes/Data/Users/x` compare equal.
+    private static func normalized(_ path: String) -> [String] {
+        var resolved = path
+        if let real = Darwin.realpath(path, nil) {
+            resolved = String(cString: real)
+            free(real)
         }
-        let homeRel = Array(homeParts.dropFirst(rootParts.count))
-        keepAllChildrenOf = Set(Self.libraryKeepDirs.map { homeRel + ["Library", $0] })
+        var parts = resolved.split(separator: "/").map(String.init)
+        if parts.starts(with: ["System", "Volumes", "Data"]) { parts.removeFirst(3) }
+        return parts
     }
 
     static func isPackage(_ name: [UInt8]) -> Bool {

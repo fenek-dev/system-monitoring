@@ -25,7 +25,7 @@ public struct StorageTreeBuilder: Sendable {
     private var nameLength: [UInt16] = []
     private var names: [UInt8] = []
     /// Occurrences are raw nodes here; depth, folding and order are settled in `build`.
-    private var links: [(group: HardLinkGroup, nodes: [StorageNodeID])] = []
+    private var links: [(group: HardLinkGroup, nodes: [(node: StorageNodeID, depth: Int32?)])] = []
     private var linkIndex: [FileIdentity: Int] = [:]
 
     /// Creates the root node (id 0) as a directory named after the root path's last component.
@@ -77,9 +77,11 @@ public struct StorageTreeBuilder: Sendable {
     /// Records one observed link of a hard-linked file; `occurrence` is its file node if kept, else the directory it
     /// was folded into (a directory occurrence counts as folded). The bytes are not part of any
     /// `NodeRecord.allocBytes` / `addSmall` bytes; `finalize` credits them once. `linkCount` keeps the largest value
-    /// seen. `privateBytes`: `ATTR_CMNEXT_PRIVATESIZE` if the listing returned it.
+    /// seen. `privateBytes`: `ATTR_CMNEXT_PRIVATESIZE` if the listing returned it. `depth`: the link's real depth
+    /// when it is deeper than its node implies (a link inside a package, folded into the package node); default =
+    /// the node's depth, +1 for a directory occurrence.
     public mutating func addLink(_ identity: FileIdentity, linkCount: UInt16, bytes: UInt64,
-                                 occurrence: StorageNodeID, privateBytes: UInt64? = nil) {
+                                 occurrence: StorageNodeID, privateBytes: UInt64? = nil, depth: Int32? = nil) {
         let i: Int
         if let existing = linkIndex[identity] {
             i = existing
@@ -94,7 +96,7 @@ public struct StorageTreeBuilder: Sendable {
             links[i].group.privateBytes = privateBytes
             links[i].group.provenance = .exact
         }
-        links[i].nodes.append(occurrence)
+        links[i].nodes.append((occurrence, depth))
     }
 
     /// Rolled-up copy for `.partial` events; the builder keeps filling. Copies every array (advisory cost).
@@ -183,9 +185,10 @@ public struct StorageTreeBuilder: Sendable {
         groups.reserveCapacity(links.count)
         for entry in links {
             var group = entry.group
-            let keyed = entry.nodes.map { node -> (LinkOccurrence, [UInt8]) in
+            let keyed = entry.nodes.map { node, override -> (LinkOccurrence, [UInt8]) in
                 let folded = flags[Int(node)].contains(.directory)
-                let occ = LinkOccurrence(node: node, depth: depth[Int(node)] + (folded ? 1 : 0), isFolded: folded)
+                let occ = LinkOccurrence(node: node, depth: override ?? depth[Int(node)] + (folded ? 1 : 0),
+                                         isFolded: folded)
                 return (occ, pathBytes(node))
             }
             group.occurrences = keyed.sorted { a, b in

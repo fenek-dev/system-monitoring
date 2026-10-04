@@ -92,7 +92,9 @@ public final class ScanCache: Sendable {
         let url = overlayURL(for: treeURL)
         guard FileManager.default.fileExists(atPath: url.path) else { return StorageTreeOverlay(tree: tree) }
         do {
-            return try JSONDecoder().decode(StorageTreeOverlay.self, from: Data(contentsOf: url)).rebased(onto: tree)
+            let decoded = try JSONDecoder().decode(StorageTreeOverlay.self, from: Data(contentsOf: url))
+            try Self.validate(decoded, nodeCount: tree.nodeCount)
+            return try decoded.rebased(onto: tree)
         } catch {
             DiskTools.log.error("overlay sidecar \(url.lastPathComponent) rejected: \(String(describing: error))")
             remove(url)
@@ -295,8 +297,9 @@ public final class ScanCache: Sendable {
         let occurrenceRecords = try reader.array(OccurrenceRecord.self, count: header.occurrenceCount)
         guard reader.offset == data.count else { throw ScanCacheError("trailing bytes") }
 
-        try validate(parent: parent, firstChild: firstChild, childCount: childCount, childOrder: childOrder,
-                     nameOffset: nameOffset, nameLength: nameLength, namesCount: names.count)
+        try validate(Arrays(parent: parent, firstChild: firstChild, childCount: childCount, childOrder: childOrder,
+                            childPrefix: childPrefix, allocBytes: allocBytes, smallBytes: smallBytes, flags: flags,
+                            nameOffset: nameOffset, nameLength: nameLength, namesCount: names.count))
         let groups = try linkRecords.map { record throws(ScanCacheError) in
             let first = Int(record.firstOccurrence), count = Int(record.occurrenceCount)
             guard first + count <= occurrenceRecords.count else { throw ScanCacheError("link occurrences exceed table") }
@@ -306,6 +309,12 @@ public final class ScanCache: Sendable {
             for o in occurrenceRecords[first ..< first + count] {
                 guard o.node >= 0, Int(o.node) < n else { throw ScanCacheError("link occurrence node") }
                 occurrences.append(LinkOccurrence(node: o.node, depth: o.depth, isFolded: o.folded != 0))
+            }
+            // The group's bytes are credited once, at its first occurrence: that node must hold at least that much.
+            if let credited = occurrences.first,
+               !StorageNodeFlags(rawValue: flags[Int(credited.node)]).contains(.restricted),
+               allocBytes[Int(credited.node)] < record.allocBytes {
+                throw ScanCacheError("link credit missing at its first occurrence")
             }
             return HardLinkGroup(
                 identity: FileIdentity(dev: record.dev, ino: record.ino, isDirectory: record.flags & 1 != 0),
@@ -325,26 +334,83 @@ public final class ScanCache: Sendable {
         )
     }
 
-    /// The invariants every `StorageTree` reader relies on (`parent < child`, contiguous child ranges, names
-    /// inside the pool): a corrupt file must fail here, not as an out-of-range index later.
-    private static func validate(parent: [Int32], firstChild: [Int32], childCount: [Int32], childOrder: [Int32],
-                                 nameOffset: [UInt32], nameLength: [UInt16], namesCount: Int) throws(ScanCacheError) {
-        let n = parent.count
-        for i in 0 ..< n {
-            guard Int(nameOffset[i]) + Int(nameLength[i]) <= namesCount else { throw ScanCacheError("name out of pool") }
-            let count = Int(childCount[i])
-            if count > 0 {
-                let start = Int(firstChild[i])
-                guard start > i, start + count <= n else { throw ScanCacheError("child range of node \(i)") }
-                for k in start ..< start + count {
-                    guard Int(parent[k]) == i else { throw ScanCacheError("child \(k) not owned by \(i)") }
-                    let ordered = Int(childOrder[k])
-                    guard ordered >= start, ordered < start + count else { throw ScanCacheError("child order of \(i)") }
-                }
-            } else if count < 0 {
-                throw ScanCacheError("negative child count")
+    private struct Arrays {
+        var parent: [Int32], firstChild: [Int32], childCount: [Int32], childOrder: [Int32]
+        var childPrefix: [UInt64], allocBytes: [UInt64], smallBytes: [UInt64], flags: [UInt16]
+        var nameOffset: [UInt32], nameLength: [UInt16]
+        var namesCount: Int
+    }
+
+    private static func checkedSum(_ a: UInt64, _ b: UInt64) throws(ScanCacheError) -> UInt64 {
+        let (sum, overflow) = a.addingReportingOverflow(b)
+        guard !overflow else { throw ScanCacheError("byte sum overflows") }
+        return sum
+    }
+
+    /// Everything the tree's readers index or rely on, checked before the tree exists: ranges, ordering, names,
+    /// and the size arithmetic (a directory is its folded bytes plus its children; prefix sums follow the sorted
+    /// order). A corrupt file must fail here, not as a crash or a wrong size later.
+    private static func validate(_ a: Arrays) throws(ScanCacheError) {
+        let n = a.parent.count
+        guard a.parent[0] == 0 else { throw ScanCacheError("root parent") }
+        var childSum = [UInt64](repeating: 0, count: n)
+        for i in 1 ..< n {
+            guard a.parent[i] >= 0, Int(a.parent[i]) < i else { throw ScanCacheError("parent of \(i)") }
+            let p = Int(a.parent[i])
+            childSum[p] = try checkedSum(childSum[p], a.allocBytes[i])
+            // The node must lie inside its parent's child range, or the parent would not list it.
+            let start = Int(a.firstChild[p])
+            guard a.childCount[p] > 0, i >= start, i < start + Int(a.childCount[p]) else {
+                throw ScanCacheError("node \(i) outside its parent's range")
             }
-            if i > 0 { guard parent[i] >= 0, Int(parent[i]) < i else { throw ScanCacheError("parent of \(i)") } }
+        }
+        var inOrder = [Bool](repeating: false, count: n)
+        for i in 0 ..< n {
+            guard Int(a.nameOffset[i]) + Int(a.nameLength[i]) <= a.namesCount else { throw ScanCacheError("name out of pool") }
+            let count = Int(a.childCount[i])
+            let start = Int(a.firstChild[i])
+            guard count >= 0, start >= 0, start <= n else { throw ScanCacheError("child range of node \(i)") }
+            let flags = StorageNodeFlags(rawValue: a.flags[i])
+            if count > 0 {
+                guard start > i, start + count <= n else { throw ScanCacheError("child range of node \(i)") }
+                var running: UInt64 = 0
+                var previous = UInt64.max
+                for k in start ..< start + count {
+                    guard Int(a.parent[k]) == i else { throw ScanCacheError("child \(k) not owned by \(i)") }
+                    let ordered = Int(a.childOrder[k])
+                    guard ordered >= start, ordered < start + count, !inOrder[ordered] else {
+                        throw ScanCacheError("child order of \(i)")
+                    }
+                    inOrder[ordered] = true
+                    let size = a.allocBytes[ordered]
+                    guard size <= previous else { throw ScanCacheError("child order of \(i) not by size") }
+                    previous = size
+                    running = try checkedSum(running, size)
+                    guard a.childPrefix[k] == running else { throw ScanCacheError("prefix sums of \(i)") }
+                }
+            }
+            if flags.contains(.restricted) {
+                guard a.allocBytes[i] == 0 else { throw ScanCacheError("restricted node \(i) has size") }
+            } else if flags.contains(.directory) {
+                guard a.allocBytes[i] == (try checkedSum(a.smallBytes[i], childSum[i])) else {
+                    throw ScanCacheError("size of directory \(i) is not its contents")
+                }
+            }
+        }
+    }
+
+    /// An overlay sidecar is untrusted input too, and `rebased(onto:)` indexes the tree with what it names, so this
+    /// runs first: every node it mentions must exist and its parallel arrays must agree.
+    private static func validate(_ overlay: StorageTreeOverlay, nodeCount n: Int) throws(ScanCacheError) {
+        func inTree(_ node: StorageNodeID) -> Bool { node >= 0 && Int(node) < n }
+        guard overlay.original.keys.allSatisfy(inTree), overlay.recreated.keys.allSatisfy(inTree),
+              overlay.renamed.keys.allSatisfy(inTree), overlay.renamedRecreated.keys.allSatisfy(inTree),
+              overlay.shrunk.keys.allSatisfy(inTree), overlay.trashRoots.values.allSatisfy(inTree),
+              overlay.restored.allSatisfy({ inTree($0.parent) }) else {
+            throw ScanCacheError("overlay names a node outside the tree")
+        }
+        guard overlay.restored.count == overlay.restoredLocations.count else {
+            throw ScanCacheError("overlay restored entries and locations disagree")
         }
     }
 }

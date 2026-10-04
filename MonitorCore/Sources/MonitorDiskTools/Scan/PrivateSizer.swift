@@ -24,6 +24,24 @@ public struct PrivateSizer: Sendable {
     /// Items not reached because `isCancelled` turned true come back unchanged.
     public func run(items: [CleanupItem], tree: StorageTree,
                     isCancelled: @Sendable () -> Bool = { false }) -> Output {
+        // The caller's thread is borrowed (a shared queue): placeholders must not be downloaded by anything this
+        // pass touches, and the thread's previous policy comes back afterwards.
+        DatalessPolicy.withMaterializationOff { runPass(items: items, tree: tree, isCancelled: isCancelled) }
+    }
+
+    private func runPass(items: [CleanupItem], tree: StorageTree, isCancelled: @Sendable () -> Bool) -> Output {
+        do {
+            _ = try lister.rootInfo()
+        } catch {
+            DiskTools.log.error("private size pass: root \(rootPath) unavailable: \(error.op) errno \(error.errno)")
+            var unmeasured = items
+            for index in unmeasured.indices {
+                unmeasured[index].privateBytesExcludingLinks = nil
+                unmeasured[index].sizeProvenance = .estimate
+            }
+            return Output(items: unmeasured, linkGroupSizes: [:])
+        }
+        defer { lister.release() }
         var groupByIdentity: [FileIdentity: Int32] = [:]
         for (index, group) in tree.linkGroups.enumerated() { groupByIdentity[group.identity] = Int32(index) }
         var output = Output(items: items, linkGroupSizes: [:])
@@ -59,12 +77,20 @@ public struct PrivateSizer: Sendable {
         var linkSizes: [Int32: LinkGroupSize] = [:]
 
         mutating func add(_ entry: ListedEntry) {
-            if entry.linkCount > 1,
-               let group = groupByIdentity[FileIdentity(dev: dev, ino: entry.fileID, isDirectory: false)] {
-                // Counted through the group (all its links must be inside the deleted set to free it).
+            if entry.linkCount > 1 {
+                guard let group = groupByIdentity[FileIdentity(dev: dev, ino: entry.fileID, isDirectory: false)] else {
+                    // A multi-link inode the scan never grouped: its other links are unknown, so what deleting this
+                    // one frees is unknown too. Count its allocation as an estimate.
+                    bytes += entry.allocBytes
+                    exact = false
+                    return
+                }
+                // Counted through the group (all its links must be inside the deleted set to free it). Less private
+                // than allocated means shared extents, so the figure is only a lower bound.
                 if linkSizes[group] == nil {
+                    let isExact = entry.privateBytes.map { $0 >= entry.allocBytes } ?? false
                     linkSizes[group] = LinkGroupSize(privateBytes: entry.privateBytes,
-                                                     provenance: entry.privateBytes == nil ? .estimate : .exact)
+                                                     provenance: isExact ? .exact : .estimate)
                 }
                 return
             }
@@ -91,7 +117,13 @@ public struct PrivateSizer: Sendable {
         }
         switch top.kind {
         case .regular: walk.add(top)
-        case .directory: walkDirectory(rel, into: &walk, isCancelled: isCancelled)
+        case .directory:
+            // Flags came from `attributes` without opening anything; a placeholder directory is never entered.
+            if top.fileFlags & UInt32(SF_DATALESS) != 0 {
+                walk.unreadable = true
+            } else {
+                walkDirectory(rel, into: &walk, isCancelled: isCancelled)
+            }
         case .symlink, .other: break
         }
     }

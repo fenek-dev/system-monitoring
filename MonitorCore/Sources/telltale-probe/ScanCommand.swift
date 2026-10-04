@@ -9,16 +9,11 @@ extension Commands {
         let home = NSHomeDirectory()
         let path = rootArgument == "~" ? home : (rootArgument as NSString).expandingTildeInPath
         let root: ScanRoot = path == home ? .home(home) : .folder(path)
-        let trusted: TrustedRoot
-        do {
-            trusted = try TrustedRoot(path: path)
-        } catch {
-            print("scan: cannot open \(path): \(error)")
-            exit(1)
-        }
         let threads = o.scanThreads ?? MonitorDiskTools.Scanner.defaultThreadCount()
-        let scanner = MonitorDiskTools.Scanner(lister: BulkLister(root: trusted), threads: threads, home: home)
-        print("scan \(path) with \(threads) threads (FDA: \(FullDiskAccessProbe.check(home: home) ? "yes" : "no"))")
+        let access = ScanAccessPolicy.detect(home: home)
+        let scanner = MonitorDiskTools.Scanner(lister: BulkLister(rootPath: path), threads: threads, home: home,
+                                               access: access)
+        print("scan \(path) with \(threads) threads (FDA confirmed: \(access.fullDiskAccess ? "yes" : "no"))")
 
         let t0 = Clock.ns()
         var finished: StorageTree?
@@ -43,12 +38,12 @@ extension Commands {
             print("scan ended without a result")
             exit(1)
         }
-        // Folded small files are entries too: nodes + folded counts = everything the walk saw.
-        let entries = tree.nodeCount + tree.smallCount.reduce(0) { $0 + Int($1) }
+        let entries = scanner.enumeratedEntries
+        let restricted = tree.flags.filter { $0.contains(.restricted) }.count
         var usage = rusage()
         getrusage(RUSAGE_SELF, &usage)
-        print(String(format: "entries %d  nodes %d  size %.1f GB  wall %.2f s  RSS %.0f MB  %.0f entries/s",
-                     entries, tree.nodeCount, Double(tree.allocBytes[0]) / 1e9, wall,
+        print(String(format: "entries %d  nodes %d  restricted %d  size %.1f GB  wall %.2f s  RSS %.0f MB  %.0f entries/s",
+                     entries, tree.nodeCount, restricted, Double(tree.allocBytes[0]) / 1e9, wall,
                      Double(usage.ru_maxrss) / 1_048_576, Double(entries) / wall))
 
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("probe-scan-cache-\(UUID().uuidString)")

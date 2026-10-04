@@ -35,6 +35,11 @@ public final class InMemoryLister: DirectoryLister {
     public let info: ScanRootInfo
     public let opened = Atomic<Int>(0)
     public let closed = Atomic<Int>(0)
+    /// `rootInfo()` / `release()` calls: equal once a scan or pass has fully ended.
+    public let rootAcquired = Atomic<Int>(0)
+    public let rootReleased = Atomic<Int>(0)
+    /// Every path an open was attempted for (before `onOpen` may refuse it), in call order.
+    public let openAttempts = Mutex<[String]>([])
     /// Every path (components joined by "/", "" = root) whose listing was requested.
     public let listedPaths = Mutex<[String]>([])
 
@@ -60,10 +65,18 @@ public final class InMemoryLister: DirectoryLister {
         self.table = table
     }
 
-    public func rootInfo() throws(ListError) -> ScanRootInfo { info }
+    public func rootInfo() throws(ListError) -> ScanRootInfo {
+        rootAcquired.add(1, ordering: .sequentiallyConsistent)
+        return info
+    }
+
+    public func release() {
+        rootReleased.add(1, ordering: .sequentiallyConsistent)
+    }
 
     public func open(_ rel: RelativePath?) throws(ListError) -> DirectoryHandle {
         let key = rel?.components.joined(separator: "/") ?? ""
+        openAttempts.withLock { $0.append(key) }
         try onOpen(key)
         guard table[key] != nil else { throw ListError(errno: ENOENT, op: "open \(key)") }
         opened.add(1, ordering: .sequentiallyConsistent)

@@ -18,6 +18,8 @@ public final class FileManagerLister: DirectoryLister {
                             volumeUUID: BulkLister.volumeUUID(path: rootPath))
     }
 
+    public func release() {}
+
     public func open(_ rel: RelativePath?) throws(ListError) -> DirectoryHandle {
         let path = absolute(rel)
         var st = stat()

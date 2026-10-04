@@ -86,6 +86,7 @@ import Testing
 
     enum Corruption: CaseIterable {
         case otherVolumeInHeader, schemaPlusOne, truncatedMidArray, truncatedInHeader, flippedParent, garbageMagic
+        case parentSmallerThanChildren, leafWithNegativeFirstChild, wrongPrefixSum, duplicateChildOrder, inflatedNodeCount
     }
 
     /// Bug: a cache that belongs elsewhere, predates a layout change, or is torn/corrupt is trusted (or crashes the
@@ -114,7 +115,27 @@ import Testing
             bytes = Array(bytes.prefix(20))
         case .flippedParent:
             // The last node's parent index pointing past itself would index out of range in every tree reader.
-            bytes = Self.corruptParent(of: bytes, tree: tree, node: tree.nodeCount - 1)
+            Self.poke(&bytes, tree, .parent, node: tree.nodeCount - 1, value: UInt64(tree.nodeCount + 4))
+        case .parentSmallerThanChildren:
+            Self.poke(&bytes, tree, .allocBytes, node: 0, value: 0)
+        case .leafWithNegativeFirstChild:
+            let leaf = (0 ..< tree.nodeCount).last { tree.childCount[$0] == 0 }!
+            Self.poke(&bytes, tree, .firstChild, node: leaf, value: UInt64(UInt32.max))
+        case .wrongPrefixSum:
+            let root = Int(tree.firstChild[0])
+            Self.poke(&bytes, tree, .childPrefix, node: root, value: tree.childPrefix[root] + 1)
+        case .duplicateChildOrder:
+            let start = Int(tree.firstChild[0])
+            Self.poke(&bytes, tree, .childOrder, node: start + 1, value: UInt64(tree.childOrder[start]))
+        case .inflatedNodeCount:
+            let length = Self.headerLength(bytes)
+            let header = String(decoding: bytes[16 ..< 16 + length], as: UTF8.self)
+            let digits = "\(tree.nodeCount)"
+            // Same digit count (the header length field stays valid), different value.
+            let wrong = String(repeating: digits.allSatisfy { $0 == "9" } ? "8" : "9", count: digits.count)
+            let bad = header.replacingOccurrences(of: "\"nodeCount\":\(digits)", with: "\"nodeCount\":\(wrong)")
+            #expect(bad != header)
+            bytes.replaceSubrange(16 ..< 16 + length, with: Array(bad.utf8))
         case .garbageMagic:
             bytes[0] = 0
         }
@@ -123,16 +144,61 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
-    /// Overwrites `parent[node]` in the encoded file: the parent section follows the seven 8-byte arrays.
-    private static func corruptParent(of bytes: [UInt8], tree: StorageTree, node: Int) -> [UInt8] {
-        var out = bytes
-        let headerLength = Int(out[12]) | Int(out[13]) << 8 | Int(out[14]) << 16 | Int(out[15]) << 24
-        let sectionsStart = (16 + headerLength + 7) / 8 * 8
-        let parentStart = sectionsStart + 7 * tree.nodeCount * 8
-        let at = parentStart + node * 4
-        let bad = UInt32(node + 5).littleEndian
-        withUnsafeBytes(of: bad) { for (i, b) in $0.enumerated() { out[at + i] = b } }
-        return out
+    private static func headerLength(_ out: [UInt8]) -> Int {
+        Int(out[12]) | Int(out[13]) << 8 | Int(out[14]) << 16 | Int(out[15]) << 24
+    }
+
+    /// Encoded sections in file order with their element size.
+    enum Section: CaseIterable {
+        case allocBytes, smallBytes, fileID, mtime, subtreeMaxMtime, addedTime, childPrefix
+        case parent, firstChild, childCount, smallCount, nameOffset, childOrder, markerMask
+
+        var width: Int {
+            switch self {
+            case .allocBytes, .smallBytes, .fileID, .mtime, .subtreeMaxMtime, .addedTime, .childPrefix: 8
+            default: 4
+            }
+        }
+    }
+
+    /// Overwrites element `node` of `section` in the encoded file (sections are 8-byte aligned, in file order).
+    private static func poke(_ bytes: inout [UInt8], _ tree: StorageTree, _ section: Section, node: Int, value: UInt64) {
+        var offset = (16 + headerLength(bytes) + 7) / 8 * 8
+        for s in Section.allCases {
+            if s == section { break }
+            offset += (tree.nodeCount * s.width + 7) / 8 * 8
+        }
+        let at = offset + node * section.width
+        withUnsafeBytes(of: value.littleEndian) { for i in 0 ..< section.width { bytes[at + i] = $0[i] } }
+    }
+
+    /// Bug: a corrupt overlay sidecar naming nodes outside the tree is rebased onto it and crashes the first read.
+    /// It must be discarded (deleted) and replaced by a fresh overlay, leaving the tree cache intact.
+    @Test(arguments: ["original", "restoredParent", "trashRoot", "parallelArrays"])
+    func corruptOverlaySidecarIsDiscarded(field: String) throws {
+        let cache = ScanCache(directory: try tempDirectory())
+        let tree = sampleTree()
+        try cache.save(tree)
+        var overlay = StorageTreeOverlay(tree: tree)
+        try overlay.remove(try #require(tree.lookup(path: "/Users/test/Foo.app")), kind: .trashed, in: tree)
+        try overlay.restore(RestoredEntry(parent: 0, name: "x", bytes: 5, itemID: 1), originalNode: nil, in: tree)
+        try cache.saveOverlay(overlay)
+        let sidecar = cache.treeURL(root: tree.root, volumeUUID: Self.uuid)
+            .deletingPathExtension().appendingPathExtension("overlay.json")
+        var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: sidecar)) as? [String: Any])
+        let outside = tree.nodeCount + 100
+        switch field {
+        case "original": json["original"] = ["\(outside)": "deleted"]
+        case "restoredParent":
+            json["restored"] = [["parent": outside, "name": "x", "bytes": 5, "itemID": 1]]
+        case "trashRoot": json["trashRoots"] = ["0": outside]
+        default: json["restoredLocations"] = []
+        }
+        try JSONSerialization.data(withJSONObject: json).write(to: sidecar)
+
+        let loaded = try #require(cache.load(root: tree.root, volumeUUID: Self.uuid))
+        #expect(loaded.overlay == StorageTreeOverlay(tree: loaded.tree))
+        #expect(!FileManager.default.fileExists(atPath: sidecar.path))
     }
 
     @Test func missingFileIsAMissWithoutSideEffects() throws {

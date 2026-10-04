@@ -71,6 +71,49 @@ import Testing
         #expect(output.items[0].sizeProvenance == .exact)
     }
 
+    /// Bug: a multi-link inode the scan never grouped (its other links live outside the scan) is reported as an
+    /// exact private size although deleting this one link frees nothing certain.
+    @Test func ungroupedMultiLinkInodeIsAnEstimate() {
+        let output = run([.dir("Cache", [.file("stray", 50, linkCount: 3, fileID: 77, privateBytes: 50)])],
+                         paths: [item("Cache")])
+        #expect(output.items[0].privateBytesExcludingLinks == 50)
+        #expect(output.items[0].sizeProvenance == .estimate)
+        #expect(output.linkGroupSizes.isEmpty)
+    }
+
+    /// Bug: a link group whose file shares extents (private < allocated) is labelled exact.
+    @Test func sharedLinkGroupIsAnEstimate() {
+        let output = run([.dir("Cache", [.file("shared", 50, linkCount: 2, fileID: 5, privateBytes: 20)])],
+                         paths: [item("Cache", links: [0])])
+        #expect(output.linkGroupSizes == [0: LinkGroupSize(privateBytes: 20, provenance: .estimate)])
+    }
+
+    /// Bug: the pass downloads placeholders. A dataless item directory is never listed (it is judged from flags
+    /// read without opening anything), and everything the pass lists runs with materialization off, restoring the
+    /// borrowed thread's policy afterwards.
+    @Test func datalessItemIsNeverEnteredAndTheThreadPolicyIsOffDuringThePass() {
+        let before = getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD)
+        let seenDuringListing = Mutex<[Int32]>([])
+        let lister = InMemoryLister([
+            .dir("Cloud", fileFlags: UInt32(SF_DATALESS), [.file("remote", 100, privateBytes: 100)]),
+            .dir("Cache", [.file("a", 10, privateBytes: 10)]),
+        ]) { _ throws(ListError) in
+            seenDuringListing.withLock {
+                $0.append(getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD))
+            }
+        }
+        let output = PrivateSizer(lister: lister, rootPath: Self.root)
+            .run(items: [item("Cloud", id: 0), item("Cache", id: 1)], tree: tree())
+        #expect(lister.listedPaths.withLock { $0 } == ["Cache"])
+        #expect(output.items[0].privateBytesExcludingLinks == nil)
+        #expect(output.items[0].sizeProvenance == .estimate)
+        #expect(output.items[1].privateBytesExcludingLinks == 10)
+        #expect(seenDuringListing.withLock { $0 } == [Int32(IOPOL_MATERIALIZE_DATALESS_FILES_OFF)])
+        #expect(getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD) == before)
+        #expect(lister.rootAcquired.load(ordering: .sequentiallyConsistent) == 1)
+        #expect(lister.rootReleased.load(ordering: .sequentiallyConsistent) == 1)
+    }
+
     /// Bug: cancellation is ignored (later items are still walked) or a half-measured item is written back.
     @Test func cancelStopsTheRunAndKeepsHalfMeasuredItemsUnchanged() {
         let cancelled = Mutex(false)

@@ -112,7 +112,11 @@ public struct DirectoryHandle: ~Copyable, Sendable {
 
 /// Source of directory entries below one scan root. Production: `BulkLister`; tests: `InMemoryLister`.
 public protocol DirectoryLister: Sendable {
+    /// Starts a use of the lister (opens the root) and describes the root. Every successful call is paired with a
+    /// `release()` when the scan or pass ends, so no descriptor outlives it (it would hold a volume busy).
     func rootInfo() throws(ListError) -> ScanRootInfo
+    /// Drops what `rootInfo()` acquired; safe to call again, and a later `rootInfo()` re-acquires.
+    func release()
     /// Opens a directory below the root (`nil` = the root itself). Never follows symlinks.
     func open(_ rel: RelativePath?) throws(ListError) -> DirectoryHandle
     /// The next batch of `dir`'s entries; bulk calls continue where the previous one stopped. A batch is bounded
