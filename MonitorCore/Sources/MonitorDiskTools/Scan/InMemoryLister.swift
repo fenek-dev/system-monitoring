@@ -46,8 +46,9 @@ public final class InMemoryLister: DirectoryLister {
     public init(
         _ root: [Item], batchSize: Int = 1000,
         info: ScanRootInfo = ScanRootInfo(dev: 1, fileID: 1, mtime: 0, volumeUUID: nil),
-        onOpen: @escaping @Sendable (String) throws(ListError) -> Void = { _ in },
-        onList: @escaping @Sendable (String) throws(ListError) -> Void = { _ in }
+        // `onList` comes first: an unlabeled trailing closure binds to the first closure parameter.
+        onList: @escaping @Sendable (String) throws(ListError) -> Void = { _ in },
+        onOpen: @escaping @Sendable (String) throws(ListError) -> Void = { _ in }
     ) {
         self.info = info
         self.batchSize = batchSize
