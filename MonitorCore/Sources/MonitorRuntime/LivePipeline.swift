@@ -41,8 +41,12 @@ import os
     nonisolated static let log = Logger(subsystem: "dev.telltale", category: "Runtime")
     nonisolated static let databaseName = "history.sqlite"
 
+    /// nil in the test seams below: no engine, no launch sweep.
+    private let storage: StoragePipeline?
+    var storageActions: StorageActions { storage?.actions ?? .noop }
+
     convenience init(dataDirectory: URL, disabledSensors: Set<SensorID>, crashSensor: SensorID?,
-                     canarySuite: String? = nil) {
+                     canarySuite: String? = nil, storagePlatform: StoragePlatform = .none) {
         let opening = Task.detached(priority: .userInitiated) {
             let (store, persistent) = Self.openStore(in: dataDirectory)
             return OpenedStore(store: store, persistent: persistent)
@@ -50,7 +54,10 @@ import os
         let canary = TelltaleRuntime.canary(suite: canarySuite)
         let engine = SamplingEngine(factory: SensorFactory.live.crashing(crashSensor), disabled: disabledSensors,
                                     canary: canary)
-        self.init(engine: engine, opening: opening, history: DeferredHistory(opening), persistent: nil)
+        // Created here, at app start: the engine's launch tasks (staging sweep, undo prune) must run once per launch.
+        let storage = StoragePipeline(dataDirectory: dataDirectory, platform: storagePlatform)
+        self.init(engine: engine, opening: opening, history: DeferredHistory(opening), persistent: nil,
+                  storage: storage)
     }
 
     /// Test seam: any engine (fixture sensors, short intervals) and store (in-memory).
@@ -67,7 +74,8 @@ import os
 
     /// `persistent` nil: unknown until `opening` completes.
     private init(engine: SamplingEngine, opening: Task<OpenedStore, Never>, history: any HistoryProvider,
-                 persistent: Bool?, live: LiveModel = LiveModel()) {
+                 persistent: Bool?, live: LiveModel = LiveModel(), storage: StoragePipeline? = nil) {
+        self.storage = storage
         self.engine = engine
         self.opening = opening
         self.historyPersistent = persistent ?? true
@@ -161,6 +169,7 @@ import os
     /// Repeated calls (e.g. ⌘Q while a SIGTERM shutdown runs) await the same shutdown.
     func shutdown() async {
         if let shutdownTask { return await shutdownTask.value }
+        storage?.shutdown()
         let started = state == .running
         state = .shutDown
         commands.finish()

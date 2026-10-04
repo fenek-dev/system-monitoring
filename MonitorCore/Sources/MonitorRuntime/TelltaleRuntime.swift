@@ -22,6 +22,7 @@ public enum RuntimeMode: Sendable, Equatable { case live, mock(MockScenario) }
     var historyPersistent: Bool { get }
     /// Returns once the history store has opened (off the MainActor) and `historyPersistent` is final.
     func historyReady() async
+    var storageActions: StorageActions { get }
 }
 
 public extension RuntimePipeline {
@@ -33,22 +34,35 @@ public extension RuntimePipeline {
 /// Façade over one `RuntimePipeline` (`LivePipeline` or `MockPipeline`).
 @MainActor public final class TelltaleRuntime {
     private let pipeline: any RuntimePipeline
+    /// Storage page state; built on the final actions (live: decorated with the AppKit pieces).
+    public let storage: StorageModel
+    public let storageActions: StorageActions
 
-    private init(pipeline: any RuntimePipeline) {
+    private init(pipeline: any RuntimePipeline, storageActions: StorageActions) {
         self.pipeline = pipeline
+        self.storageActions = storageActions
+        storage = StorageModel(actions: storageActions)
     }
 
     /// crashSensor: DEBUG canary drill.
     /// canarySuite: UserDefaults suite for crash-canary markers (nil = standard defaults). Dev builds pass the
     /// per-data-dir settings suite so worktrees sharing the bundle id don't disable each other's sensors.
+    /// storagePlatform / decorateStorageActions: AppKit pieces of the live storage backend (running apps, reveal,
+    /// ignore list) built by the app; the decorator runs in `.live` only (mocks bring their own actions).
     public static func make(mode: RuntimeMode, dataDirectory: URL, disabledSensors: Set<SensorID>,
-                            crashSensor: SensorID? = nil, canarySuite: String? = nil) -> TelltaleRuntime {
+                            crashSensor: SensorID? = nil, canarySuite: String? = nil,
+                            storagePlatform: StoragePlatform = .none,
+                            decorateStorageActions: @MainActor (StorageActions) -> StorageActions = { $0 })
+        -> TelltaleRuntime {
         switch mode {
         case .live:
-            TelltaleRuntime(pipeline: LivePipeline(dataDirectory: dataDirectory, disabledSensors: disabledSensors,
-                                                   crashSensor: crashSensor, canarySuite: canarySuite))
+            let pipeline = LivePipeline(dataDirectory: dataDirectory, disabledSensors: disabledSensors,
+                                        crashSensor: crashSensor, canarySuite: canarySuite,
+                                        storagePlatform: storagePlatform)
+            return TelltaleRuntime(pipeline: pipeline, storageActions: decorateStorageActions(pipeline.storageActions))
         case .mock(let scenario):
-            TelltaleRuntime(pipeline: MockPipeline(scenario: scenario))
+            let pipeline = MockPipeline(scenario: scenario)
+            return TelltaleRuntime(pipeline: pipeline, storageActions: pipeline.storageActions)
         }
     }
 
@@ -73,5 +87,8 @@ public extension RuntimePipeline {
     public func setPaused(_ p: Bool) { pipeline.setPaused(p) }
     public func systemWillSleep() { pipeline.systemWillSleep() }
     public func systemDidWake() { pipeline.systemDidWake() }
-    public func shutdown() async { await pipeline.shutdown() }
+    public func shutdown() async {
+        storageActions.cancelClean()
+        await pipeline.shutdown()
+    }
 }
