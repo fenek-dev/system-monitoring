@@ -22,6 +22,11 @@ public enum BundleID {
         return s
     }
 
+    /// `<TeamID>.<word>` (e.g. `UBF8T346G9.Office`): shared group data of a vendor, never touched.
+    public static func isTeamIDOnly(_ name: String) -> Bool {
+        stripTeamID(name) != name && normalize(name) == nil
+    }
+
     public static func isAppleOwned(_ normalized: String) -> Bool {
         normalized.contains("com.apple.")
     }

@@ -86,13 +86,20 @@ public struct InstalledAppSet: Sendable {
 
         var ids: [String: OwnerApp] = [:]
         for path in paths.sorted() where isInstalledLocation(path) {
-            guard let info = readInfo(bundlePath: path), let id = info.id else { continue }
-            let owner = OwnerApp(bundleID: id, name: info.name ?? displayName(path), appPath: path)
-            if ids[id.lowercased()] == nil { ids[id.lowercased()] = owner }
+            let info = readInfo(bundlePath: path)
+            var host: OwnerApp?
+            if let id = info?.id {
+                let owner = OwnerApp(bundleID: id, name: info?.name ?? displayName(path), appPath: path)
+                host = owner
+                if ids[id.lowercased()] == nil { ids[id.lowercased()] = owner }
+            }
+            // Nested bundles count even when the outer plist has no ID (iOS wrappers, odd packaging): then each
+            // is its own app, otherwise it maps to the host.
             for nested in nestedBundlePaths(path) {
-                if let nestedID = readInfo(bundlePath: nested)?.id, ids[nestedID.lowercased()] == nil {
-                    ids[nestedID.lowercased()] = owner
-                }
+                guard let nestedInfo = readInfo(bundlePath: nested), let nestedID = nestedInfo.id,
+                      ids[nestedID.lowercased()] == nil else { continue }
+                ids[nestedID.lowercased()] = host ?? OwnerApp(
+                    bundleID: nestedID, name: nestedInfo.name ?? displayName(nested), appPath: path)
             }
         }
         return InstalledAppSet(ids: ids)
@@ -100,10 +107,15 @@ public struct InstalledAppSet: Sendable {
 
     /// `mdfind "kMDItemContentType == com.apple.application-bundle"`, ~0.1 s.
     public static let liveMdfind: @Sendable () throws -> [String] = {
+        // `-0`: paths may contain newlines.
         let out = try ProcessRun.run(
-            "/usr/bin/mdfind", ["kMDItemContentType == com.apple.application-bundle"], timeout: 15)
+            "/usr/bin/mdfind", ["-0", "kMDItemContentType == com.apple.application-bundle"], timeout: 15)
         guard out.status == 0 else { throw ProcessRunError.launchFailed("mdfind exited \(out.status)") }
-        return String(decoding: out.stdout, as: UTF8.self).split(separator: "\n").map(String.init)
+        return parseNulSeparated(out.stdout)
+    }
+
+    static func parseNulSeparated(_ data: Data) -> [String] {
+        data.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
     }
 
     /// Trash, mounted volumes and App Translocation copies are not installs.

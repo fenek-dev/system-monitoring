@@ -52,7 +52,7 @@ import Testing
     /// Bug caught: system caches and Apple data deleted (iCloud, Maps, Wallet breakage), or the Xcode cache that is
     /// explicitly allowed hidden.
     @Test(arguments: [
-        ("com.foo.app", true), ("com.apple.dt.Xcode", true), ("Arc", true),
+        ("com.foo.app", true), ("com.apple.dt.Xcode", true), ("Arc", true), ("UBF8T346G9.Office", false),
         ("com.apple.Safari", false), ("CloudKit", false), ("com.apple.bird", false), ("GeoServices", false),
         ("findmy.cache", false), ("ap.adprivacyd", false), ("akd", false),
     ])
@@ -274,6 +274,106 @@ import Testing
         let restricted = F.classify([.restricted(".Trash")])
         #expect(restricted.set.trashBytes == nil)
         #expect(restricted.set.items.isEmpty)
+    }
+
+    // MARK: Review regressions
+
+    /// Bug caught: finding `com.foo.app` late only cleared that exact ID, so `com.foo.shared` (same vendor) stayed a
+    /// Leftover of an installed app.
+    @Test func lateDiscoveryAppliesOwnershipRules() {
+        let classifier = F.classifier()
+        let result = F.classify(Self.appSupport([
+            F.aged("com.foo.app", days: 200), F.aged("com.foo.shared", days: 200), F.aged("org.other.gone", days: 200),
+        ]), classifier: classifier)
+        let set = classifier.resolve(result, found: ["com.foo.app": ["/Applications/Foo.app"]])
+        #expect(F.paths(set, .leftovers) == ["/Users/test/Library/Application Support/org.other.gone"])
+    }
+
+    /// Bug caught: Docker.raw deletable through an ancestor (the uninstalled-Docker container as a Leftover), while
+    /// the info row must stay.
+    @Test func dockerImageAndAncestorsProtected() {
+        let result = F.classify([T.dir("Library", [T.dir("Containers", [
+            F.aged("com.docker.docker", days: 300, [T.dir("Data", [T.dir("vms", [T.dir("0", [
+                T.dir("data", [T.file("Docker.raw", 8000, mtime: F.ago(300))]),
+            ])])])]),
+        ])])])
+        #expect(result.unresolvedBundleIDs.isEmpty)
+        #expect(result.set.items.map(\.mode) == [DeleteMode.none])
+        #expect(result.set.items.first?.path.hasSuffix("/Docker.raw") == true)
+    }
+
+    /// Bug caught: protected-path checks went through `tree.lookup`: a trailing slash, or a path below an unreadable
+    /// dir, found no node and the ancestor cache became a Safe `.remove` item.
+    @Test(arguments: [
+        "/Users/test/Library/Caches/com.foo.cache/Staging/",
+        "/Users/test/Library/Caches//com.foo.cache/./Staging",
+        "/Users/test/Library/Caches/com.foo.cache/Secret/staging",
+        "/Users/test/Library/Caches/com.foo.cache",
+        "/Users/test/Library/Caches/com.foo.cache/Secret/staging/../staging",
+    ])
+    func dataDirectoryProtectedWithoutNode(dataDir: String) {
+        let result = F.classify(
+            [T.dir("Library", [T.dir("Caches", [
+                F.aged("com.foo.cache", days: 1, [T.dir("Staging", [T.small(bytes: 10)]), .restricted("Secret")]),
+                F.aged("com.bar.cache", days: 1),
+            ])])],
+            classifier: F.classifier(dataDirectories: [dataDir]))
+        #expect(F.paths(result.set, .userCaches) == ["/Users/test/Library/Caches/com.bar.cache"])
+    }
+
+    /// Bug caught: `xcrun simctl delete unavailable` offered although it would delete one of our protected dirs.
+    @Test(arguments: [
+        "/Users/test/Library/Developer/CoreSimulator/Devices/DEAD-1/data/staging",
+        "/Users/test/Library/Developer/CoreSimulator/Devices/DEAD-1/",
+    ])
+    func simulatorRowSuppressedByProtectedPath(dataDir: String) {
+        let result = F.classify([T.dir("Library", [T.dir("Developer", [T.dir("CoreSimulator", [T.dir("Devices", [
+            F.aged("DEAD-1", days: 1, bytes: 300), F.aged("DEAD-2", days: 1, bytes: 400),
+        ])])])])], classifier: F.classifier(
+            devTools: FakeDevTools(udids: ["DEAD-1", "DEAD-2"]), dataDirectories: [dataDir]))
+        #expect(result.set.items.filter { $0.mode == .simctl }.isEmpty)
+    }
+
+    @Test func simulatorRowSuppressedByOwnNamedData() {
+        let result = F.classify([T.dir("Library", [T.dir("Developer", [T.dir("CoreSimulator", [T.dir("Devices", [
+            F.aged("DEAD-1", days: 1, bytes: 300, [F.aged("dev.telltale-dev", days: 1)]),
+        ])])])])], classifier: F.classifier(devTools: FakeDevTools(udids: ["DEAD-1"])))
+        #expect(result.set.items.filter { $0.mode == .simctl }.isEmpty)
+    }
+
+    /// Bug caught: a leftover whose old-looking dir has an unreadable subtree (its real mtime is unknown) offered
+    /// as stale.
+    @Test func leftoverWithUnreadableDescendantFailsClosed() {
+        let result = F.classify(Self.appSupport([
+            F.aged("com.gone.app", days: 300, [T.dir("Nested", [.restricted("Private")])]),
+            F.aged("com.gone.other", days: 300),
+        ]))
+        #expect(result.unresolvedBundleIDs == ["com.gone.other"])
+    }
+
+    /// Bug caught: parsing of real `simctl list -j devices` output (mixed availability, several runtimes, missing
+    /// fields) selecting available simulators for deletion.
+    @Test(arguments: [
+        (#"""
+        {"devices":{
+          "com.apple.CoreSimulator.SimRuntime.iOS-17-0":[
+            {"dataPath":"/x/A","logPath":"/l/A","udid":"AAAA","isAvailable":false,
+             "availabilityError":"runtime profile not found","deviceTypeIdentifier":"t","state":"Shutdown","name":"iPhone 15"},
+            {"dataPath":"/x/B","udid":"BBBB","isAvailable":true,"state":"Booted","name":"iPhone 16"}],
+          "com.apple.CoreSimulator.SimRuntime.watchOS-9-0":[
+            {"udid":"CCCC","isAvailable":false,"name":"Watch"},
+            {"udid":"DDDD","name":"no availability field"},
+            {"isAvailable":false,"name":"no udid"}],
+          "com.apple.CoreSimulator.SimRuntime.tvOS-17-0":[]}}
+        """#, ["AAAA", "CCCC"]),
+        (#"{"devices":{}}"#, []),
+        (#"{"devices":[]}"#, []),
+        (#"{"nodevices":1}"#, []),
+        ("not json", []),
+        ("", []),
+    ] as [(String, [String])])
+    func parsesUnavailableSimulators(json: String, udids: [String]) {
+        #expect(LiveDevToolProbe.parseUnavailable(Data(json.utf8)) == udids)
     }
 
     // MARK: Links and ids

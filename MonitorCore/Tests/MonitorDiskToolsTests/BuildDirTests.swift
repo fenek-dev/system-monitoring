@@ -19,6 +19,7 @@ import Testing
         var tracked = false
         var gitFailsClosed = false
         var xcodeOK = true
+        var unreadableSibling = false
         var expected: Bool
         var testDescription: String { label }
     }
@@ -37,11 +38,14 @@ import Testing
         Case(label: "git tracks files", tracked: true, expected: false),
         Case(label: "git timeout or error", gitFailsClosed: true, expected: false),
         Case(label: "no developer tools", xcodeOK: false, expected: false),
+        // Its age comes from a tree that could not be read completely.
+        Case(label: "project has unreadable subdir", unreadableSibling: true, expected: false),
     ])
     func buildDir(_ c: Case) {
         let build = T.dir(c.name, flags: .buildDir, markers: c.markers, mtime: F.ago(1),
                           [T.small(bytes: 9000, maxMtime: F.ago(1))])
-        let project = T.dir("proj", markers: c.hasGit ? .git : [], mtime: F.ago(c.projectDays), [build])
+        let project = T.dir("proj", markers: c.hasGit ? .git : [], mtime: F.ago(c.projectDays),
+                            [build] + (c.unreadableSibling ? [.restricted("private")] : []))
         let entries: [T.Entry] = switch c.place {
         case .home: [project]
         case .library: [T.dir("Library", [project])]
@@ -93,7 +97,8 @@ import Testing
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("git-\(UUID().uuidString)").path
         defer { try? FileManager.default.removeItem(atPath: root) }
         let fm = FileManager.default
-        for dir in ["tracked", "untracked"] {
+        // Pathspec magic as directory names: `*` globs over `tracked/f`, `:(top)tracked` names it.
+        for dir in ["tracked", "untracked", "*", ":(top)tracked"] {
             try fm.createDirectory(atPath: root + "/repo/\(dir)", withIntermediateDirectories: true)
             fm.createFile(atPath: root + "/repo/\(dir)/f", contents: Data("x".utf8))
         }
@@ -103,6 +108,8 @@ import Testing
         let live = LiveGitTracking()
         #expect(live.hasTrackedFiles(project: root + "/repo", dir: root + "/repo/tracked"))
         #expect(!live.hasTrackedFiles(project: root + "/repo", dir: root + "/repo/untracked"))
+        #expect(!live.hasTrackedFiles(project: root + "/repo", dir: root + "/repo/*"))
+        #expect(!live.hasTrackedFiles(project: root + "/repo", dir: root + "/repo/:(top)tracked"))
         // Not a repository: git exits 128, which must read as "tracked".
         #expect(live.hasTrackedFiles(project: root, dir: root + "/repo/untracked"))
     }

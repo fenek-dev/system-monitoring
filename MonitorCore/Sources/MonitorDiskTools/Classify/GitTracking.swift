@@ -19,7 +19,8 @@ public struct LiveGitTracking: GitTracking {
         let relative = String(dir.dropFirst(prefix.count))
         do {
             let out = try ProcessRun.run(
-                "/usr/bin/git", ["-C", project, "ls-files", "-z", "--", relative],
+                // Literal: a dir named `*` or `:(top)x` must not be read as a pathspec pattern.
+                "/usr/bin/git", ["--literal-pathspecs", "-C", project, "ls-files", "-z", "--", relative],
                 // No index refresh: this probe must not write into the repository.
                 environment: ["GIT_OPTIONAL_LOCKS": "0"], timeout: Self.timeout, outputLimit: 1)
             guard out.status == 0 else {

@@ -45,9 +45,16 @@ public struct Classifier: Sendable {
 
     /// `found[id]` non-empty means the platform knows an app for that ID: its data is not a leftover.
     public func resolve(_ result: ClassifyResult, found: [String: [String]]) -> CleanupSet {
+        // Found apps are installed apps now: apply the full ownership rules (prefix, suffix, vendor), so finding
+        // `com.foo.app` also clears `com.foo.shared`.
+        var ids: [String: OwnerApp] = [:]
+        for (id, paths) in found where !paths.isEmpty {
+            ids[id] = OwnerApp(bundleID: id, name: id, appPath: paths[0])
+        }
+        let discovered = InstalledAppSet(ids: ids)
         let kept = result.drafts.filter { draft in
             guard let id = draft.pendingBundleID else { return true }
-            return found[id]?.isEmpty ?? true
+            return !discovered.owns(id)
         }
         var set = result.set
         set.items = Self.items(kept)
@@ -100,6 +107,48 @@ struct ClassifyRun {
     let installed: InstalledAppSet
     let lastUsed: [String: Date]
     let options: ClassifyOptions
+    /// Paths nothing may delete, as normalized components. Compared without a tree lookup, so a trailing slash or a
+    /// path under an unreadable dir (no node) still protects its ancestors.
+    private let protectedComponents: [[Substring]]
+    /// Node is, or has below it, an unreadable dir that `subtreeMaxMtime` could not see (build dirs excluded, like
+    /// `subtreeMaxMtime` itself): its age proves nothing, so age-based rules fail closed.
+    private let ageIncomplete: [Bool]
+
+    init(classifier: Classifier, tree: StorageTree, installed: InstalledAppSet, lastUsed: [String: Date],
+         options: ClassifyOptions) {
+        self.classifier = classifier
+        self.tree = tree
+        self.installed = installed
+        self.lastUsed = lastUsed
+        self.options = options
+        let paths = classifier.dataDirectories + CategoryRules.dockerImages.map { classifier.home + "/" + $0 }
+        protectedComponents = paths.map(Self.normalizedComponents)
+        var incomplete = tree.flags.map { $0.contains(.restricted) }
+        for i in stride(from: tree.nodeCount - 1, to: 0, by: -1)
+        where incomplete[i] && !tree.flags[i].contains(.buildDir) {
+            incomplete[Int(tree.parent[i])] = true
+        }
+        ageIncomplete = incomplete
+    }
+
+    /// Components with empty and `.` parts dropped and `..` applied, so `a//b/` and `a/./b` compare equal.
+    static func normalizedComponents(_ path: String) -> [Substring] {
+        var out: [Substring] = []
+        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
+            if part == "." { continue }
+            if part == ".." { _ = out.popLast() } else { out.append(part) }
+        }
+        return out
+    }
+
+    /// The node's path is, contains or sits inside a protected path.
+    private func isProtected(_ path: String) -> Bool {
+        let components = Self.normalizedComponents(path)
+        return protectedComponents.contains { p in
+            let n = min(p.count, components.count)
+            return p[..<n].elementsEqual(components[..<n])
+        }
+    }
 
     private struct Candidate {
         var draft: Classifier.Draft
@@ -178,20 +227,20 @@ struct ClassifyRun {
             owner: owner, keepParent: keepParent, note: note, ignored: false, pendingBundleID: pendingBundleID)
     }
 
-    /// Usable as an item: known size, not empty.
-    private func usable(_ node: StorageNodeID, blocked: [Bool]) -> Bool {
+    /// Usable as an item: known size, not empty, not own data. `checkProtected: false` is for the info-only Docker
+    /// row, which sits on a protected path by design and deletes nothing.
+    private func usable(_ node: StorageNodeID, blocked: [Bool], checkProtected: Bool = true) -> Bool {
         !blocked[Int(node)] && !tree.flags[Int(node)].contains(.restricted) && tree.allocBytes[Int(node)] > 0
+            && !(checkProtected && isProtected(tree.path(node)))
     }
 
-    /// Nodes that are, contain or sit inside our own data (`dev.telltale*`, `dev.warden*`, injected dirs).
+    /// Nodes that are, contain or sit inside a `dev.telltale*` / `dev.warden*` name (injected dirs and Docker images
+    /// go through `isProtected` instead).
     private func ownDataBlocked() -> [Bool] {
         let count = tree.nodeCount
         var own = [Bool](repeating: false, count: count)
         for i in 1 ..< count where tree.nameLength[i] >= 10 && CategoryRules.isOwnDataName(tree.nameBytes(Int32(i))) {
             own[i] = true
-        }
-        for dir in classifier.dataDirectories {
-            if let node = tree.lookup(path: dir) { own[Int(node)] = true }
         }
         // Inside: parent < child, so one forward pass.
         var blocked = own
@@ -240,7 +289,8 @@ struct ClassifyRun {
             for c in children(parent) {
                 let node = Int32(c)
                 let name = tree.name(node)
-                guard usable(node, blocked: blocked), !CategoryRules.isSystemCacheName(name) else { continue }
+                guard usable(node, blocked: blocked), !CategoryRules.isSystemCacheName(name),
+                      !BundleID.isTeamIDOnly(name) else { continue }
                 let id = BundleID.normalize(name)
                 if let id, Self.isOffLimitsApple(id) { continue }
                 let owner = (containerID ?? id).flatMap { installed.app(for: $0) }
@@ -258,6 +308,7 @@ struct ClassifyRun {
                 let name = tree.name(Int32(c))
                 let id = BundleID.normalize(name)
                 if let id, Self.isOffLimitsApple(id) { continue }
+                if BundleID.isTeamIDOnly(name) { continue }
                 var caches: StorageNodeID? = Int32(c)
                 for component in CategoryRules.containerCachesSubpath {
                     caches = caches.flatMap { child($0, component) }
@@ -280,7 +331,8 @@ struct ClassifyRun {
             guard let parent = node(rel) else { continue }
             for c in children(parent) {
                 let node = Int32(c)
-                guard usable(node, blocked: blocked), !shadowedByUserCache.contains(node) else { continue }
+                guard usable(node, blocked: blocked), !shadowedByUserCache.contains(node),
+                      !ageIncomplete[c] else { continue }
                 let name = tree.name(node)
                 guard !CategoryRules.isSystemCacheName(name), let id = BundleID.normalize(name),
                       !BundleID.isAppleOwned(id), !installed.owns(id) else { continue }
@@ -307,6 +359,7 @@ struct ClassifyRun {
                   !isHidden(i), !blocked[i] else { continue }
             let node = Int32(i)
             let path = tree.path(node)
+            guard !isProtected(path) else { continue }
             var used = max(tree.mtime[i], tree.addedTime[i])
             if let spotlight = lastUsed[path] { used = max(used, Int64(spotlight.timeIntervalSince1970)) }
             let usedDate = Date(timeIntervalSince1970: Double(used))
@@ -346,12 +399,12 @@ struct ClassifyRun {
         }
         for d in archiveDrafts(blocked: blocked) { add(d) }
         for rel in CategoryRules.dockerImages {
-            if let node = node(rel), usable(node, blocked: blocked) {
+            if let node = node(rel), usable(node, blocked: blocked, checkProtected: false) {
                 add(draft(node, category: .developer, tier: .review, mode: .none, note: CategoryRules.dockerNote))
             }
         }
         let toolchain = Toolchain(devTools: classifier.devTools)
-        if let sims = simulatorDraft(toolchain: toolchain) { add(sims) }
+        if let sims = simulatorDraft(toolchain: toolchain, blocked: blocked) { add(sims) }
         for d in buildDirDrafts(homeNode: homeNode, eligible: eligible, blocked: blocked, toolchain: toolchain) {
             add(d)
         }
@@ -385,7 +438,7 @@ struct ClassifyRun {
             }
         }
         return found.filter {
-            usable($0, blocked: blocked)
+            usable($0, blocked: blocked) && !ageIncomplete[Int($0)]
                 && options.now.timeIntervalSince1970 - Double(tree.subtreeMaxMtime[Int($0)]) >= CategoryRules.archivesAge
         }.map {
             draft($0, category: .developer, tier: .review, mode: .trash,
@@ -394,10 +447,12 @@ struct ClassifyRun {
     }
 
     /// One row for `xcrun simctl delete unavailable`: no single node, so size is the sum of the matching device dirs.
-    private func simulatorDraft(toolchain: Toolchain) -> Classifier.Draft? {
+    private func simulatorDraft(toolchain: Toolchain, blocked: [Bool]) -> Classifier.Draft? {
         guard let devices = node(CategoryRules.simulatorDevicesDir), toolchain.ok else { return nil }
         let udids = Set(toolchain.simulatorUDIDs)
         let matching = children(devices).filter { udids.contains(tree.name(Int32($0))) }
+        // The command deletes every unavailable simulator at once: it cannot be offered if one touches our data.
+        guard !matching.contains(where: { blocked[$0] || isProtected(tree.path(Int32($0))) }) else { return nil }
         let bytes = matching.reduce(into: UInt64(0)) { $0 += tree.size(Int32($1)) ?? 0 }
         guard bytes > 0 else { return nil }
         return Classifier.Draft(
@@ -417,6 +472,7 @@ struct ClassifyRun {
                   let required = BuildDirRules.requiredMarkers(forName: tree.name(node)),
                   !tree.markerMask[i].isDisjoint(with: required),
                   let project = BuildDirRules.project(of: node, in: tree, limit: homeNode),
+                  !ageIncomplete[Int(project)],
                   options.now.timeIntervalSince1970 - Double(tree.subtreeMaxMtime[Int(project)])
                   >= BuildDirRules.projectAge else { continue }
             cheap.append((node, project))

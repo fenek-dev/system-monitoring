@@ -20,16 +20,18 @@ import Testing
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("apps-\(UUID().uuidString)").path
         defer { try? FileManager.default.removeItem(atPath: home) }
         try Self.writeBundle(home + "/Applications/Foo.app", id: "com.foo.Main", name: "Foo")
-        try Self.writeBundle(home + "/Applications/Foo.app/Contents/PlugIns/Widget.appex", id: "com.foo.main.widget",
+        // Unrelated vendors on purpose: only nested discovery (not the vendor rule) can map these to the host.
+        try Self.writeBundle(home + "/Applications/Foo.app/Contents/PlugIns/Widget.appex", id: "net.ext.widget",
                              flatPlist: true)
         try Self.writeBundle(home + "/Applications/Foo.app/Contents/Library/LoginItems/Helper.app",
-                             id: "com.foo.loginhelper")
+                             id: "io.login.helper")
+        try Self.writeBundle(home + "/Applications/Foo.app/Contents/Helpers/Tool.app", id: "dev.tool.agent")
         try Self.writeBundle(home + "/Applications/Setapp/Deep.app", id: "com.setapp.deep")
         try Self.writeBundle(home + "/Odd/Place.app", id: "org.odd.place")
         try Self.writeBundle(home + "/.Trash/Gone.app", id: "org.trashed.gone")
         try Self.writeBundle(home + "/AppTranslocation/ABC/d/Trans.app", id: "org.translocated.app")
         try Self.writeBundle(home + "/Applications/Wrapped.app", id: "org.wrapped.outer")
-        try Self.writeBundle(home + "/Applications/Wrapped.app/Wrapper/Inner.app", id: "org.wrapped.inner",
+        try Self.writeBundle(home + "/Applications/Wrapped.app/Wrapper/Inner.app", id: "io.wrapped.inner",
                              flatPlist: true)
 
         let hits = [home + "/Odd/Place.app", home + "/.Trash/Gone.app", "/Volumes/Ext/Vol.app",
@@ -39,13 +41,39 @@ import Testing
         #expect(set.app(for: "com.foo.main")?.appPath == home + "/Applications/Foo.app")
         #expect(set.app(for: "com.foo.main")?.name == "Foo")
         // Nested IDs resolve to the host app.
-        #expect(set.app(for: "com.foo.main.widget")?.bundleID == "com.foo.Main")
-        #expect(set.app(for: "com.foo.loginhelper")?.bundleID == "com.foo.Main")
-        #expect(set.app(for: "org.wrapped.inner")?.bundleID == "org.wrapped.outer")
+        #expect(set.app(for: "net.ext.widget")?.bundleID == "com.foo.Main")
+        #expect(set.app(for: "io.login.helper")?.bundleID == "com.foo.Main")
+        #expect(set.app(for: "dev.tool.agent")?.bundleID == "com.foo.Main")
+        #expect(set.app(for: "io.wrapped.inner")?.bundleID == "org.wrapped.outer")
         #expect(set.owns("com.setapp.deep"))
         #expect(set.owns("org.odd.place"))
         #expect(!set.owns("org.trashed.gone"))
         #expect(!set.owns("org.translocated.app"))
+    }
+
+    /// Bug caught: an outer plist without CFBundleIdentifier made the whole bundle (and its nested apps) invisible,
+    /// so their data was offered as Leftovers.
+    @Test func nestedBundlesCountWithoutOuterID() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("apps-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: home + "/Applications/Odd.app/Contents", withIntermediateDirectories: true)
+        try Data("not a plist".utf8).write(to: URL(fileURLWithPath: home + "/Applications/Odd.app/Contents/Info.plist"))
+        try Self.writeBundle(home + "/Applications/Odd.app/Wrapper/Inner.app", id: "io.inner.app", flatPlist: true)
+        try Self.writeBundle(home + "/Applications/NoID.app", id: "placeholder")
+        let noID = try PropertyListSerialization.data(fromPropertyList: ["CFBundleName": "NoID"], format: .xml, options: 0)
+        try noID.write(to: URL(fileURLWithPath: home + "/Applications/NoID.app/Contents/Info.plist"))
+        try Self.writeBundle(home + "/Applications/NoID.app/Contents/PlugIns/X.appex", id: "net.noid.ext", flatPlist: true)
+
+        let set = InstalledAppSet.build(home: home, mdfind: { [] })
+        #expect(set.app(for: "io.inner.app")?.appPath == home + "/Applications/Odd.app")
+        #expect(set.app(for: "net.noid.ext")?.appPath == home + "/Applications/NoID.app")
+    }
+
+    /// Bug caught: newline-separated `mdfind` output splits paths that contain a newline.
+    @Test func parsesNulSeparatedPaths() {
+        let data = Data("/Applications/A.app\0/Applications/Odd\nName.app\0".utf8)
+        #expect(InstalledAppSet.parseNulSeparated(data) == ["/Applications/A.app", "/Applications/Odd\nName.app"])
     }
 
     @Test func mdfindFailureStillUsesDirectoryScan() throws {
