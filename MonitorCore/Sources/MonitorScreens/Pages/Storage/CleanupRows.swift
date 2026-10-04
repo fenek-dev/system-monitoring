@@ -179,11 +179,14 @@ struct CleanupRows: View {
             } else {
                 TTBadge(item.tier == .safe ? "Safe" : "Review", level: item.tier == .safe ? .calm : .elevated)
             }
+        } else {
+            Color.clear
         }
     }
 
+    /// Empty cells keep a clear placeholder: a bare `EmptyView` drops its column frame and shifts the cells after it.
     @ViewBuilder private func inUse(_ row: CleanupRow) -> some View {
-        if row.inUse { TTBadge("In use", level: .critical) }
+        if row.inUse { TTBadge("In use", level: .critical) } else { Color.clear }
     }
 
     private func lastUsed(_ row: CleanupRow) -> some View {
