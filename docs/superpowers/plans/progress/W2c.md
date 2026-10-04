@@ -43,6 +43,11 @@ T1 Denylist, T2 policy checks, T3 Staging journal, T4 keep-parent, T5 DeleteWork
 - P3: case and NFD tests split with `.enabled(if:)` volume probes; keep-parent test uses real inodes with a different scanned size.
 - Contract: `CleanItemOutcome.path` (Clean.swift) filled for every Empty Trash outcome.
 
+## Review r2 (final)
+- Denylist redesign: identity sets + folded component rules built once per run; per mutation (all paths incl. Empty Trash children, keep-parent children, trash, evict) a fresh TrustedRoot walk, identity check and component-spelling check (`Denylist.check(live:)`). Empty Trash resolves each entry from the home root and requires the same `.Trash` identity as at listing. Perf: 1000 authorizations = ~184 ms (debug), was ~11 s.
+- Seams: `CleanTestHooks.beforeSlotWait`, `DeleteWorker(slim:onFailure:)` (callback runs while removefileat is in flight; used for the in-flight abort test).
+- CleanItemOutcome.path: one copy (matches feat/storage).
+
 ## Requests
 - none open.
 

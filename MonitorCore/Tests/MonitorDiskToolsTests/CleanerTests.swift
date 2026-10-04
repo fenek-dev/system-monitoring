@@ -457,28 +457,144 @@ extension CleanerTests {
         for name in names { try box.write("home/Library/Caches/\(name)/f") }
         let items = try names.enumerated().map { try box.item(Int32($0.offset), "home/Library/Caches/\($0.element)") }
         let gated = GatedDeleter(inner: DeleteWorker(slim: false))
-        let cleaner = Cleaner(context: box.context(deleter: gated))
-        let tree = box.tree()
-        var finished: CleanReport?
-        var itemsSeen = 0
-        for await event in cleaner.clean(items, tree: tree, overlay: StorageTreeOverlay(tree: tree)) {
-            switch event {
-            case .item:
-                itemsSeen += 1
-                // Four slots are taken by blocked deletes; the fifth item is waiting for one.
-                if itemsSeen == Cleaner.maxInFlight {
-                    cleaner.cancel()
-                    gated.release(Cleaner.maxInFlight)
-                }
-            case let .finished(report): finished = report
-            default: break
+        let holder = Mutex<Cleaner?>(nil)
+        // Items 0-3 hold all four slots (their deletes are blocked on the gate). The hook runs for item 4 after the
+        // item-level cancel check and right before the slot wait: the cancel lands exactly there, and the gate
+        // opens only afterwards so the wait can end.
+        let hooks = CleanTestHooks(beforeSlotWait: { index in
+            guard index == Cleaner.maxInFlight else { return }
+            holder.withLock { $0 }?.cancel()
+            gated.release(Cleaner.maxInFlight)
+        })
+        let cleaner = Cleaner(context: box.context(deleter: gated), hooks: hooks)
+        holder.withLock { $0 = cleaner }
+
+        let events = await run(cleaner, items, box)
+
+        let report = try #require(events.finished.first)
+        #expect(report.cancelled)
+        #expect(report.freedBytes == 4 * 1000)
+        #expect(report.outcomes.map(\.skip) == [nil, nil, nil, nil, .cancelled])
+        #expect(box.exists("home/Library/Caches/e/f"))
+    }
+}
+
+extension CleanerTests {
+    private func emptyTrashWithSwap(_ box: CleanSandbox, recreateWithOwnEntry: Bool) async throws -> CleanEvents {
+        try box.write("home/.Trash/V10/mail.emlx")
+        let hooks = CleanTestHooks(beforeItem: { index in
+            guard index == 0 else { return }
+            // The listed `.Trash` becomes ~/Library/Mail and a new `.Trash` takes its place.
+            try? FileManager.default.createDirectory(atPath: box.path("home/Library"), withIntermediateDirectories: true)
+            try? FileManager.default.moveItem(atPath: box.path("home/.Trash"), toPath: box.path("home/Library/Mail"))
+            try? FileManager.default.createDirectory(atPath: box.path("home/.Trash"), withIntermediateDirectories: true)
+            if recreateWithOwnEntry { _ = try? box.write("home/.Trash/V10/own.txt") }
+        })
+        return await collect(Cleaner(context: box.context(), hooks: hooks).emptyTrash())
+    }
+
+    /// Bug: Empty Trash keeps working through the directory it listed after that directory was renamed to
+    /// ~/Library/Mail, and deletes protected mail while reporting success.
+    @Test func emptyTrashDoesNotFollowRenamedTrashFolder() async throws {
+        let box = try CleanSandbox()
+
+        let events = try await emptyTrashWithSwap(box, recreateWithOwnEntry: false)
+
+        #expect(box.list("home/Library/Mail/V10") == ["mail.emlx"])
+        #expect(events.freed.isEmpty)
+        #expect(events.finished.first?.freedBytes == 0)
+        #expect(events.finished.first?.outcomes.map(\.skip) == [.vanished])
+    }
+
+    /// Bug: same swap, but the new `.Trash` has an entry of the same name; it must not be emptied in place of the
+    /// one that was listed (the folder is not the one we listed).
+    @Test func emptyTrashRefusesReplacedTrashFolderWithSameEntryName() async throws {
+        let box = try CleanSandbox()
+
+        let events = try await emptyTrashWithSwap(box, recreateWithOwnEntry: true)
+
+        #expect(box.list("home/Library/Mail/V10") == ["mail.emlx"])
+        #expect(box.list("home/.Trash/V10") == ["own.txt"])
+        #expect(events.finished.first?.outcomes.map(\.skip) == [.changedSinceScan])
+    }
+
+    /// Bug: a protected folder that did not exist when the run started (so no identity was recorded for it) is
+    /// created while the loop waits for a delete slot; the item is then moved through it.
+    @Test func protectedFolderCreatedWhileWaitingForSlotIsHonored() async throws {
+        let box = try CleanSandbox()
+        let names = ["a", "b", "c", "d"]
+        for name in names { try box.write("home/Library/Caches/\(name)/f") }
+        try box.write("home/stash/V10/mail.emlx")
+        let stashed = try box.identity("home/stash/V10")
+        var items = try names.enumerated().map { try box.item(Int32($0.offset), "home/Library/Caches/\($0.element)") }
+        items.append(CleanupItem(id: 9, nodeID: nil, path: box.path("home/Library/Mail/V10"), name: "V10",
+                                 category: .userCaches, tier: .safe, mode: .remove, identity: stashed, allocBytes: 1))
+        let gated = GatedDeleter(inner: DeleteWorker(slim: false))
+        let hooks = CleanTestHooks(beforeSlotWait: { index in
+            guard index == 4 else { return }
+            try? FileManager.default.createDirectory(atPath: box.path("home/Library/Mail"),
+                                                     withIntermediateDirectories: true)
+            try? FileManager.default.moveItem(atPath: box.path("home/stash/V10"),
+                                              toPath: box.path("home/Library/Mail/V10"))
+            gated.release(4)
+        })
+
+        let events = await run(Cleaner(context: box.context(deleter: gated), hooks: hooks), items, box)
+
+        #expect(events.finished.first?.outcomes.last?.skip == .denied(.protected))
+        #expect(box.list("home/Library/Mail/V10") == ["mail.emlx"])
+    }
+
+    /// Bug: keep-parent keeps deleting children through the directory it holds open after the directory itself was
+    /// moved (here: into a new ~/Library/Mail) and its path points somewhere else.
+    @Test func keepParentStopsWhenItsDirectoryMoves() async throws {
+        let box = try CleanSandbox()
+        for n in 0 ..< 4 { try box.write("home/Library/Caches/app/f\(n)") }
+        let item = try box.item(1, "home/Library/Caches/app", keepParent: true)
+        let waits = Mutex(0)
+        let hooks = CleanTestHooks(beforeSlotWait: { _ in
+            let n = waits.withLock { (count: inout Int) -> Int in
+                count += 1
+                return count
+            }
+            guard n == 2 else { return }
+            try? FileManager.default.createDirectory(atPath: box.path("home/Library/Mail"),
+                                                     withIntermediateDirectories: true)
+            try? FileManager.default.moveItem(atPath: box.path("home/Library/Caches/app"),
+                                              toPath: box.path("home/Library/Mail/app"))
+        })
+
+        let events = await run(Cleaner(context: box.context(), hooks: hooks), [item], box)
+
+        let outcome = try #require(events.finished.first?.outcomes.first)
+        #expect(outcome.committedChildren == 1)
+        #expect(outcome.skippedChildren == 3)
+        #expect(outcome.partial)
+        #expect(box.list("home/Library/Mail/app").count == 3)
+    }
+
+    /// Advisory: cost of the per-mutation live check (fresh root, no-follow walk, identity + spelling lookups) with a
+    /// realistically large ~/Library. The number is reported, the bound only catches an accidental rebuild per call.
+    @Test func authorizationCostIsReported() throws {
+        let box = try CleanSandbox()
+        for n in 0 ..< 100 { try box.makeDir("home/Library/Child\(n)") }
+        try box.write("home/Library/Caches/app/file")
+        let list = Denylist.build(home: box.home, scanRoot: box.home, dataDirectories: [box.appData])
+        let clock = ContinuousClock()
+
+        var denied = 0
+        let elapsed = try clock.measure {
+            for _ in 0 ..< 1000 {
+                let root = try TrustedRoot(path: box.home)
+                let live = try LiveTarget.open(root: root, absolutePath: box.path("home/Library/Caches/app/file"))
+                if list.check(live: live) != nil { denied += 1 }
             }
         }
 
-        let report = try #require(finished)
-        #expect(report.cancelled)
-        #expect(report.outcomes.map(\.skip) == [nil, nil, nil, nil, .cancelled])
-        #expect(box.exists("home/Library/Caches/e/f"))
+        let ms = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1000
+        print("1000 authorizations: \(ms) ms")
+        #expect(denied == 0)
+        #expect(ms < 5000, "1000 authorizations took \(ms) ms")
     }
 }
 

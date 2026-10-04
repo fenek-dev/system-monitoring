@@ -10,12 +10,15 @@ struct CleanTestHooks: Sendable {
     var afterPendingRename: (@Sendable () -> Bool)?
     /// Called before the cleaner looks at item `index` (cancel / ordering tests).
     var beforeItem: (@Sendable (Int) -> Void)?
+    /// Called for item `index` right before it waits for a delete slot (after the item-level cancel check).
+    var beforeSlotWait: (@Sendable (Int) -> Void)?
 
     init(stagingDeviceOverride: Int32? = nil, afterPendingRename: (@Sendable () -> Bool)? = nil,
-         beforeItem: (@Sendable (Int) -> Void)? = nil) {
+         beforeItem: (@Sendable (Int) -> Void)? = nil, beforeSlotWait: (@Sendable (Int) -> Void)? = nil) {
         self.stagingDeviceOverride = stagingDeviceOverride
         self.afterPendingRename = afterPendingRename
         self.beforeItem = beforeItem
+        self.beforeSlotWait = beforeSlotWait
     }
 }
 

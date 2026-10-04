@@ -68,6 +68,22 @@ import Testing
         #expect(try check(list, box, "appdata/Cafe\u{301}") == .protected)
     }
 
+    /// Bug: only identities recorded at build time are checked, so a protected folder that was created (or deleted
+    /// and re-created) after the denylist was built is not recognized; same for new children of ~/Library.
+    @Test func spellingLayerCatchesFoldersCreatedAfterBuild() throws {
+        let box = try CleanSandbox()
+        let list = denylist(box)
+        try box.write("home/Library/Mail/V10/m.emlx")
+        try box.makeDir("home/Library/NewVendor")
+
+        #expect(try check(list, box, "home/Library/Mail/V10/m.emlx") == .protected)
+        // Mail is also a direct child of ~/Library, which is checked first.
+        #expect(try check(list, box, "home/Library/Mail") == .anchor)
+        #expect(try check(list, box, "home/Library/NewVendor") == .anchor)
+        try box.write("home/Library/Caches/ok/f")
+        #expect(try check(list, box, "home/Library/Caches/ok") == nil)
+    }
+
     /// Bug: a symlink directly under ~/Library is anchored only by the directory it points to, so the link itself
     /// (what a target path names) can be trashed.
     @Test func symlinkAnchorIsDeniedByItsOwnIdentity() throws {

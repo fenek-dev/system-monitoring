@@ -50,6 +50,12 @@ public final class DeleteWorker: Deleter {
     private final class FailureLog: Sendable {
         struct Failure: Sendable { var path: String; var code: Int32 }
         let failures = Mutex<[Failure]>([])
+        /// Test seam: runs inside the callback, i.e. while `removefileat` is in flight.
+        let onFailure: (@Sendable (String) -> Void)?
+
+        init(onFailure: (@Sendable (String) -> Void)? = nil) {
+            self.onFailure = onFailure
+        }
     }
 
     private static let errorCallback: tt_removefile_callback_t = { state, path, context in
@@ -58,6 +64,7 @@ public final class DeleteWorker: Deleter {
         _ = removefile_state_get(state, UInt32(TT_REMOVEFILE_STATE_ERRNO), &code)
         let log = Unmanaged<FailureLog>.fromOpaque(context).takeUnretainedValue()
         log.failures.withLock { $0.append(FailureLog.Failure(path: String(cString: path), code: code)) }
+        log.onFailure?(String(cString: path))
         return Int32(TT_REMOVEFILE_SKIP)
     }
 
@@ -75,8 +82,15 @@ public final class DeleteWorker: Deleter {
     /// Rounds of "fix permissions, retry" before giving up on a tree.
     private static let maxRounds = 5
 
-    public init(slim: Bool) {
+    private let onFailure: (@Sendable (String) -> Void)?
+
+    public convenience init(slim: Bool) {
+        self.init(slim: slim, onFailure: nil)
+    }
+
+    init(slim: Bool, onFailure: (@Sendable (String) -> Void)?) {
         self.slim = slim
+        self.onFailure = onFailure
     }
 
     /// Launch probe: deletes a scratch tree in `scratchDir` with `RECURSIVE_SLIM` + error callback only.
@@ -111,7 +125,7 @@ public final class DeleteWorker: Deleter {
         var last: (rc: Int32, errno: Int32) = (0, 0)
         var cancelled = false
         for _ in 0 ..< Self.maxRounds {
-            let log = FailureLog()
+            let log = FailureLog(onFailure: onFailure)
             last = attempt(target.name, in: target.commitFd, flags: flags, log: log)
             failures = log.failures.withLock { $0 }
             // Residual check: the return value can be 0 with failures reported (SLIM), so only the entry's

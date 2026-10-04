@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MonitorModel
+import Synchronization
 import Testing
 @testable import MonitorDiskTools
 
@@ -141,6 +142,28 @@ import Testing
         #expect(!outcome.removed)
         #expect(outcome.failures.contains("cancelled"))
         #expect(box.list("staging/commit/entry") == ["f.txt"])
+    }
+
+    /// Bug: an abort that arrives while `removefileat` is running is ignored: the repair loop unlocks the file and
+    /// retries until the entry is gone. The only seam inside a running removal is the error callback, so the abort is
+    /// issued from there (a `uchg` file makes it fire).
+    @Test func abortDuringRunningRemovalStopsRepairAndRetry() throws {
+        let box = try CleanSandbox()
+        let journal = try staging(box).openJournal()
+        for n in 0 ..< 20 { try box.write("staging/commit/entry/sub/f\(n)") }
+        let locked = try box.write("staging/commit/entry/locked.bin")
+        #expect(lchflags(locked, UInt32(UF_IMMUTABLE)) == 0)
+        let holder = Mutex<DeleteWorker?>(nil)
+        let worker = DeleteWorker(slim: true, onFailure: { _ in holder.withLock { $0 }?.cancelInFlight() })
+        holder.withLock { $0 = worker }
+
+        let outcome = worker.delete(DeleteTarget(commitFd: journal.commit.rawValue, commitPath: journal.commitPath,
+                                                 name: "entry"), clearImmutable: true)
+
+        #expect(!outcome.removed)
+        #expect(outcome.failures.contains("cancelled"))
+        // Not retried after unlocking: the locked file is still locked and the entry is still there.
+        #expect(try CleanFS.statAt(journal.commit.rawValue, "entry/locked.bin").st_flags & UInt32(UF_IMMUTABLE) != 0)
     }
 
     /// Bug: permission repair follows a mount into another device (it must only touch the entry's own device).

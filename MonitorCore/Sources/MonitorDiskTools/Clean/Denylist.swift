@@ -11,6 +11,8 @@ struct LiveTarget: ~Copyable, Sendable {
     let identity: FileIdentity
     /// `/` … root … parent … target (last element = `identity`).
     let chain: [FileIdentity]
+    /// The components that were walked: the root's canonical path plus the target's relative path. Symlink-free.
+    let components: [String]
 
     /// `absolutePath` must be below `root` by spelling (component-wise, exact bytes) and is then opened without
     /// following any symlink. A symlink as the last component is the target itself (it is not followed).
@@ -19,24 +21,35 @@ struct LiveTarget: ~Copyable, Sendable {
         let opened = try root.openParent(rel)
         let identity = try opened.parent.identity(of: opened.leaf)
         let parentChain = root.chain + opened.chain
+        let rootComponents = root.canonicalPath.split(separator: "/").map(String.init)
         return LiveTarget(parent: opened.parent, parentIdentity: parentChain[parentChain.count - 1],
-                          leaf: opened.leaf, identity: identity, chain: parentChain + [identity])
+                          leaf: opened.leaf, identity: identity, chain: parentChain + [identity],
+                          components: rootComponents + rel.components)
     }
 }
 
-/// Paths a cleanup may never touch, judged by live filesystem identity (dev, ino), never by scan data or path
-/// spelling: case and Unicode-normalization variants, `..`, and symlinks all end at the same identities.
+/// Paths a cleanup may never touch. Two independent layers, both applied to every target right before it is moved:
+///
+/// 1. Identity (dev, ino), from the live filesystem when the run started: case, Unicode-normalization variants,
+///    `..` and symlinks all end at the same identities.
+/// 2. Spelling of the walked path, compared by component (case-insensitive, Unicode-normalized): catches a
+///    protected directory that was deleted and re-created during the run (new inode, same name) and one that did
+///    not exist when the run started.
 ///
 /// - Anchors (`/`, `~`, `~/Library` and its children, system dirs, the scan root): a target must not **be or
 ///   contain** one.
 /// - Protected (Keychains, iCloud, Mail, our own data, …): a target must not **be, contain, or be inside** one.
 ///
-/// Built from the live filesystem when a clean starts; a path that doesn't exist contributes its existing
-/// ancestors only (so it is still "contained" by them).
+/// Built once per run; a path that doesn't exist contributes its existing ancestors only (so it is still
+/// "contained" by them).
 public struct Denylist: Sendable {
     private let anchorBlock: Set<FileIdentity>
     private let protectedBlock: Set<FileIdentity>
     private let protectedIdentities: Set<FileIdentity>
+    private let anchorRules: [[String]]
+    private let protectedRules: [[String]]
+    /// Every direct child of these (`~/Library`, also those created after the run started) is an anchor.
+    private let childAnchorParents: [[String]]
     /// A chain could not be established (unreadable ancestor): nothing can be verified, so everything is refused.
     private let unverifiable: Bool
     let anchorPaths: [String]
@@ -75,18 +88,54 @@ public struct Denylist: Sendable {
         }
         return Denylist(anchorBlock: anchorBlock, protectedBlock: protectedBlock,
                         protectedIdentities: protectedIdentities, unverifiable: failed, anchorPaths: anchors,
-                        protectedPaths: protected)
+                        protectedPaths: protected,
+                        anchorRules: anchors.flatMap(rules(for:)), protectedRules: protected.flatMap(rules(for:)),
+                        childAnchorParents: rules(for: home + "/Library"))
     }
 
     private init(anchorBlock: Set<FileIdentity>, protectedBlock: Set<FileIdentity>,
                  protectedIdentities: Set<FileIdentity>, unverifiable: Bool, anchorPaths: [String],
-                 protectedPaths: [String]) {
+                 protectedPaths: [String], anchorRules: [[String]], protectedRules: [[String]],
+                 childAnchorParents: [[String]]) {
         self.anchorBlock = anchorBlock
         self.protectedBlock = protectedBlock
         self.protectedIdentities = protectedIdentities
         self.unverifiable = unverifiable
         self.anchorPaths = anchorPaths
         self.protectedPaths = protectedPaths
+        self.anchorRules = anchorRules
+        self.protectedRules = protectedRules
+        self.childAnchorParents = childAnchorParents
+    }
+
+    /// Folding for the spelling layer: Unicode canonical decomposition plus lowercase, so `Mail`, `MAIL` and
+    /// NFC/NFD spellings of one name compare equal. It over-matches on case-sensitive volumes, which only errs
+    /// toward refusing.
+    private static func fold(_ component: String) -> String {
+        component.decomposedStringWithCanonicalMapping.lowercased()
+    }
+
+    /// Folded components of `path` as given and in its canonical (`realpath`) spelling.
+    private static func rules(for path: String) -> [[String]] {
+        spellings(of: path).map { $0.split(separator: "/").map { fold(String($0)) } }
+    }
+
+    /// Spelling layer: `components` are the walked path components (see `LiveTarget.components`).
+    func check(components: [String]) -> DenyReason? {
+        let target = components.map(Self.fold)
+        for rule in anchorRules where target.count <= rule.count && rule.starts(with: target) { return .anchor }
+        for parent in childAnchorParents where target.count == parent.count + 1 && target.starts(with: parent) {
+            return .anchor
+        }
+        for rule in protectedRules where target.count <= rule.count ? rule.starts(with: target) : target.starts(with: rule) {
+            return .protected
+        }
+        return nil
+    }
+
+    /// Both layers for an opened target; call immediately before the mutation.
+    func check(live: borrowing LiveTarget) -> DenyReason? {
+        check(chain: live.chain) ?? check(components: live.components)
     }
 
     /// `chain` = identities from `/` to the target (last element), e.g. `root.chain + opened.chain + [leaf]`.
@@ -105,7 +154,7 @@ public struct Denylist: Sendable {
     public func check(root: TrustedRoot, target: String) -> DenyReason? {
         do {
             let live = try LiveTarget.open(root: root, absolutePath: target)
-            return check(chain: live.chain)
+            return check(live: live)
         } catch {
             switch CleanFS.skipReason(for: error) {
             case .vanished: return nil

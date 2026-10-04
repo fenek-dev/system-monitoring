@@ -198,7 +198,7 @@ public final class Cleaner: Sendable {
 
     /// What a clean run needs besides the live checks done per mutation.
     private struct Setup {
-        var scanRoot: String
+        var denylist: Denylist
         var journal: Result<StagingJournal, SafePathError>
     }
 
@@ -212,7 +212,9 @@ public final class Cleaner: Sendable {
         } else {
             journal = .failure(.invalidPath("journal not needed"))
         }
-        let setup = Setup(scanRoot: tree.root.path, journal: journal)
+        let denylist = Denylist.build(home: context.home, scanRoot: tree.root.path,
+                                      dataDirectories: context.dataDirectories)
+        let setup = Setup(denylist: denylist, journal: journal)
         let held = context.inUse?.inUse(items.filter(touchesFiles)) ?? []
 
         for (index, item) in items.enumerated() {
@@ -328,22 +330,22 @@ public final class Cleaner: Sendable {
         case refused(SkipReason)
     }
 
-    /// Opens `path` below a fresh `TrustedRoot` and runs the live denylist against a freshly built `Denylist`, then
-    /// calls `body` with the target while the check still holds. Called immediately before every mutation (the
-    /// ancestors, the root itself and the protected directories can all have been replaced since the run started
-    /// or since the scan), so nothing here is cached across items.
-    private func authorize<R>(_ path: String, scanRoot: String,
+    /// Opens `path` fresh (new `TrustedRoot`, no-follow fd-relative walk) and checks the walked ancestors and the
+    /// target against the run's denylist by identity and by component spelling, then calls `body` while the check
+    /// still holds. Called immediately before every mutation, after any slot wait: the ancestors, the root itself
+    /// and the protected directories can all have been replaced since the run started or since the scan. Only the
+    /// opens and set lookups happen here; the denylist itself is built once per run.
+    private func authorize<R>(_ path: String, root rootPath: String? = nil, setup: Setup,
                               _ body: (borrowing LiveTarget, Denylist) -> R) -> Authorized<R> {
         let live: LiveTarget
         do {
-            let root = try TrustedRoot(path: context.permittedRoot)
+            let root = try TrustedRoot(path: rootPath ?? context.permittedRoot)
             live = try LiveTarget.open(root: root, absolutePath: path)
         } catch {
             return .refused(CleanFS.skipReason(for: error))
         }
-        let denylist = Denylist.build(home: context.home, scanRoot: scanRoot, dataDirectories: context.dataDirectories)
-        if let reason = denylist.check(chain: live.chain) { return .refused(.denied(reason)) }
-        return .ok(body(live, denylist))
+        if let reason = setup.denylist.check(live: live) { return .refused(.denied(reason)) }
+        return .ok(body(live, setup.denylist))
     }
 
     // MARK: - Trash / evict
@@ -357,7 +359,7 @@ public final class Cleaner: Sendable {
     private func trash(_ item: CleanupItem, expected: FileIdentity, bytes: UInt64, setup: Setup,
                        outcome: CleanItemOutcome, run: Run) -> CleanItemOutcome {
         var outcome = outcome
-        let attempt = authorize(item.path, scanRoot: setup.scanRoot) { live, _ -> TrashAttempt in
+        let attempt = authorize(item.path, setup: setup) { live, _ -> TrashAttempt in
             guard live.identity == expected else { return .changed }
             do throws(TrashError) {
                 // Accepted window: `trashItem` takes a URL, so the path is resolved again after the identity check
@@ -427,7 +429,7 @@ public final class Cleaner: Sendable {
     private func evict(_ item: CleanupItem, expected: FileIdentity, bytes: UInt64, setup: Setup,
                        outcome: CleanItemOutcome, run: Run) -> CleanItemOutcome {
         var outcome = outcome
-        let attempt = authorize(item.path, scanRoot: setup.scanRoot) { live, _ -> EvictAttempt in
+        let attempt = authorize(item.path, setup: setup) { live, _ -> EvictAttempt in
             guard live.identity == expected else { return .changed }
             do throws(EvictError) {
                 // Accepted window: `evictUbiquitousItem` takes a URL, resolved again after the identity check.
@@ -462,7 +464,7 @@ public final class Cleaner: Sendable {
         let parentPath = (item.path as NSString).deletingLastPathComponent
         let result = detach(journal: journal, bytes: bytes, links: [:], index: index, run: run,
                             clearImmutable: false) {
-            authorize(item.path, scanRoot: setup.scanRoot) { live, _ in
+            authorize(item.path, setup: setup) { live, _ in
                 journal.detach(parent: live.parent.rawValue, parentPath: parentPath,
                                parentIdentity: live.parentIdentity, leaf: live.leaf, expected: expected)
             }
@@ -488,7 +490,7 @@ public final class Cleaner: Sendable {
                                 journal: StagingJournal, outcome: CleanItemOutcome, index: Int,
                                 run: Run) -> CleanItemOutcome {
         // Initial open: item-level checks and the live listing. Per-child authorization happens in `detach`.
-        let opened = authorize(item.path, scanRoot: setup.scanRoot) { live, _ -> Result<OpenedDirectory?, SafePathError> in
+        let opened = authorize(item.path, setup: setup) { live, _ -> Result<OpenedDirectory?, SafePathError> in
             guard live.identity == expected, live.identity.isDirectory else { return .success(nil) }
             do throws(SafePathError) {
                 let dir = try FileDescriptor.open(at: live.parent.rawValue, live.leaf,
@@ -549,11 +551,12 @@ public final class Cleaner: Sendable {
             let bytes = scannedSize ?? live.bytes
             let result = detach(journal: journal, bytes: bytes, links: live.links, index: index, run: run,
                                 clearImmutable: false) {
-                authorize(item.path, scanRoot: setup.scanRoot) { target, denylist -> DetachResult in
+                authorize(item.path, setup: setup) { target, denylist -> DetachResult in
                     // The listed directory must still be what the path names, and the child must not be (or hold)
                     // anything protected under the directory as it is now.
                     guard target.identity == expected else { return .skipped(.changedSinceScan, leftover: false) }
-                    if let reason = denylist.check(chain: target.chain + [childIdentity]) {
+                    if let reason = denylist.check(chain: target.chain + [childIdentity])
+                        ?? denylist.check(components: target.components + [name]) {
                         return .skipped(.denied(reason), leftover: false)
                     }
                     return journal.detach(parent: dirFd, parentPath: item.path, parentIdentity: expected, leaf: name,
@@ -599,6 +602,7 @@ public final class Cleaner: Sendable {
     private func detach(journal: StagingJournal, bytes: UInt64, links: [FileIdentity: CleanFS.LinkSeen], index: Int,
                         run: Run, clearImmutable: Bool,
                         _ attempt: () -> Authorized<DetachResult>) -> Detached {
+        hooks.beforeSlotWait?(index)
         run.slots.wait()
         if run.isCancelled {
             run.slots.signal()
@@ -657,10 +661,13 @@ public final class Cleaner: Sendable {
         }
         do {
             let journal = try staging.openJournal(hooks: hooks)
+            let denylist = Denylist.build(home: context.home, scanRoot: context.home,
+                                          dataDirectories: context.dataDirectories)
+            let setup = Setup(denylist: denylist, journal: .success(journal))
             try root.withDescriptor { (dirFd: Int32) throws(SafePathError) in
                 let listing = try CleanFS.list(dirFd: dirFd)
                 emptyTrash(listing.names, in: dirFd, trashPath: trashPath, trashIdentity: root.identity,
-                           journal: journal, run: run)
+                           journal: journal, setup: setup, run: run)
             }
         } catch {
             run.record(CleanItemOutcome(itemID: 0, skip: CleanFS.skipReason(for: error), path: trashPath), at: 0)
@@ -668,7 +675,7 @@ public final class Cleaner: Sendable {
     }
 
     private func emptyTrash(_ names: [String], in dirFd: Int32, trashPath: String, trashIdentity: FileIdentity,
-                            journal: StagingJournal, run: Run) {
+                            journal: StagingJournal, setup: Setup, run: Run) {
         for (index, name) in names.enumerated() {
             hooks.beforeItem?(index)
             let id = Int32(truncatingIfNeeded: index)
@@ -684,10 +691,18 @@ public final class Cleaner: Sendable {
             }
             let live = CleanFS.liveSize(dirFd: dirFd, name: name)
             var outcome = CleanItemOutcome(itemID: id, path: entryPath)
+            // Resolved again from the home folder for every entry: `.Trash` may have been renamed away (into
+            // Library/Mail, say) and re-created since the listing, in which case this is not the folder we listed.
             switch detach(journal: journal, bytes: live.bytes, links: live.links, index: index, run: run,
                           clearImmutable: true, {
-                .ok(journal.detach(parent: dirFd, parentPath: trashPath, parentIdentity: trashIdentity,
-                                        leaf: name, expected: FileIdentity(st), clearImmutable: true))
+                authorize(entryPath, root: context.home, setup: setup) { target, _ -> DetachResult in
+                    guard target.parentIdentity == trashIdentity else {
+                        return .skipped(.changedSinceScan, leftover: false)
+                    }
+                    return journal.detach(parent: target.parent.rawValue, parentPath: trashPath,
+                                          parentIdentity: trashIdentity, leaf: name, expected: FileIdentity(st),
+                                          clearImmutable: true)
+                }
             }) {
             case .committed:
                 outcome.detachedBytes = live.bytes
