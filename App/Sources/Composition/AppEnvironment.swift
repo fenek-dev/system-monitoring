@@ -72,6 +72,9 @@ final class AppEnvironment {
 
     var live: LiveModel { runtime.live }
 
+    /// `--mock-storage cleanup` opens the Storage page in Cleanup mode; everything else starts in Space Map.
+    var storageInitialMode: StorageMode { runtime.mockStorageKind == .cleanup ? .cleanup : .spaceMap }
+
     /// Environment for a new hosting view (popover, dashboard, settings).
     func context() -> ShellContext {
         ShellContext(live: runtime.live, navigation: navigation, settings: settings, history: runtime.history,

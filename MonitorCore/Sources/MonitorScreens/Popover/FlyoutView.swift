@@ -20,6 +20,8 @@ public struct FlyoutView: View {
     let category: MonitorModel.Category
     @Environment(LiveModel.self) private var live
     @Environment(\.unitPreferences) private var units
+    @Environment(\.appCommands) private var commands
+    @Environment(\.processActions) private var processActions
     @Environment(FlyoutPointer.self) private var pointer: FlyoutPointer?
     /// Optional like the pointer: hosts without a Storage model show the plain link.
     @Environment(StorageModel.self) private var storage: StorageModel?
@@ -55,7 +57,8 @@ public struct FlyoutView: View {
                                value: FlyoutModel.format(line.value, category, units: units))
             }
             if category == .disk {
-                FlyoutStorageLink(title: FlyoutModel.storageLink(summary: storage?.summary))
+                FlyoutStorageLink(title: FlyoutModel.storageLink(summary: storage?.summary),
+                                  open: PopoverActions(commands: commands, actions: processActions, live: live).openStorage)
             }
         }
         .padding(6)
@@ -86,7 +89,8 @@ public struct FlyoutView: View {
 /// "Free up space…" (DESIGN §3.1): separated from the app lines, opens the dashboard on Storage.
 struct FlyoutStorageLink: View {
     let title: String
-    @Environment(\.appCommands) private var commands
+    /// `PopoverActions.openStorage`: the one path to the dashboard's Storage page.
+    let open: @MainActor () -> Void
     @State private var frame = CGRect.null
 
     var body: some View {
@@ -100,11 +104,11 @@ struct FlyoutStorageLink: View {
                 .background(FlyoutLineHover(frame: frame))
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(FlyoutPointer.space)) } action: { frame = $0 }
                 .contentShape(Rectangle())
-                .onTapGesture { commands.openDashboard(.storage) }
+                .onTapGesture { open() }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(title)
                 .accessibilityAddTraits(.isButton)
-                .accessibilityAction { commands.openDashboard(.storage) }
+                .accessibilityAction { open() }
         }
     }
 }

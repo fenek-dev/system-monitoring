@@ -38,10 +38,39 @@ public extension RuntimePipeline {
     public let storage: StorageModel
     public let storageActions: StorageActions
 
-    private init(pipeline: any RuntimePipeline, storageActions: StorageActions) {
+    /// Mock mode only: the fixture state the Storage model was seeded with (`--mock-storage`); the app opens the
+    /// page in Cleanup mode for `.cleanup`.
+    public let mockStorageKind: MockStorageState.Kind?
+
+    private init(pipeline: any RuntimePipeline, storageActions: StorageActions, storage: StorageModel? = nil,
+                 mockStorageKind: MockStorageState.Kind? = nil) {
         self.pipeline = pipeline
         self.storageActions = storageActions
-        storage = StorageModel(actions: storageActions)
+        self.storage = storage ?? StorageModel(actions: storageActions)
+        self.mockStorageKind = mockStorageKind
+    }
+
+    /// The model a launch would have after opening the page in `kind`'s state. The mock actions' cache loader
+    /// returns nothing for `.empty`/`.scanning`, so those states (and `noFDA`'s missing access) are seeded here;
+    /// the scanning scan stream never yields (see `MockPipeline`), so the in-progress state stays put.
+    private static func seededMockStorage(_ kind: MockStorageState.Kind, actions: StorageActions) -> StorageModel {
+        let state = MockStorageState.make(kind)
+        let model = StorageModel(actions: actions, home: MockStorageState.home,
+                                 now: { MockDataProvider.referenceDate })
+        model.seedAccess(hasFullDiskAccess: state.hasFullDiskAccess, availableRoots: actions.availableRoots())
+        switch kind {
+        case .empty:
+            break
+        case .scanning:
+            model.startScan()
+            if let progress = state.progress { model.apply(.progress(progress)) }
+            if let tree = state.tree { model.apply(.partial(tree)) }
+        case .map, .cleanup, .noFDA:
+            if let tree = state.tree, let overlay = state.overlay, let set = state.cleanup {
+                model.adopt(tree: tree, overlay: overlay, cleanup: set)
+            }
+        }
+        return model
     }
 
     /// crashSensor: DEBUG canary drill.
@@ -62,7 +91,10 @@ public extension RuntimePipeline {
             return TelltaleRuntime(pipeline: pipeline, storageActions: decorateStorageActions(pipeline.storageActions))
         case .mock(let scenario):
             let pipeline = MockPipeline(scenario: scenario, storage: mockStorage)
-            return TelltaleRuntime(pipeline: pipeline, storageActions: pipeline.storageActions)
+            return TelltaleRuntime(
+                pipeline: pipeline, storageActions: pipeline.storageActions,
+                storage: seededMockStorage(mockStorage, actions: pipeline.storageActions),
+                mockStorageKind: mockStorage)
         }
     }
 

@@ -47,7 +47,9 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     private func makeWindow() -> NSWindow {
         let dialogs = ConfirmDialogHost()
         self.dialogs = dialogs
-        let root = DashboardRoot(dialogs: dialogs).telltaleEnvironment(env.context())
+        let root = DashboardRoot(dialogs: dialogs)
+            .environment(\.storageInitialMode, env.storageInitialMode)
+            .telltaleEnvironment(env.context())
         let host = NSHostingController(rootView: root)
         host.sizingOptions = []
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 860),

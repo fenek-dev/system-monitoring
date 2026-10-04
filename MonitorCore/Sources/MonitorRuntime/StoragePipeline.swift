@@ -15,7 +15,7 @@ import os
 /// copies are replaced only while they still belong to the run's tree.
 @MainActor final class StoragePipeline {
     nonisolated static let summaryFileName = "storage-summary.json"
-    private static let log = Logger(subsystem: "dev.telltale", category: "storage")
+    private nonisolated static let log = Logger(subsystem: "dev.telltale", category: "storage")
 
     private let engine: StorageEngine
     private let summaryURL: URL
@@ -48,7 +48,7 @@ import os
                 adopt(loaded.2)
                 return loaded
             },
-            loadSummary: { [self] in readSummary() },
+            loadSummary: { [self] in await readSummary() },
             reclassify: { [self] options in
                 guard let result = await engine.reclassify(options: options) else { return nil }
                 adopt(result)
@@ -286,7 +286,7 @@ import os
             return
         }
         // A newer scan's summary stays: a late write from an older scan (a run that outlived its window) loses.
-        if let existing = readSummary(), existing.scanDate > tree.scanDate { return }
+        if let existing = Self.readSummary(at: summaryURL),existing.scanDate > tree.scanDate { return }
         let summary = StorageSummary(root: root, scanDate: tree.scanDate, reclaimableBytes: reclaimable.bytes,
                                      provenance: reclaimable.provenance, trashBytes: set.trashBytes)
         do {
@@ -298,15 +298,21 @@ import os
         }
     }
 
-    private func readSummary() -> StorageSummary? {
+    /// Runs the file read and JSON decode off the MainActor (it is awaited at launch, before any window exists).
+    private func readSummary() async -> StorageSummary? {
+        let url = summaryURL
+        return await Task.detached { Self.readSummary(at: url) }.value
+    }
+
+    private nonisolated static func readSummary(at url: URL) -> StorageSummary? {
         let data: Data
-        do { data = try Data(contentsOf: summaryURL) } catch {
+        do { data = try Data(contentsOf: url) } catch {
             let missing = (error as NSError).domain == NSCocoaErrorDomain && (error as NSError).code == NSFileReadNoSuchFileError
-            if !missing { Self.log.error("summary \(self.summaryURL.path, privacy: .public) unreadable: \(error.localizedDescription, privacy: .public)") }
+            if !missing { log.error("summary \(url.path, privacy: .public) unreadable: \(error.localizedDescription, privacy: .public)") }
             return nil
         }
         do { return try JSONDecoder().decode(StorageSummary.self, from: data) } catch {
-            Self.log.error("summary \(self.summaryURL.path, privacy: .public) corrupt: \(error.localizedDescription, privacy: .public)")
+            log.error("summary \(url.path, privacy: .public) corrupt: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }

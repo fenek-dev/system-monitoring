@@ -1,5 +1,6 @@
 import Foundation
 import MonitorLive
+import MonitorMocks
 import MonitorModel
 import os
 import Testing
@@ -367,6 +368,26 @@ struct RuntimeHarness {
         #expect(sum.map { abs($0.median - 5.030) < 0.002 } == true)
         #expect(sum.map { abs($0.max - 9) < 1e-9 } == true)
         #expect(sum.map { $0.p95 >= 5.055 && $0.p95 <= 5.058 } == true)
+    }
+
+    /// Bug: `--mock-storage scanning` left the model idle (the mock cache loader returns nothing), `noFDA` never
+    /// showed the banner state, and the requested kind never reached the app (initial mode).
+    @Test(arguments: MockStorageState.Kind.allCases)
+    func mockStorageSeedsTheModel(_ kind: MockStorageState.Kind) async {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("telltale-runtime-\(UUID().uuidString)")
+        let runtime = TelltaleRuntime.make(mode: .mock(.calm), dataDirectory: dir, disabledSensors: [],
+                                           mockStorage: kind)
+        let model = runtime.storage
+        #expect(runtime.mockStorageKind == kind)
+        let expectedPhase: StorageModel.Phase = switch kind {
+        case .empty: .idle
+        case .scanning: .scanning(hasPrevious: false)
+        case .map, .cleanup, .noFDA: .ready
+        }
+        #expect(model.phase == expectedPhase)
+        #expect(model.hasFullDiskAccess == (kind != .noFDA))
+        #expect((model.spaceMap.tree != nil) == (kind != .empty))
+        await runtime.shutdown()
     }
 
     @Test func historyPersistentReachesTheFacade() async throws {

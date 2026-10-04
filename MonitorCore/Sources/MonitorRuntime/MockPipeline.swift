@@ -22,7 +22,12 @@ import MonitorModel
         let provider = MockDataProvider(scenario: scenario)
         live = LiveModel(device: provider.device)
         history = provider.history()
-        storageActions = provider.storageActions(log: ActionLog(), state: .make(storage))
+        var actions = provider.storageActions(log: ActionLog(), state: .make(storage))
+        if storage == .scanning {
+            // Never yields, so the seeded in-progress state is what the page shows.
+            actions.scan = { _, _ in AsyncStream { _ in } }
+        }
+        storageActions = actions
         feeder = MockFeeder(provider: provider)
     }
 
