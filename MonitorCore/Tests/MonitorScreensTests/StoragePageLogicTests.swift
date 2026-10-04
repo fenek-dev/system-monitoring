@@ -120,6 +120,15 @@ struct StoragePageLogicTests {
         #expect(locked?.drillable == false)
     }
 
+    /// Bug: tile tooltips divided by the layout total, so restricted tiles' nominal weight shrank every share (up to 10 %).
+    @Test func tileShareUsesKnownBytesOnly() throws {
+        let children = [child(1, "Big", 3_000_000_000), child(2, "Locked", nil), child(3, "Mid", 1_000_000_000)]
+        let derived = SpaceMapLogic.derive(children: children, tree: nil, provenance: .exact, size: size)
+        let big = try #require(derived.tiles.first { $0.id == 1 })
+        #expect(big.share == 0.75)
+        #expect(derived.tiles.first { $0.id == 2 }?.share == nil)
+    }
+
     /// Bug: arrow navigation runs off the ends; Return drills a merged or restricted tile.
     @Test func keyboardClampsAndOnlyDrillsNormalTiles() {
         let order: [Int32] = [5, 7, 9, TTSpaceMapLayout.smallerID]

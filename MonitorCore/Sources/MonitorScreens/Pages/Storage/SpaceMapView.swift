@@ -76,6 +76,8 @@ enum SpaceMapLogic {
             guard shownIDs.contains(tile.id), tile.kind == .normal, let bytes = byTile[tile.id]?.bytes else { return tile }
             var t = tile
             t.valueText = StorageFormat.bytes(bytes, provenance: provenance, style: .headline)
+            // Same denominator as the table's share column: known bytes only, not the restricted tiles' layout weight.
+            if known > 0 { t.share = Double(bytes) / known }
             return t
         }
 

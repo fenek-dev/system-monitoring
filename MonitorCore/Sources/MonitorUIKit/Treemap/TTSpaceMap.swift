@@ -15,13 +15,17 @@ public struct TTSpaceMapTile: Equatable, Sendable {
     public var label: String
     public var valueText: String
     public var kind: Kind
+    /// Fraction 0...1 shown in the tooltip / accessibility label instead of `value / total`. For callers whose
+    /// layout weights include nominal entries (restricted tiles) that must not dilute the real shares.
+    public var share: Double?
 
-    public init(id: Int32, value: Double, label: String, valueText: String, kind: Kind = .normal) {
+    public init(id: Int32, value: Double, label: String, valueText: String, kind: Kind = .normal, share: Double? = nil) {
         self.id = id
         self.value = value
         self.label = label
         self.valueText = valueText
         self.kind = kind
+        self.share = share
     }
 }
 
@@ -165,7 +169,7 @@ public struct TTSpaceMap: View {
             t.kind == .smaller ? formatValue(t.value) : t.valueText
         }
 
-        func share(_ t: TTSpaceMapTile) -> String { TTFormat.number(t.value / layout.total * 100, digits: 0) }
+        func share(_ t: TTSpaceMapTile) -> String { TTFormat.number((t.share ?? t.value / layout.total) * 100, digits: 0) }
 
         func tooltip(_ t: TTSpaceMapTile, formatValue: (Double) -> String) -> String {
             switch t.kind {
