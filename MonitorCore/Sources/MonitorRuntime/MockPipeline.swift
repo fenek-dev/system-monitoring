@@ -12,6 +12,7 @@ import MonitorModel
 @MainActor final class MockPipeline: RuntimePipeline {
     let live: LiveModel
     let history: any HistoryProvider
+    let storageActions: StorageActions
 
     private let feeder: MockFeeder
     private var sleeper: Task<Void, Never>?
@@ -21,6 +22,7 @@ import MonitorModel
         let provider = MockDataProvider(scenario: scenario)
         live = LiveModel(device: provider.device)
         history = provider.history()
+        storageActions = provider.storageActions(log: ActionLog())
         feeder = MockFeeder(provider: provider)
     }
 

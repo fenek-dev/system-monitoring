@@ -267,6 +267,122 @@ public struct MockDataProvider: Sendable {
         )
     }
 
+    // MARK: - Storage
+
+    /// Canned `StorageActions` over `state`: never touches disk, every call is logged to `log`, streams yield all
+    /// their events up front and finish. `clean` logs on the call (not on iteration), so tests need not drain it.
+    public func storageActions(log: ActionLog, state: MockStorageState = .make(.map)) -> StorageActions {
+        let home = MockStorageState.home
+        let referenceDate = start
+
+        @Sendable func completedStream(_ events: [CleanEvent]) -> AsyncStream<CleanEvent> {
+            AsyncStream { continuation in
+                for event in events { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
+
+        return StorageActions(
+            scan: { root, _ in
+                log.record(.scan, target: root.path, result: .done)
+                // A rescan of a state that already has data returns that data; otherwise the populated map.
+                let full = state.cleanup != nil ? state : MockStorageState.make(.map)
+                let partial = MockStorageState.make(.scanning, referenceDate: referenceDate)
+                return AsyncStream { continuation in
+                    if let tree = full.tree, let set = full.cleanup, let partialTree = partial.tree {
+                        for (files, fraction) in [(61_200, 0.15), (118_900, 0.55), (182_340, 0.95)] {
+                            continuation.yield(.progress(ScanProgress(
+                                files: files, bytes: UInt64(fraction * 100_000_000_000),
+                                currentPath: "\(home)/Library/Caches/com.google.Chrome")))
+                        }
+                        continuation.yield(.partial(partialTree))
+                        continuation.yield(.finished(tree))
+                        continuation.yield(.classified(set))
+                    }
+                    continuation.finish()
+                }
+            },
+            cancelScan: {},
+            loadCached: { _, _ in
+                guard let tree = state.tree, let overlay = state.overlay, let set = state.cleanup else { return nil }
+                return (tree, overlay, set)
+            },
+            loadSummary: { state.summary },
+            reclassify: { _ in state.cleanup },
+            policy: { state.policy },
+            checkInUse: { items in Set(items.map(\.id)).intersection(state.inUseIDs) },
+            clean: { items in
+                var outcomes: [CleanItemOutcome] = []
+                var freed: UInt64 = 0, trashed: UInt64 = 0, evicted: UInt64 = 0
+                var undoEntries: [UndoEntry] = []
+                for item in items {
+                    log.record(item.mode == .trash ? .trash : .clean, target: "\(item.id)", result: .done)
+                    let skip: SkipReason? =
+                        state.inUseIDs.contains(item.id) ? .inUse : item.mode == .none ? .notPermitted : nil
+                    guard skip == nil else {
+                        outcomes.append(CleanItemOutcome(itemID: item.id, skip: skip))
+                        continue
+                    }
+                    var removed: [StorageNodeID] = []
+                    var committed = 0
+                    if let node = item.nodeID, let tree = state.tree {
+                        if item.keepParent {
+                            let first = tree.firstChild[Int(node)]
+                            removed = Array(first ..< first + tree.childCount[Int(node)])
+                            committed = removed.count
+                        } else {
+                            removed = [node]
+                        }
+                    }
+                    let bytes = item.privateBytesExcludingLinks ?? item.allocBytes
+                    let trashPath = "\(home)/.Trash/\(item.name)"
+                    outcomes.append(CleanItemOutcome(
+                        itemID: item.id, detachedBytes: bytes, removedNodes: removed, committedChildren: committed,
+                        trashedTo: item.mode == .trash ? trashPath : nil))
+                    switch item.mode {
+                    case .trash:
+                        trashed += bytes
+                        if let identity = item.identity {
+                            undoEntries.append(UndoEntry(
+                                itemID: item.id, nodeID: item.nodeID, originalPath: item.path, trashPath: trashPath,
+                                identity: identity, trashParentPath: "\(home)/.Trash",
+                                trashParentIdentity: FileIdentity(dev: identity.dev, ino: 3, isDirectory: true)))
+                        }
+                    case .evict: evicted += bytes
+                    case .remove, .simctl, .none: freed += bytes
+                    }
+                }
+                var events: [CleanEvent] = outcomes.map { .item($0) }
+                if freed + evicted > 0 { events.append(.freed(freed + evicted)) }
+                let undo = undoEntries.isEmpty ? nil : UndoRecord(
+                    id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0xA1)), date: referenceDate,
+                    entries: undoEntries)
+                events.append(.finished(CleanReport(freedBytes: freed, trashedBytes: trashed, evictedBytes: evicted,
+                                                    outcomes: outcomes, undo: undo)))
+                return completedStream(events)
+            },
+            cancelClean: { log.record(.cancelClean, target: "", result: .done) },
+            undo: { record in
+                log.record(.undo, target: record.id.uuidString, result: .done)
+                let restored = record.entries.map {
+                    CleanEvent.restored(itemID: $0.itemID, finalPath: $0.originalPath)
+                }
+                return completedStream(restored + [.finished(CleanReport())])
+            },
+            emptyTrash: {
+                log.record(.emptyTrash, target: "\(home)/.Trash", result: .done)
+                return completedStream([.finished(CleanReport(freedBytes: state.cleanup?.trashBytes ?? 0))])
+            },
+            release: {},
+            availableRoots: { [.home(home), .volume(path: "/Volumes/Backup", name: "Backup")] },
+            hasFullDiskAccess: { state.hasFullDiskAccess },
+            ignore: { log.record(.ignore, target: $0, result: .done) },
+            unignore: { log.record(.unignore, target: $0, result: .done) },
+            revealInFinder: { log.record(.revealInFinder, target: $0, result: .done) },
+            openFDASettings: {}
+        )
+    }
+
     // MARK: - CPU
 
     private struct CPUResult { var snapshot: CPUSnapshot; var usagePercent: Double }
