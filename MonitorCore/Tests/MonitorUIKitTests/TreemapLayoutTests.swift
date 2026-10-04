@@ -146,6 +146,20 @@ import Testing
         }
     }
 
+    @Test func presortedSquarifyMatchesBaseline() {
+        for (n, c) in TreemapBaseline.cases.enumerated() {
+            let r = CGRect(x: c.rect[0], y: c.rect[1], width: c.rect[2], height: c.rect[3])
+            func key(_ i: Int) -> Double { c.values[i].isFinite && c.values[i] > 0 ? c.values[i] : -.infinity }
+            let order = c.values.indices.sorted { key($0) != key($1) ? key($0) > key($1) : $0 < $1 }
+            let sorted = order.map { c.values[$0] }
+            let other = c.other.flatMap { order.firstIndex(of: $0) }
+            let rects = TreemapLayout.squarify(presorted: sorted, otherIndex: other, in: r)
+            var restored = [CGRect](repeating: .zero, count: rects.count)
+            for (k, i) in order.enumerated() { restored[i] = rects[k] }
+            expectMatches(restored, c, n)
+        }
+    }
+
     @Test func squarifiedBeatsSliceAndDiceOn200Seeds() {
         for seed in 0..<200 {
             var rng = SplitMix(state: UInt64(seed))

@@ -11,6 +11,15 @@ import Foundation
 ///   insets each tile by 1 pt).
 public enum TreemapLayout {
     public static func squarify(_ values: [Double], otherIndex: Int?, in rect: CGRect) -> [CGRect] {
+        layout(values, otherIndex: otherIndex, in: rect, presorted: false)
+    }
+
+    /// Same layout for input already in descending order (ties in input order): skips the sort, so it is O(n).
+    public static func squarify(presorted values: [Double], otherIndex: Int?, in rect: CGRect) -> [CGRect] {
+        layout(values, otherIndex: otherIndex, in: rect, presorted: true)
+    }
+
+    private static func layout(_ values: [Double], otherIndex: Int?, in rect: CGRect, presorted: Bool) -> [CGRect] {
         var result = [CGRect](repeating: .zero, count: values.count)
         guard !rect.isEmpty, rect.width > 0, rect.height > 0 else { return result }
         func valid(_ v: Double) -> Bool { v.isFinite && v > 0 }
@@ -38,7 +47,9 @@ public enum TreemapLayout {
         }
 
         // Descending by value; ties keep input order.
-        named.sort { values[$0] != values[$1] ? values[$0] > values[$1] : $0 < $1 }
+        if !presorted {
+            named.sort { values[$0] != values[$1] ? values[$0] > values[$1] : $0 < $1 }
+        }
         let namedTotal = named.reduce(0) { $0 + values[$1] }
         let scale = Double(remaining.width * remaining.height) / namedTotal
         let areas = named.map { values[$0] * scale }
@@ -49,13 +60,17 @@ public enum TreemapLayout {
             // Grow the row greedily.
             var end = start + 1
             var rowSum = areas[start]
-            var worst = worstRatio(areas[start..<end], sum: rowSum, side: side)
+            var minA = areas[start], maxA = areas[start]
+            var worst = worstRatio(minA: minA, maxA: maxA, sum: rowSum, side: side)
             while end < named.count {
-                let nextSum = rowSum + areas[end]
-                let nextWorst = worstRatio(areas[start...end], sum: nextSum, side: side)
+                let a = areas[end]
+                let nextSum = rowSum + a
+                let nextWorst = worstRatio(minA: min(minA, a), maxA: max(maxA, a), sum: nextSum, side: side)
                 if nextWorst > worst { break }
                 worst = nextWorst
                 rowSum = nextSum
+                minA = min(minA, a)
+                maxA = max(maxA, a)
                 end += 1
             }
             let isLast = end == named.count
@@ -65,14 +80,14 @@ public enum TreemapLayout {
         return result
     }
 
-    /// Worst aspect ratio (≥ 1) of a row with areas `row` summing to `sum` laid along `side`.
-    static func worstRatio(_ row: ArraySlice<Double>, sum: Double, side: Double) -> Double {
+    /// Worst aspect ratio (≥ 1) of a row laid along `side`. Both ratio terms are monotone in the area, so the row's
+    /// extremes (min/max area) give the same value as scanning every member, in O(1).
+    private static func worstRatio(minA: Double, maxA: Double, sum: Double, side: Double) -> Double {
         guard sum > 0, side > 0 else { return .infinity }
         let s2 = sum * sum, w2 = side * side
         var worst = 1.0
-        for a in row where a > 0 {
-            worst = max(worst, max(w2 * a / s2, s2 / (w2 * a)))
-        }
+        if maxA > 0 { worst = max(worst, w2 * maxA / s2) }
+        if minA > 0 { worst = max(worst, s2 / (w2 * minA)) }
         return worst
     }
 
