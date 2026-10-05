@@ -2,6 +2,19 @@ import Foundation
 import MonitorModel
 import Observation
 
+/// Clipboard history as the app reports it, shown in Settings.
+public struct ClipboardStatus: Equatable, Sendable {
+    public var needsAccessibility: Bool
+    public var itemCount: Int
+    public var byteSize: Int64
+
+    public init(needsAccessibility: Bool = false, itemCount: Int = 0, byteSize: Int64 = 0) {
+        self.needsAccessibility = needsAccessibility
+        self.itemCount = itemCount
+        self.byteSize = byteSize
+    }
+}
+
 /// User settings (DESIGN §3.14), persisted in one `UserDefaults` suite per data directory.
 ///
 /// Storage is key-per-field with plain property-list values, never a synthesized `Codable` blob, so a missing,
@@ -12,7 +25,8 @@ import Observation
 /// - `DisabledSensors`: array of `SensorID` raw values (ARCHITECTURE §6 kill switch);
 /// - `overlay.enabled` (Bool), `overlay.corner` (`OverlayCorner` raw value), `overlay.opacity` (Double, clamped
 ///   to `overlayOpacityRange`), `overlay.hotkey` (`{keyCode, modifiers}` Carbon ints; invalid → default);
-/// - `extraDim.enabled` (Bool, default false).
+/// - `extraDim.enabled` (Bool, default false);
+/// - `clipboard.enabled` (Bool, default true), `clipboard.hotkey` (as `overlay.hotkey`; invalid → ⌘⇧V).
 @MainActor @Observable
 public final class SettingsStore {
     public enum Key {
@@ -25,6 +39,8 @@ public final class SettingsStore {
         public static let overlayOpacity = "overlay.opacity"
         public static let overlayHotKey = "overlay.hotkey"
         public static let extraDimEnabled = "extraDim.enabled"
+        public static let clipboardEnabled = "clipboard.enabled"
+        public static let clipboardHotKey = "clipboard.hotkey"
         public static let storageIgnoredPaths = "storage.ignoredPaths"
         public static let storageLargeThreshold = "storage.largeThreshold"
         public static let storageOldThreshold = "storage.oldThreshold"
@@ -44,6 +60,8 @@ public final class SettingsStore {
         case unavailable
     }
 
+    public typealias ClipboardStatus = MonitorScreens.ClipboardStatus
+
     public static let overlayOpacityDefault = 0.85
     public static let overlayOpacityRange: ClosedRange<Double> = 0.4...1
 
@@ -59,6 +77,12 @@ public final class SettingsStore {
     @ObservationIgnored public var refreshExtraDimStatus: (@MainActor () -> ExtraDimStatus)?
     /// Opens System Settings › Privacy & Security › Accessibility. Nil in renders.
     @ObservationIgnored public var openAccessibilitySettings: (@MainActor () -> Void)?
+
+    /// Permission and size of the clipboard history, re-read every 1 s while Settings shows the switch on.
+    /// Nil in renders → no Accessibility hint, "0 items".
+    @ObservationIgnored public var refreshClipboardStatus: (@MainActor () -> ClipboardStatus)?
+    /// Settings "Clear history" (the app keeps pinned items). Nil in renders.
+    @ObservationIgnored public var clearClipboardHistory: (@MainActor () -> Void)?
 
     public var units: UnitPreferences {
         didSet { if units != oldValue { saveUnits() } }
@@ -103,6 +127,18 @@ public final class SettingsStore {
         didSet { if extraDimEnabled != oldValue { defaults.set(extraDimEnabled, forKey: Key.extraDimEnabled) } }
     }
 
+    // MARK: Clipboard history (spec 2026-10-06 clipboard history, "Settings")
+
+    public var clipboardEnabled: Bool {
+        didSet { if clipboardEnabled != oldValue { defaults.set(clipboardEnabled, forKey: Key.clipboardEnabled) } }
+    }
+
+    public var clipboardHotKey: HotKeySpec {
+        didSet {
+            if clipboardHotKey != oldValue { Self.saveHotKey(clipboardHotKey, defaults, key: Key.clipboardHotKey) }
+        }
+    }
+
     // MARK: Storage (cleanup suggestions)
 
     /// Paths the user excluded from cleanup suggestions (stored as a sorted array of strings).
@@ -143,6 +179,8 @@ public final class SettingsStore {
         storedOverlayOpacity = Self.clampOpacity((defaults.object(forKey: Key.overlayOpacity) as? NSNumber)?.doubleValue)
         overlayHotKey = Self.loadHotKey(defaults)
         extraDimEnabled = defaults.object(forKey: Key.extraDimEnabled) as? Bool ?? false
+        clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? true
+        clipboardHotKey = Self.loadHotKey(defaults, key: Key.clipboardHotKey, fallback: .defaultClipboard)
     }
 
     /// `nil` → `.standard`; otherwise a suite named after the directory, so every worktree
@@ -271,18 +309,22 @@ public final class SettingsStore {
         return min(max(value, overlayOpacityRange.lowerBound), overlayOpacityRange.upperBound)
     }
 
-    static func loadHotKey(_ d: UserDefaults) -> HotKeySpec {
-        guard let dict = d.dictionary(forKey: Key.overlayHotKey),
+    static func loadHotKey(_ d: UserDefaults, key: String = Key.overlayHotKey,
+                           fallback: HotKeySpec = .defaultOverlay) -> HotKeySpec {
+        guard let dict = d.dictionary(forKey: key),
               let code = (dict["keyCode"] as? Int).flatMap(UInt32.init(exactly:)),
               let mods = (dict["modifiers"] as? Int).flatMap(UInt32.init(exactly:))
-        else { return .defaultOverlay }
+        else { return fallback }
         let spec = HotKeySpec(keyCode: code, modifiers: mods)
-        return spec.isValid ? spec : .defaultOverlay
+        return spec.isValid ? spec : fallback
     }
 
     private func saveHotKey() {
-        defaults.set(["keyCode": Int(overlayHotKey.keyCode), "modifiers": Int(overlayHotKey.modifiers)],
-                     forKey: Key.overlayHotKey)
+        Self.saveHotKey(overlayHotKey, defaults, key: Key.overlayHotKey)
+    }
+
+    private static func saveHotKey(_ spec: HotKeySpec, _ d: UserDefaults, key: String) {
+        d.set(["keyCode": Int(spec.keyCode), "modifiers": Int(spec.modifiers)], forKey: key)
     }
 
     private func saveDisabled() {

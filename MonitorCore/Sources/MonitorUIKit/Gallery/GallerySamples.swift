@@ -6,7 +6,7 @@ import SwiftUI
 @MainActor enum GallerySamples {
     static var items: [TTGallery.Item] {
         [
-            .init(id: "icons", size: CGSize(width: 640, height: 40)) { AnyView(IconsSample()) },
+            .init(id: "icons", size: CGSize(width: 760, height: 40)) { AnyView(IconsSample()) },
             .init(id: "type", size: CGSize(width: 560, height: 120)) { AnyView(TypeSample()) },
             // Main@2x: tile row at (240, 72), 1020×168.
             .init(id: "metric-tiles", size: CGSize(width: 1020, height: 168)) { AnyView(MetricTilesSample()) },

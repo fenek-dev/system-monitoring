@@ -9,7 +9,8 @@ import MonitorModel
 ///     --open-dashboard [page]                          open the dashboard at launch (default overview)
 ///     --open-popover                                    open the popover at launch
 ///     --open-settings                                   open Settings at launch (verification aid)
-///     --overlay                                         show the stats overlay this run (not persisted)
+///     --open-clipboard                                  open the clipboard picker at launch (verification aid)
+///     --overlay                                      show the stats overlay this run (not persisted)
 ///     --crash-sensor <id>                               DEBUG canary drill (ignored in Release by the app)
 ///     --status-preview elevated|critical                DEBUG: status item shows a thermals alert (critical pulses)
 ///     --login-item register|unregister|status           launch-at-login CLI check: prints SMAppService status, exits
@@ -22,6 +23,8 @@ public struct LaunchOptions: Sendable, Equatable {
     public var openDashboard: DashboardPage?
     public var openPopover = false
     public var openSettings = false
+    /// `--open-clipboard`: show the clipboard picker at launch (verification aid).
+    public var openClipboard = false
     /// `--overlay`: show the overlay for this run without persisting `overlayEnabled` (perf scenario).
     public var overlay = false
     public var crashSensor: SensorID?
@@ -73,6 +76,8 @@ public struct LaunchOptions: Sendable, Equatable {
                 o.openPopover = true
             case "--open-settings":
                 o.openSettings = true
+            case "--open-clipboard":
+                o.openClipboard = true
             case "--overlay":
                 o.overlay = true
             case "--crash-sensor":

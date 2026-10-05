@@ -27,6 +27,8 @@ let package = Package(
         // The app's Extra Dim adapters read the backlight through DisplayServices.h (weak, tt_*_available()).
         .library(name: "CPrivate", targets: ["CPrivate"]),
         .library(name: "MixerCore", targets: ["MixerCore"]),
+        .library(name: "ClipboardCore", targets: ["ClipboardCore"]),
+        .library(name: "ClipboardStore", targets: ["ClipboardStore"]),
         .executable(name: "telltale-render", targets: ["telltale-render"]),
         .executable(name: "telltale-probe", targets: ["telltale-probe"]),
     ],
@@ -62,6 +64,12 @@ let package = Package(
         .target(name: "MonitorUIKit", dependencies: ["MonitorModel"]),
         // Per-app volume (Core Audio process taps), from the standalone Volume Mixer; Swift 5 mode as written there.
         .target(name: "MixerCore", swiftSettings: [.swiftLanguageMode(.v5)]),
+        // Clipboard history: pure model, pasteboard classifier and fuzzy matcher; the store keeps SQLite + image files.
+        .target(name: "ClipboardCore"),
+        .target(
+            name: "ClipboardStore",
+            dependencies: ["ClipboardCore", .product(name: "GRDB", package: "GRDB.swift")]
+        ),
         // Test-support library (imports Testing): assertSnapshot. Never linked by the app.
         .target(name: "MonitorSnapshotTesting", dependencies: ["MonitorUIKit", "SnapshotProcessSetup"]),
         // ObjC, test-only: image constructor sets AppleFontSmoothing = 0 before any test lays out text.
@@ -71,7 +79,7 @@ let package = Package(
         .target(name: "MonitorDiskTools", dependencies: ["MonitorModel", "CPrivate"]),
         .target(
             name: "MonitorScreens",
-            dependencies: ["MonitorModel", "MonitorLive", "MonitorUIKit", "MonitorMocks"]
+            dependencies: ["MonitorModel", "MonitorLive", "MonitorUIKit", "MonitorMocks", "ClipboardCore"]
         ),
         .target(
             name: "MonitorRuntime",
@@ -108,6 +116,7 @@ let package = Package(
             name: "MonitorScreensTests",
             dependencies: [
                 "MonitorScreens", "MonitorUIKit", "MonitorLive", "MonitorMocks", "MonitorModel", "MonitorSnapshotTesting",
+                "ClipboardCore",
             ],
             exclude: ["__Snapshots__"]
         ),
@@ -123,6 +132,8 @@ let package = Package(
             resources: [.copy("Fixtures")]
         ),
         .testTarget(name: "MixerCoreTests", dependencies: ["MixerCore"], swiftSettings: [.swiftLanguageMode(.v5)]),
+        .testTarget(name: "ClipboardCoreTests", dependencies: ["ClipboardCore"]),
+        .testTarget(name: "ClipboardStoreTests", dependencies: ["ClipboardStore", "ClipboardCore"]),
         .testTarget(
             name: "MonitorRuntimeTests",
             dependencies: [

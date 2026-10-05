@@ -101,6 +101,7 @@ private struct ShellEnvironmentModifier: ViewModifier {
             .environment(\.now, context.now)
             .environment(\.historyPersistent, context.historyStatus.persistent)      // observed: follows resolve
             .environment(\.overlayHotKeyStatus, context.hotKeyState.status)            // observed: follows the App
+            .environment(\.clipboardHotKeyStatus, context.hotKeyState.clipboardStatus)
             .preferredColorScheme(.dark)
             .environment(\.colorScheme, .dark)
         if context.isSnapshot {

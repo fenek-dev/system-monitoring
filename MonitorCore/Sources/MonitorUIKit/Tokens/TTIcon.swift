@@ -7,6 +7,7 @@ public enum TTIconName: String, CaseIterable, Sendable {
     case overview, cpu, gpu, memory, network, thermals, power, disk, storage, processes, history
     case pause, play, settings, chevronRight, chevronDown, ellipsis, search, battery, fan, eject, quit, dragHandle
     case overlay, volume
+    case pin, trash, document, image, text
 
     /// SVG path data in the 16 grid (rects/circles/ellipses converted to path commands).
     var svg: String {
@@ -66,6 +67,16 @@ public enum TTIconName: String, CaseIterable, Sendable {
             Self.rect(1.5, 2.5, 13, 11, 1.5) + Self.rect(9, 5, 3, 2, 0)
         case .volume:                                            // speaker with two waves
             "M2 6H4.5L8 3V13L4.5 10H2z" + "M10.5 5.5A3.5 3.5 0 0 1 10.5 10.5M12.5 3.5A6.5 6.5 0 0 1 12.5 12.5"
+        case .pin:                                               // tack: head bar, body, needle
+            "M6 2.5h4M7 2.5v4L5 9h6L9 6.5v-4M8 9v5"
+        case .trash:
+            "M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.5a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.5M6.5 7v4M9.5 7v4"
+        case .document:                                          // page with a folded corner and two text lines
+            "M3.5 1.5h6L13 5v9.5H3.5zM9.5 1.5V5H13M5.5 8.5h5M5.5 11h5"
+        case .image:                                             // frame, sun and hills
+            Self.rect(1.5, 2.5, 13, 11, 1.5) + Self.circle(5.5, 6.5, 1.2) + "M2 12L6 8.5l3 2.5 2-1.5L14 12"
+        case .text:
+            "M3 4h10M3 8h10M3 12h6"
         }
     }
 

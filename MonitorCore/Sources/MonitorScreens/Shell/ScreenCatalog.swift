@@ -1,3 +1,4 @@
+import ClipboardCore
 import CoreGraphics
 import Foundation
 import MonitorLive
@@ -10,7 +11,8 @@ import SwiftUI
 /// Every page is registered here from its public `init()`, so page owners (W5) never edit this file.
 ///
 /// Ids → reference artboards: `popover`→MenuBar, `popover-alert`→MenuBarAlert (default `.thermalFair`),
-/// `status-icons`→StatusIcon, `overview`→Main, `cpu` … `history` → same-named artboards, `settings` (ADDED).
+/// `status-icons`→StatusIcon, `overview`→Main, `cpu` … `history` → same-named artboards, `settings` (ADDED),
+/// `clipboard`, `clipboard-search|empty|nomatch|banner` (ADDED, DESIGN §3.18: no artboard).
 public enum ScreenCatalog {
     public struct Entry: Identifiable {
         public var id: String
@@ -32,7 +34,8 @@ public enum ScreenCatalog {
     public static let dashboardSize = CGSize(width: 1280, height: 860)
     public static let popoverArtboardSize = CGSize(width: 440, height: 720)
     public static let statusIconsSize = CGSize(width: 640, height: 330)
-    public static let settingsSize = CGSize(width: 520, height: 872)       // intrinsic height of the real window
+    public static let settingsSize = CGSize(width: 520, height: 1040)      // intrinsic height of the real window
+    public static let clipboardArtboardSize = CGSize(width: 460, height: 500)
 
     @MainActor public static let entries: [Entry] = {
         var e: [Entry] = [
@@ -62,6 +65,16 @@ public enum ScreenCatalog {
                 .background(ShellStyle.bgWindow)
                 .telltaleEnvironment(ctx))
         })
+        let history = ClipboardFixture.items(now: MockDataProvider.referenceDate)
+        for (id, items, query, banner) in [("clipboard", history, "", false),
+                                           ("clipboard-search", history, "saf", false),
+                                           ("clipboard-empty", [], "", false),
+                                           ("clipboard-nomatch", history, "zzq", false),
+                                           ("clipboard-banner", history, "", true)] {
+            e.append(Entry(id: id, size: clipboardArtboardSize) { _ in
+                clipboardStage(items: items, query: query, needsAccessibility: banner)
+            })
+        }
         return e
     }()
 
@@ -120,6 +133,16 @@ public enum ScreenCatalog {
             .environment(\.storageInitialMode, storage == .cleanup ? .cleanup : .spaceMap)
             .frame(width: size.width, height: size.height)
             .telltaleEnvironment(ctx))
+    }
+
+    /// The clipboard picker (DESIGN §3.18) on the fake desktop, 20 pt of it visible around the panel.
+    @MainActor static func clipboardStage(items: [ClipItem], query: String, needsAccessibility: Bool) -> AnyView {
+        let model = ClipboardPickerModel(items: items, now: MockDataProvider.referenceDate,
+                                         needsAccessibility: needsAccessibility)
+        model.query = query
+        return AnyView(ClipboardPickerView(model: model)
+            .frame(width: clipboardArtboardSize.width, height: clipboardArtboardSize.height)
+            .background(ShellStyle.hex(0x121317)))
     }
 
     /// The MenuBar/MenuBarAlert artboard (440×720): desktop `#121317`, 26-pt fake menu bar with the highlighted

@@ -47,6 +47,7 @@ public struct SettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(LiveModel.self) private var live
     @Environment(\.overlayHotKeyStatus) private var hotKeyStatus
+    @Environment(\.clipboardHotKeyStatus) private var clipboardHotKeyStatus
     private let loginItem: LoginItemControl
     private let about: AboutInfo
 
@@ -55,6 +56,7 @@ public struct SettingsView: View {
     @State private var sensorsReenabled = false
     @State private var historySize: String?
     @State private var extraDimStatus: SettingsStore.ExtraDimStatus = .off
+    @State private var clipboardStatus = ClipboardStatus()
 
     private let maxHeight: CGFloat?
 
@@ -88,6 +90,7 @@ public struct SettingsView: View {
                 extraDimRow
             }
             section("Overlay") { overlayRows }
+            section("Clipboard") { clipboardRows }
             section("Units") { unitRows }
             section("Popover") { popoverRows }
             if !disabledSensorRows.isEmpty { section("Sensors") { sensorRows } }
@@ -282,6 +285,84 @@ public struct SettingsView: View {
                                            set: { settings.overlayOpacity = $0 }),
                         options: Self.opacitySteps.map { ($0, TTFormat.percent($0)) })
                 .accessibilityLabel("Overlay opacity")
+        }
+    }
+
+    // Clipboard (spec 2026-10-06 clipboard history, "Settings")
+
+    /// Note under the recorder; it describes ⌘⇧V only, so another shortcut shows none.
+    public static func clipboardShortcutNote(_ spec: HotKeySpec) -> String? {
+        spec == .defaultClipboard ? "\(spec.display) replaces Paste and Match Style in other apps." : nil
+    }
+
+    /// "12 items · 3.4 MB"; "1 item".
+    static func clipboardHistoryText(_ status: ClipboardStatus) -> String {
+        let count = "\(status.itemCount) \(status.itemCount == 1 ? "item" : "items")"
+        return count + " · " + TTFormat.storage(UInt64(max(status.byteSize, 0)), style: .headline)
+    }
+
+    @ViewBuilder private var clipboardRows: some View {
+        @Bindable var settings = settings
+        row(divider: false) {
+            VStack(alignment: .leading, spacing: 2) {
+                label("Clipboard history")
+                if clipboardStatus.needsAccessibility {
+                    Text("Needs Accessibility to paste")
+                        .font(ShellStyle.caption).foregroundStyle(TTColor.statusElevated).lineLimit(2)
+                }
+            }
+            Spacer()
+            if clipboardStatus.needsAccessibility {
+                Button("Open System Settings") { settings.openAccessibilitySettings?() }
+                    .controlSize(.small)
+                    .help("Allow Warden in System Settings › Privacy & Security › Accessibility")
+            }
+            Toggle("", isOn: $settings.clipboardEnabled)
+                .toggleStyle(.switch).controlSize(.small).tint(ShellStyle.accent).labelsHidden()
+                .accessibilityLabel("Clipboard history")
+        }
+        .padding(.vertical, 4)
+        .task(id: settings.clipboardEnabled) { await pollClipboard() }
+        row {
+            VStack(alignment: .leading, spacing: 2) {
+                label("Shortcut")
+                if let note = Self.clipboardShortcutNote(settings.clipboardHotKey) {
+                    Text(note).font(ShellStyle.caption).foregroundStyle(ShellStyle.textTertiary).lineLimit(2)
+                }
+                if let status = Self.shortcutStatusText(clipboardHotKeyStatus) {
+                    Text(status).font(ShellStyle.caption).foregroundStyle(TTColor.statusElevated).lineLimit(2)
+                }
+            }
+            Spacer()
+            HotKeyRecorder(spec: $settings.clipboardHotKey, label: "Clipboard shortcut")
+        }
+        .padding(.vertical, 4)
+        row {
+            VStack(alignment: .leading, spacing: 2) {
+                label("History")
+                Text("Pinned items are kept").font(ShellStyle.caption).foregroundStyle(ShellStyle.textTertiary)
+            }
+            Spacer()
+            Text(Self.clipboardHistoryText(clipboardStatus))
+                .font(ShellStyle.caption).foregroundStyle(ShellStyle.textSecondary).monospacedDigit()
+            Button("Clear history") {
+                settings.clearClipboardHistory?()
+                clipboardStatus = settings.refreshClipboardStatus?() ?? clipboardStatus
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// The history size is read once; Accessibility has no change notification, so while the switch is on the app
+    /// is asked every 1 s (like `pollExtraDim`).
+    private func pollClipboard() async {
+        guard let refresh = settings.refreshClipboardStatus else { return }
+        clipboardStatus = refresh()
+        while settings.clipboardEnabled {
+            try? await Task.sleep(for: .seconds(1))
+            if Task.isCancelled { return }
+            clipboardStatus = refresh()
         }
     }
 

@@ -19,6 +19,7 @@ public struct HotKeySpec: Equatable, Codable, Sendable {
     public static let controlKey: UInt32 = 4096
 
     public static let defaultOverlay = HotKeySpec(keyCode: 6, modifiers: 2048)   // ⌥Z
+    public static let defaultClipboard = HotKeySpec(keyCode: 9, modifiers: cmdKey | shiftKey)   // ⌘⇧V
 
     /// At least one of ⌘, ⌥, ⌃ (a shift-only or bare key would swallow ordinary typing), and not reserved.
     public var isValid: Bool { modifiers & (Self.cmdKey | Self.optionKey | Self.controlKey) != 0 && !isReserved }

@@ -40,4 +40,4 @@ targets:
         NSAudioCaptureUsageDescription: Warden reads each app's audio so it can replay it at the volume you set.
     dependencies:
       - package: MonitorCore
-        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit, MonitorExtraDim, CPrivate, MixerCore]
+        products: [MonitorModel, MonitorLive, MonitorRuntime, MonitorScreens, MonitorUIKit, MonitorExtraDim, CPrivate, MixerCore, ClipboardCore, ClipboardStore]

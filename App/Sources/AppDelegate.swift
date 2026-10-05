@@ -18,10 +18,12 @@ import os
     private var hotKey: GlobalHotKey?
     /// Settings' recorder is capturing keys: the global hotkey stays unregistered until it stops.
     private var hotKeyRecording = false
+    private var activeRecorders = 0
     private var overlayLoop: ObservationLoop<OverlayKey>?
     private var hotKeyLoop: ObservationLoop<HotKeySpec>?
     private var power: PowerEvents?
     private var extraDim: ExtraDimService?
+    private var clipboard: ClipboardController?
     private var termination: TerminationController?
     /// Held for the process lifetime: one instance per data dir (A-M1 ruling).
     private var instanceLock: InstanceLock?
@@ -106,6 +108,8 @@ import os
         installOverlayWiring()
         power = PowerEvents(willSleep: { env.runtime.systemWillSleep() }, didWake: { env.runtime.systemDidWake() })
         extraDim = ExtraDimService(settings: env.settings)
+        clipboard = ClipboardController(env: env)               // after ExtraDimService: uses its Accessibility hook
+        clipboard?.start()
         NSApp.mainMenu = mainMenu()
         installTerminationSignal()
         serveActivation()
@@ -121,7 +125,7 @@ import os
         log.notice("started")
 
         let o = env.options
-        if o.openPopover || o.openDashboard != nil || o.openSettings {
+        if o.openPopover || o.openDashboard != nil || o.openSettings || o.openClipboard {
             // Let the status item window get its menu bar position first (the popover anchors to it).
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(500))
@@ -129,6 +133,7 @@ import os
                 if let page = o.openDashboard { dashboard.show(page: page) }
                 if o.openSettings { settingsWindow.show() }
                 if o.openPopover { popover.open() }
+                if o.openClipboard { clipboard?.toggle() }
             }
         }
         #if DEBUG
@@ -154,6 +159,7 @@ import os
                     self?.hotKeyLoop?.cancel()
                     self?.hotKey?.invalidate()
                     self?.hotKey = nil
+                    self?.clipboard?.shutdown()
                     self?.overlay.hide()
                     self?.power?.stop()
                 },
@@ -281,9 +287,13 @@ import os
         log.notice("overlay \(on ? "on" : "off", privacy: .public)")
     }
 
-    private func setHotKeyRecording(_ recording: Bool) {
+    /// Two recorders (Overlay, Clipboard) can be active at once: the hotkeys come back when the last one stops.
+    private func setHotKeyRecording(_ active: Bool) {
+        activeRecorders = max(activeRecorders + (active ? 1 : -1), 0)
+        let recording = activeRecorders > 0
         guard recording != hotKeyRecording else { return }
         hotKeyRecording = recording
+        clipboard?.setHotKeyRecording(recording)
         registerHotKey()
     }
 

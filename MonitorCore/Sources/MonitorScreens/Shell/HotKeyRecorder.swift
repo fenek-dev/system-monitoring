@@ -10,15 +10,19 @@ public enum HotKeyStatus: Equatable, Sendable { case registered, unavailable }
 
 public extension EnvironmentValues {
     @Entry var overlayHotKeyStatus: HotKeyStatus = .registered
+    @Entry var clipboardHotKeyStatus: HotKeyStatus = .registered
 }
 
 /// The App's live `HotKeyStatus`, shared by every `ShellContext`: `telltaleEnvironment` injects
 /// `\.overlayHotKeyStatus` from it, so an open Settings window follows a re-registration.
 @MainActor @Observable public final class HotKeyState {
     public var status: HotKeyStatus
+    /// Same for `SettingsStore.clipboardHotKey` (`\.clipboardHotKeyStatus`).
+    public var clipboardStatus: HotKeyStatus
 
-    public init(status: HotKeyStatus = .registered) {
+    public init(status: HotKeyStatus = .registered, clipboardStatus: HotKeyStatus = .registered) {
         self.status = status
+        self.clipboardStatus = clipboardStatus
     }
 }
 
@@ -38,12 +42,17 @@ public struct HotKeyRecorder: View {
     static let recordingPrompt = "Type shortcut…"
 
     @Binding private var spec: HotKeySpec
+    private let label: String
     @Environment(\.appCommands) private var commands
     @State private var recording = false
     @State private var message: String?
     @State private var flashID = 0
 
-    public init(spec: Binding<HotKeySpec>) { _spec = spec }
+    /// `label`: the accessibility label (several recorders live in Settings).
+    public init(spec: Binding<HotKeySpec>, label: String = "Overlay shortcut") {
+        _spec = spec
+        self.label = label
+    }
 
     /// Pure key handling: `keyCode`/`flags` as `NSEvent.keyCode` / `NSEvent.modifierFlags.rawValue`.
     public static func handle(keyCode: UInt16, flags: UInt) -> Outcome {
@@ -89,7 +98,7 @@ public struct HotKeyRecorder: View {
             if !Task.isCancelled { message = nil }
         }
         .help(recording ? "Press a shortcut, or Esc to cancel" : "Click to record a new shortcut")
-        .accessibilityLabel("Overlay shortcut")
+        .accessibilityLabel(label)
         .accessibilityValue(title)
     }
 

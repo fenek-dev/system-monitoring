@@ -263,6 +263,11 @@ All icons sit on a 16×16 grid with stroke 1.5, round caps, round joins and no f
 | `eject` | `M8 3L3 9h10z`; `M3 12.5h10` | `textSecondary` |
 | `quit` (ADDED) | `M8 2v5.5`; `M4.4 4.2a5 5 0 1 0 7.2 0` | `textSecondary` |
 | `dragHandle` (ADDED) | `M4 5.5h8M4 8h8M4 10.5h8` | `textTertiary` |
+| `pin` (ADDED, §3.18) | `M6 2.5h4M7 2.5v4L5 9h6L9 6.5v-4M8 9v5` | `textSecondary` |
+| `trash` (ADDED, §3.18) | `M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.5a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.5M6.5 7v4M9.5 7v4` | `textSecondary` |
+| `document` (ADDED, §3.18) | `M3.5 1.5h6L13 5v9.5H3.5zM9.5 1.5V5H13M5.5 8.5h5M5.5 11h5` | `textSecondary` |
+| `image` (ADDED, §3.18) | rect (1.5,2.5,13,11) rx 1.5; circle (5.5,6.5) r1.2; `M2 12L6 8.5l3 2.5 2-1.5L14 12` | `textSecondary` |
+| `text` (ADDED, §3.18) | `M3 4h10M3 8h10M3 12h6` | `textSecondary` |
 
 ---
 
@@ -1188,6 +1193,18 @@ Spec: `docs/superpowers/specs/2026-09-24-storage-cleanup-design.md` §4; plan `d
 - **States**: never scanned → `TTEmptyState` "Scan your home folder to see what uses space." + `Scan`; scanning without a prior result → progress card (files, bytes, current path middle-truncated, `Cancel`) above a partial treemap of the root's children (updates 2–4 Hz); rescanning → previous result stays with a progress overlay card; cached result → header + strip immediately, map when decoded; volume removed → empty state "Volume was removed"; root error → empty state with the reason.
 
 ---
+
+### 3.18 Clipboard picker (ADDED 2026-10-06)
+
+Spec: `docs/superpowers/specs/2026-10-06-clipboard-history-design.md`. No artboard: built in this design language and verified by renders (`clipboard*` goldens). Code: `MonitorScreens/Clipboard/`.
+
+- **Panel** (`ClipboardPickerView`): 420 × 460, `bgPopover`, 1-pt `borderPopover`, radius 12 (the App's `NSPanel` adds the shadow). Top to bottom: search field, Accessibility banner (only when not trusted), list, footer.
+- **Search field**: §2.27 at the full width, margin 10 (top 10, bottom 8), placeholder "Search clipboard history". Takes focus on every open. Esc is handled by the model, not the field.
+- **Banner**: `TTAlertBanner` elevated, "Allow Warden in Accessibility to paste into the app in front. Until then items are only copied." + `small secondary` "Open System Settings".
+- **List**: padding 6 horizontal. Empty query: section headers "Pinned" (when any) and "Recent" (`captionStrong` `textTertiary`, padding 10 / 6 top / 4 bottom); with a query one ranked list, no headers. Empty history: `TTEmptyState` "Nothing copied yet"; no match: "No matches".
+- **Row** (44, radius 7, padding 10, gap 10): 28 tile (radius 5; `fillTrack` with a 16 `textSecondary` icon: `text`, `document`, `image`; the thumbnail fills it when there is one), VStack (flex): preview `body13` one line, sub `caption` `textSecondary` "{app} · {age}" (age "now", "5m", "3h", "2d"; no app → age only); hovered or selected: pin and delete `rowAction` icon buttons (pinned: pin tinted `accent`); then a `TTBadge` "⌘1"…"⌘9" on the first nine rows. States: hover `fillHover`, selected `rowSelected`.
+- **Footer** (32, top `separator`, padding 12, gap 12): `caption` hints, key in `textSecondary` and action in `textTertiary`: ↩ Paste, ⌘1–9 Quick paste, ⌘P Pin, ⌘⌫ Delete, Esc Close.
+- **Settings › Clipboard** (§3.14, after Overlay): "Clipboard history" switch (sub-text "Needs Accessibility to paste" in `statusElevated` + "Open System Settings" when not trusted); "Shortcut" recorder (note for ⌘⇧V: "⌘⇧V replaces Paste and Match Style in other apps."; "Shortcut unavailable — in use by another app" in `statusElevated`); "History" row "{N} items · {size}" `caption` `textSecondary` + small "Clear history", sub-text "Pinned items are kept".
 
 ## 4. Status icon
 
